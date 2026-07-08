@@ -18,6 +18,12 @@
 
 ## 🚀 快速开始
 
+### 配置 API 密钥
+本项目需要 DeepSeek API Key。请将密钥填入项目根目录的 `.env` 文件中（**注意：此文件不会被上传到 GitHub**）：
+API_KEY="sk-你的密钥"
+BASE_URL="https://api.deepseek.com"
+MODEL_NAME="deepseek-v4-flash"
+
 ### 1. 克隆仓库
 ```bash
 git clone https://github.com/HluckyRing/ai_rag_project
