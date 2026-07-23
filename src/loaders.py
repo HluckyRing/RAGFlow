@@ -91,7 +91,7 @@ SUPPORTED_TYPES = [ext.lstrip('.') for ext in SUPPORTED_EXTENSIONS]
 
 
 def load_file(uploaded_file):
-    filename = getattr(uploaded_file, 'name', '')
+    filename = getattr(uploaded_file, 'name', None) or getattr(uploaded_file, 'filename', '')
     ext = os.path.splitext(filename)[1].lower()
     loader = LOADERS.get(ext)
     if loader is None:
