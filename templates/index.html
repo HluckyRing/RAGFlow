@@ -49,10 +49,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helv
 .main { flex: 1; display: flex; flex-direction: column; background: var(--main-bg); height: 100vh; }
 .topbar { height: 60px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .topbar-left { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--text-primary); }
-.topbar-right { display: flex; gap: 10px; }
-.pill { height: 32px; padding: 0 14px; border-radius: 16px; border: 1px solid var(--border); background: #fff; font-size: 13px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all .2s; }
-.pill:hover { background: #F3F4F6; }
-.pill.on { background: var(--brand); color: #fff; border-color: var(--brand); }
+
+/* ── Sidebar Toggle ── */
+.sidebar-toggle { width: 32px; height: 32px; border-radius: 8px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; transition: all .2s; margin-right: 4px; }
+.sidebar-toggle:hover { background: #F3F4F6; }
+.sidebar.hidden { display: none; }
 
 /* ── Chat ── */
 .chat-area { flex: 1; overflow-y: auto; padding: 24px 0; }
@@ -134,10 +135,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helv
 
 <main class="main">
     <header class="topbar">
-        <div class="topbar-left" id="topbarModel">📄 未选择知识库</div>
-        <div class="topbar-right">
-            <button class="pill" id="pillDeep" onclick="togglePill(this)">✨ 深度思考</button>
-            <button class="pill" id="pillWeb" onclick="togglePill(this)">🌐 联网搜索</button>
+        <div class="topbar-left">
+            <button class="sidebar-toggle" onclick="toggleSidebar()" title="隐藏/显示侧边栏">☰</button>
+            <span id="topbarModel">📄 未选择知识库</span>
         </div>
     </header>
 
@@ -363,7 +363,9 @@ function updateSendBtn() {
     btn.disabled = !has;
     btn.classList.toggle('active', has);
 }
-function togglePill(btn) { btn.classList.toggle('on'); }
+function toggleSidebar() {
+    document.querySelector('.sidebar').classList.toggle('hidden');
+}
 function toast(msg, isErr) {
     const t = document.createElement('div');
     t.className = 'toast' + (isErr ? ' error' : '');
