@@ -14,7 +14,7 @@
 - **大模型**：DeepSeek API（兼容 OpenAI 格式）
 - **向量引擎**：ChromaDB + BAAI/bge-small-zh-v1.5（中文轻量级 Embedding 模型）
 - **前端界面**：Streamlit
-- **部署**：Docker（支持一键运行）
+- **部署**：支持 `streamlit run app.py` 本地运行
 
 ## 🚀 快速开始
 

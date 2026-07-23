@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ai_rag_project"
+version = "1.0.0"
+description = "Local PDF Knowledge Base Q&A System using RAG with HyDE retrieval"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.59.0",
+    "chromadb>=1.5.0",
+    "sentence-transformers>=5.6.0",
+    "pypdf>=6.14.0",
+    "python-dotenv>=1.2.0",
+    "openai>=2.44.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
