@@ -1,5 +1,6 @@
 import streamlit as st
-from src.pdf_ingestion import load_pdf_text, split_text
+from src.loaders import load_file, SUPPORTED_TYPES
+from src.pdf_ingestion import split_text
 from src.retrieval import init_vector_store
 from src.llm import get_answer
 
@@ -9,20 +10,24 @@ def cached_init_vector_store():
     return init_vector_store()
 
 
-st.set_page_config(page_title="📚 本地知识库问答（增强版）", layout="wide")
-st.title("📚 本地 PDF 知识库问答系统（HyDE + 记忆增强）")
-st.caption("支持上传 PDF，使用 HyDE 检索和多轮对话记忆，提高回答准确率。")
+st.set_page_config(page_title="📚 RAGFlow 知识库问答", layout="wide")
+st.title("📚 RAGFlow 知识库问答系统（HyDE + 记忆增强）")
+st.caption(f"支持上传 PDF / TXT / MD / DOCX / XLSX / CSV，使用 HyDE 检索和多轮对话记忆。")
 
 with st.sidebar:
     st.header("📂 知识库管理")
-    uploaded_file = st.file_uploader("上传 PDF 文件", type=["pdf"])
+    uploaded_file = st.file_uploader("上传文件", type=SUPPORTED_TYPES)
 
     if uploaded_file is not None:
         if st.button("🔄 加载/刷新知识库"):
-            with st.spinner("正在解析 PDF 并建立索引..."):
-                full_text = load_pdf_text(uploaded_file)
+            with st.spinner("正在解析文件并建立索引..."):
+                try:
+                    full_text = load_file(uploaded_file)
+                except Exception as e:
+                    st.error(f"文件加载失败: {e}")
+                    st.stop()
                 if not full_text.strip():
-                    st.error("PDF 内容为空或无法提取文字。")
+                    st.error("文件内容为空或无法提取文字。")
                 else:
                     collection, use_vector = cached_init_vector_store()
                     if collection and collection.count() == 0:
@@ -44,7 +49,7 @@ for msg in st.session_state['messages']:
 
 if prompt := st.chat_input("请输入你的问题："):
     if 'full_text' not in st.session_state or not st.session_state.get('full_text'):
-        st.warning("⚠️ 请先在左侧上传 PDF 文件并点击加载。")
+        st.warning("⚠️ 请先在左侧上传文件并点击加载。")
         st.stop()
 
     with st.chat_message("user"):
