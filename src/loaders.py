@@ -90,6 +90,15 @@ SUPPORTED_EXTENSIONS = list(LOADERS.keys())
 SUPPORTED_TYPES = [ext.lstrip('.') for ext in SUPPORTED_EXTENSIONS]
 
 
+def _unwrap(uploaded_file):
+    if hasattr(uploaded_file, 'file') and hasattr(uploaded_file.file, 'seek'):
+        f = uploaded_file.file
+        f.seek(0)
+        return f
+    uploaded_file.seek(0)
+    return uploaded_file
+
+
 def load_file(uploaded_file):
     filename = getattr(uploaded_file, 'name', None) or getattr(uploaded_file, 'filename', '')
     ext = os.path.splitext(filename)[1].lower()
@@ -97,4 +106,4 @@ def load_file(uploaded_file):
     if loader is None:
         raise ValueError(f"不支持的文件格式: {ext or '未知'}，支持: {', '.join(SUPPORTED_EXTENSIONS)}")
     logger.info("加载文件: %s (%s)", filename, ext)
-    return loader(uploaded_file)
+    return loader(_unwrap(uploaded_file))
