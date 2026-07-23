@@ -4,10 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RAGFlow</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
-<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
 <style>
 :root {
     --brand: #4D6BFE; --sidebar-bg: #1E2130; --main-bg: #FFFFFF;
@@ -19,52 +15,46 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 ::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#D1D5DB;border-radius:3px}
-#root{display:flex;height:100vh}
 
-/* Sidebar */
-.sidebar{width:260px;min-width:260px;background:var(--sidebar-bg);display:flex;flex-direction:column;height:100vh;transition:width .2s;overflow:hidden}
+.app{display:flex;height:100vh}
+.sidebar{width:260px;min-width:260px;background:var(--sidebar-bg);display:flex;flex-direction:column;height:100vh;transition:width .2s,min-width .2s;overflow:hidden}
 .sidebar.collapsed{width:0;min-width:0}
 .sidebar-logo{padding:16px 20px;height:64px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,.06);flex-shrink:0}
 .sidebar-logo .icon{width:32px;height:32px;background:var(--brand);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px}
 .sidebar-logo span{color:#fff;font-size:18px;font-weight:700}
-.sidebar-new{padding:12px 16px;flex-shrink:0;display:flex;gap:6px}
-.sidebar-new button{flex:1;height:40px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:#D1D5DB;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all .2s}
+.sidebar-new{padding:12px 16px;flex-shrink:0}
+.sidebar-new button{width:100%;height:40px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:#D1D5DB;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all .2s}
 .sidebar-new button:hover{background:rgba(255,255,255,.1);color:#fff}
 .conv-list{flex:1;overflow-y:auto;padding:4px 12px}
 .conv-item{padding:8px 12px;border-radius:8px;cursor:pointer;color:#9CA3AF;font-size:13px;margin-bottom:2px;transition:all .2s;display:flex;align-items:center;gap:4px}
 .conv-item:hover{background:rgba(255,255,255,.06);color:#D1D5DB}
 .conv-item.active{background:rgba(77,107,254,.12);color:#fff;border-left:3px solid var(--brand);padding-left:9px}
-.conv-item .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.conv-item .act{width:20px;height:20px;border-radius:4px;border:none;background:transparent;color:transparent;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s}
-.conv-item:hover .act{color:#9CA3AF}
-.conv-item .act:hover{background:rgba(239,68,68,.15);color:#EF4444}
+.conv-item .cname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conv-item .cdel{width:22px;height:22px;border-radius:4px;border:none;background:transparent;color:transparent;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s}
+.conv-item:hover .cdel{color:#9CA3AF}
+.conv-item .cdel:hover{background:rgba(239,68,68,.15);color:#EF4444}
 .empty-hint{color:#6B7280;font-size:12px;text-align:center;padding:24px 8px}
 
-/* Main */
 .main{flex:1;display:flex;flex-direction:column;background:var(--main-bg);height:100vh;min-width:0}
 .topbar{height:52px;padding:0 20px;display:flex;align-items:center;border-bottom:1px solid var(--border);flex-shrink:0;gap:8px}
-.topbar button.toggle-btn{width:32px;height:32px;border-radius:6px;border:none;background:transparent;color:var(--text-secondary);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center}
-.topbar button.toggle-btn:hover{background:#F3F4F6}
+.topbar .tbtn{width:32px;height:32px;border-radius:6px;border:none;background:transparent;color:var(--text-secondary);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center}
+.topbar .tbtn:hover{background:#F3F4F6}
 .topbar .kb-tag{font-size:12px;padding:3px 10px;border-radius:10px;background:#EEF2FF;color:var(--brand);font-weight:500}
 .topbar .no-kb{font-size:13px;color:var(--text-secondary)}
 
-/* Chat */
 .chat-area{flex:1;overflow-y:auto;padding:20px 0}
 .chat-inner{max-width:800px;margin:0 auto;padding:0 24px}
 .msg{display:flex;gap:10px;margin-bottom:20px}
 .msg.user{justify-content:flex-end}
-.msg.user .bubble{background:var(--bubble-user);color:#fff;border-radius:14px 14px 4px 14px;max-width:80%;padding:10px 16px;font-size:14px;line-height:1.6}
+.msg.user .bub{background:var(--bubble-user);color:#fff;border-radius:14px 14px 4px 14px;max-width:80%;padding:10px 16px;font-size:14px;line-height:1.6}
 .msg.assistant{align-items:flex-start}
-.msg.assistant .avatar{width:34px;height:34px;border-radius:50%;background:#EEF2FF;display:flex;align-items:center;justify-content:center;color:var(--brand);font-weight:700;font-size:13px;flex-shrink:0}
-.msg.assistant .bubble{background:var(--bubble-ai);border-radius:14px 14px 14px 4px;max-width:85%;padding:12px 16px;font-size:14px;line-height:1.7;color:var(--text-primary)}
-.msg .bubble p{margin:4px 0}
-.msg .bubble pre{background:#1E293B;border-radius:8px;padding:12px 16px;overflow-x:auto;margin:8px 0}
-.msg .bubble code{font-family:"SF Mono","Fira Code",monospace;font-size:13px;color:#E2E8F0}
-.msg .bubble p code{background:rgba(0,0,0,.06);padding:2px 6px;border-radius:4px;font-size:13px}
-.msg.user .bubble p code{background:rgba(255,255,255,.2)}
-.msg .bubble table{border-collapse:collapse;margin:8px 0;width:100%}
-.msg .bubble th,.msg .bubble td{border:1px solid #E5E7EB;padding:6px 12px;font-size:13px;text-align:left}
-.msg .bubble th{background:#F9FAFB;font-weight:600}
+.msg.assistant .avt{width:34px;height:34px;border-radius:50%;background:#EEF2FF;display:flex;align-items:center;justify-content:center;color:var(--brand);font-weight:700;font-size:13px;flex-shrink:0}
+.msg.assistant .bub{background:var(--bubble-ai);border-radius:14px 14px 14px 4px;max-width:85%;padding:12px 16px;font-size:14px;line-height:1.7;color:var(--text-primary)}
+.msg .bub p{margin:4px 0}
+.msg .bub pre{background:#1E293B;border-radius:8px;padding:12px 16px;overflow-x:auto;margin:8px 0}
+.msg .bub code{font-family:"SF Mono","Fira Code",monospace;font-size:13px;color:#E2E8F0}
+.msg .bub p code{background:rgba(0,0,0,.06);padding:2px 6px;border-radius:4px;font-size:13px}
+.msg.user .bub p code{background:rgba(255,255,255,.2)}
 
 .typing{display:flex;gap:4px;padding:12px 16px}
 .typing span{width:8px;height:8px;border-radius:50%;background:#9CA3AF;animation:bounce 1.4s infinite ease-in-out both}
@@ -79,392 +69,337 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .empty-state .drop-zone p{font-size:14px;color:var(--text-primary)}
 .empty-state .drop-zone .sub{color:var(--text-secondary);font-size:12px;margin-top:6px}
 
-.source-box{margin-top:8px;padding:10px 14px;background:#F9FAFB;border-radius:10px;font-size:12px;color:var(--text-secondary);border:1px solid var(--border)}
-.source-box .src-title{font-weight:600;color:var(--text-primary);margin-bottom:6px}
-.source-box .src-item{padding:4px 0;border-bottom:1px solid var(--border);font-size:12px}
-.source-box .src-item:last-child{border:none}
+.src-box{margin-top:8px;padding:10px 14px;background:#F9FAFB;border-radius:10px;font-size:12px;color:var(--text-secondary);border:1px solid var(--border)}
+.src-box .src-title{font-weight:600;color:var(--text-primary);margin-bottom:6px}
+.src-box .src-item{padding:4px 0;border-bottom:1px solid var(--border);font-size:12px}
+.src-box .src-item:last-child{border:none}
 
-/* Input */
 .input-area{padding:12px 24px 20px;flex-shrink:0}
 .input-row{max-width:800px;margin:0 auto;display:flex;align-items:flex-end;gap:8px;background:var(--input-bg);border:1px solid var(--border);border-radius:16px;padding:6px;transition:border-color .2s}
 .input-row:focus-within{border-color:var(--brand);box-shadow:0 0 0 3px rgba(77,107,254,.1)}
 .input-row textarea{flex:1;border:none;outline:none;resize:none;background:transparent;font-size:14px;font-family:inherit;line-height:1.5;min-height:28px;max-height:180px;padding:6px 4px}
 .input-row textarea::placeholder{color:#9CA3AF}
-.input-row button{border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:10px;transition:all .2s;flex-shrink:0}
-.upload-btn{width:36px;height:36px;background:transparent;color:var(--text-secondary);font-size:16px}
-.upload-btn:hover{background:#E5E7EB}
-.send-btn{width:36px;height:36px;background:#D1D5DB;color:#fff;font-size:16px;border-radius:50%!important}
-.send-btn.has-text{background:var(--brand)}
-.send-btn.has-text:hover{transform:scale(1.05)}
-.hidden-file{display:none}
+.input-row .ubtn{width:36px;height:36px;border:none;border-radius:10px;background:transparent;color:var(--text-secondary);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s}
+.input-row .ubtn:hover{background:#E5E7EB}
+.input-row .sbtn{width:36px;height:36px;border:none;border-radius:50%;background:#D1D5DB;color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s}
+.input-row .sbtn.ok{background:var(--brand)}
+.input-row .sbtn.ok:hover{transform:scale(1.05)}
 
-/* Modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:999;display:flex;align-items:center;justify-content:center}
 .modal{background:#fff;border-radius:14px;padding:28px 32px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,.15)}
-.modal h3{font-size:18px;margin-bottom:16px}
+.modal h3{font-size:18px;margin-bottom:12px}
 .modal p{font-size:12px;color:#9CA3AF;margin-bottom:12px}
 .modal-row{display:flex;gap:8px;margin-bottom:12px}
-.modal-row input{flex:1;height:38px;border:1px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px;outline:none}
-.modal-row input:focus{border-color:var(--brand)}
-.modal-row select{flex:1;height:38px;border:1px solid var(--border);border-radius:8px;padding:0 8px;font-size:14px;outline:none;background:#fff}
-.modal .btns{display:flex;gap:8px;justify-content:flex-end}
-.modal .btns button{height:36px;padding:0 20px;border-radius:8px;border:none;font-size:14px;cursor:pointer}
-.modal .btn-cancel{background:#F3F4F6;color:var(--text-secondary)}
-.modal .btn-ok{background:var(--brand);color:#fff}
+.modal-row input,.modal-row select{flex:1;height:38px;border:1px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px;outline:none;background:#fff}
+.modal-row input:focus,.modal-row select:focus{border-color:var(--brand)}
+.modal-btns{display:flex;gap:8px;justify-content:flex-end}
+.modal-btns button{height:36px;padding:0 20px;border-radius:8px;border:none;font-size:14px;cursor:pointer}
+.btn-cancel{background:#F3F4F6;color:var(--text-secondary)}
+.btn-ok{background:var(--brand);color:#fff}
 
 .toast{position:fixed;top:20px;right:20px;background:#1F2937;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;z-index:9999;animation:slideIn .3s ease}
 .toast.error{background:#EF4444}
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+.hidden{display:none!important}
 </style>
 </head>
 <body>
-<div id="root"></div>
-<input type="file" id="fileInput" class="hidden-file" accept=".pdf,.txt,.md,.docx,.xlsx,.csv">
+<div class="app">
+<aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo"><div class="icon">R</div><span>RAGFlow</span></div>
+    <div class="sidebar-new"><button onclick="showCreateDialog()">＋ 新对话</button></div>
+    <div class="conv-list" id="convList"><div class="empty-hint">暂无对话</div></div>
+</aside>
+<main class="main">
+    <header class="topbar">
+        <button class="tbtn" onclick="toggleSidebar()">☰</button>
+        <span id="topbarInfo" class="no-kb">未绑定知识库</span>
+    </header>
+    <div class="chat-area" id="chatArea">
+        <div class="empty-state" id="emptyState">
+            <h2 id="emptyTitle">RAGFlow</h2>
+            <p id="emptyDesc">上传文件创建知识库，开始智能问答</p>
+            <div class="drop-zone" onclick="triggerUpload()">
+                <p>📂 点击或拖拽上传文件</p>
+                <p class="sub">支持 PDF, DOCX, XLSX, CSV, TXT, MD</p>
+            </div>
+            <button onclick="showCreateDialog()" style="padding:8px 20px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px">＋ 新建空白对话</button>
+        </div>
+        <div class="chat-inner hidden" id="chatInner"></div>
+    </div>
+    <div class="input-area hidden" id="inputArea">
+        <div class="input-row">
+            <button class="ubtn" onclick="triggerUpload()" title="上传文件">📎</button>
+            <textarea id="msgInput" placeholder="给 RAGFlow 发送消息..." rows="1"
+                oninput="autoResize(this);updateSend()" onkeydown="handleKey(event)"></textarea>
+            <button class="sbtn" id="sendBtn" onclick="sendMsg()">↑</button>
+        </div>
+    </div>
+</main>
+</div>
+<input type="file" id="fileInput" style="display:none" accept=".pdf,.txt,.md,.docx,.xlsx,.csv">
 
-<script type="text/babel">
-const {useState,useEffect,useRef,useCallback} = React;
+<script>
 const API = '';
+let S = { sid: localStorage.ragflow_sid||'', convs: {}, activeCid: null, kbs: [], isStreaming: false };
 
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+const $ = id => document.getElementById(id);
+const E = (tag, cls, html) => { const e = document.createElement(tag); if(cls) e.className = cls; if(html) e.innerHTML = html; return e; };
 
-function toast(msg,isErr){const t=document.createElement('div');t.className='toast'+(isErr?' error':'');t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),3000)}
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function toast(m, err) { const t = document.createElement('div'); t.className = 'toast'+(err?' error':''); t.textContent = m; document.body.appendChild(t); setTimeout(() => t.remove(), 3000); }
+function toMarkdown(text) {
+    return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/\n/g, '<br>');
+}
 
-function App(){
-  const [sessionId,setSessionId]=useState(localStorage.getItem('ragflow_sid')||'');
-  const [conversations,setConversations]=useState({});
-  const [activeConvId,setActiveConvId]=useState(null);
-  const [kbs,setKbs]=useState([]);
-  const [sidebarCollapsed,setSidebarCollapsed]=useState(false);
-  const [showCreateDialog,setShowCreateDialog]=useState(false);
-  const fileRef=useRef(null);
-  const [uploadTarget,setUploadTarget]=useState(null);
+// ── API ──
+async function api(url, opts) {
+    const r = await fetch(API + url, opts);
+    if (!r.ok) { const e = await r.json().catch(()=>({error:'请求失败'})); throw new Error(e.error||e.detail||'请求失败'); }
+    return r.json();
+}
 
-  // Load state from server
-  const loadState=useCallback(async()=>{
-    if(!sessionId)return;
-    const r=await fetch(API+`/api/state?session_id=${sessionId}`);
-    const d=await r.json();
-    const convs={};
-    (d.conversations||[]).forEach(c=>{convs[c.id]={...c,messages:[]}});
-    setConversations(convs);
-    setActiveConvId(d.active_conv||(d.conversations?.[0]?.id)||null);
-    setKbs(d.kbs||[]);
-    // Load messages for active conv
-    const ac=d.active_conv||d.conversations?.[0]?.id;
-    if(ac&&convs[ac]){
-      const mr=await fetch(API+`/api/conversations/${ac}/messages?session_id=${sessionId}`);
-      const md=await mr.json();
-      setConversations(prev=>({...prev,[ac]:{...prev[ac],messages:md.messages||[]}}));
+async function init() {
+    if (!S.sid) { const d = await api('/api/session'); S.sid = d.session_id; localStorage.ragflow_sid = S.sid; }
+    await loadState();
+}
+async function loadState() {
+    const d = await api(`/api/state?session_id=${S.sid}`);
+    S.convs = {}; (d.conversations||[]).forEach(c => S.convs[c.id] = {...c, messages:[]});
+    S.activeCid = d.active_conv || (d.conversations?.[0]?.id) || null;
+    S.kbs = d.kbs || [];
+    render();
+    if (S.activeCid && S.convs[S.activeCid]) {
+        const md = await api(`/api/conversations/${S.activeCid}/messages?session_id=${S.sid}`);
+        S.convs[S.activeCid].messages = md.messages || [];
+        renderChat();
     }
-  },[sessionId]);
-
-  useEffect(()=>{
-    (async()=>{
-      if(!sessionId){
-        const r=await fetch(API+'/api/session');
-        const d=await r.json();
-        setSessionId(d.session_id);
-        localStorage.setItem('ragflow_sid',d.session_id);
-        return;
-      }
-      await loadState();
-    })();
-  },[sessionId]);
-
-  // File upload handler
-  const handleUpload=async(file,kbName)=>{
-    if(!file)return;
-    const form=new FormData();
-    form.append('file',file);
-    form.append('session_id',sessionId);
-    if(kbName)form.append('kb_name',kbName);
-    try{
-      const r=await fetch(API+'/api/upload',{method:'POST',body:form});
-      if(!r.ok){const e=await r.json();return toast(e.error,true)}
-      const d=await r.json();
-      if(d.session_id!==sessionId){setSessionId(d.session_id);localStorage.setItem('ragflow_sid',d.session_id)}
-      await loadState();
-      toast(`${d.is_new?'✅ 创建':'📎 追加到'} "${d.kb_name}"`);
-    }catch(e){toast('上传失败: '+e.message,true)}
-    fileRef.current.value='';
-  };
-
-  // Create conversation
-  const createConv=async(name,kbName)=>{
-    const r=await fetch(API+'/api/conversations',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({session_id:sessionId,name,kb_name:kbName||''})
-    });
-    const d=await r.json();
-    if(d.session_id)setSessionId(d.session_id);
-    await loadState();
-    setShowCreateDialog(false);
-  };
-
-  // Delete conversation
-  const deleteConv=async(id)=>{
-    await fetch(API+`/api/conversations/${id}?session_id=${sessionId}`,{method:'DELETE'});
-    await loadState();
-  };
-
-  // Switch conversation
-  const switchConv=async(id)=>{
-    await fetch(API+`/api/conversations/${id}/switch`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({session_id:sessionId})
-    });
-    setActiveConvId(id);
-    const mr=await fetch(API+`/api/conversations/${id}/messages?session_id=${sessionId}`);
-    const md=await mr.json();
-    setConversations(prev=>({...prev,[id]:{...prev[id],messages:md.messages||[]}}));
-  };
-
-  // Bind KB to conversation
-  const bindKb=async(convId,kbName)=>{
-    await fetch(API+`/api/conversations/${convId}/bind-kb`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({session_id:sessionId,kb_name:kbName})
-    });
-    await loadState();
-    toast(`已绑定知识库: ${kbName}`);
-  };
-
-  // Send message
-  const sendMessage=async(text)=>{
-    const conv=conversations[activeConvId];
-    if(!conv)return;
-    if(!conv.kb_name)return toast('请先上传文件或绑定知识库',true);
-
-    const msgs=[...conv.messages,{role:'user',content:text}];
-    setConversations(prev=>({...prev,[activeConvId]:{...prev[activeConvId],messages:msgs}}));
-
-    try{
-      const r=await fetch(API+'/api/chat',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({question:text,session_id:sessionId,conv_id:activeConvId})
-      });
-      if(!r.ok){const e=await r.json();toast(e.error,true);return}
-
-      let fullText='',sourcesHtml='';
-      const reader=r.body.getReader();
-      const decoder=new TextDecoder();
-      let buf='';
-      // Add assistant placeholder
-      setConversations(prev=>({...prev,[activeConvId]:{...prev[activeConvId],messages:[...msgs,{role:'assistant',content:'...',_streaming:true}]}}));
-
-      while(true){
-        const{done,value}=await reader.read();
-        if(done)break;
-        buf+=decoder.decode(value,{stream:true});
-        const lines=buf.split('\n');buf=lines.pop();
-        for(const line of lines){
-          if(!line.startsWith('data: '))continue;
-          try{
-            const d=JSON.parse(line.slice(6));
-            if(d.type==='sources'&&d.sources){
-              sourcesHtml='<div class="source-box"><div class="src-title">📖 引用来源</div>'+d.sources.map(s=>`<div class="src-item">${esc(s)}</div>`).join('')+'</div>';
-            }else if(d.type==='token'){
-              fullText+=d.content;
-              setConversations(prev=>({...prev,[activeConvId]:{...prev[activeConvId],messages:[...msgs,{role:'assistant',content:fullText,sourcesHtml,_streaming:true}]}}));
-            }
-          }catch(e){}
-        }
-      }
-      setConversations(prev=>({...prev,[activeConvId]:{...prev[activeConvId],messages:[...msgs,{role:'assistant',content:fullText,sourcesHtml}]}}));
-    }catch(e){toast('请求失败: '+e.message,true)}
-  };
-
-  // Delete KB
-  const deleteKb=async(name)=>{
-    await fetch(API+`/api/kbs/${encodeURIComponent(name)}?session_id=${sessionId}`,{method:'DELETE'});
-    await loadState();
-  };
-
-  // Drag & drop
-  useEffect(()=>{
-    const onDrop=e=>{e.preventDefault();const f=e.dataTransfer?.files?.[0];if(f)handleUpload(f,activeConvId?conversations[activeConvId]?.kb_name:null)};
-    const onDrag=e=>{e.preventDefault()};
-    document.addEventListener('dragover',onDrag);
-    document.addEventListener('drop',onDrop);
-    return ()=>{document.removeEventListener('dragover',onDrag);document.removeEventListener('drop',onDrop)};
-  },[activeConvId,conversations]);
-
-  const activeConv=activeConvId?conversations[activeConvId]:null;
-  const convs=Object.values(conversations).sort((a,b)=>(b.created_at||0)-(a.created_at||0));
-
-  return React.createElement('div',{style:{display:'flex',height:'100vh'}},
-    // Sidebar
-    React.createElement('aside',{className:'sidebar'+(sidebarCollapsed?' collapsed':'')},
-      React.createElement('div',{className:'sidebar-logo'},
-        React.createElement('div',{className:'icon'},'R'),
-        React.createElement('span',null,'RAGFlow')
-      ),
-      React.createElement('div',{className:'sidebar-new'},
-        React.createElement('button',{onClick:()=>setShowCreateDialog(true)},'＋ 新对话'),
-      ),
-      React.createElement('div',{className:'conv-list'},
-        convs.length===0?React.createElement('div',{className:'empty-hint'},'暂无对话，点击 ＋ 创建'):
-        convs.map(c=>React.createElement('div',{
-          key:c.id,className:'conv-item'+(c.id===activeConvId?' active':''),
-          onClick:()=>switchConv(c.id)
-        },
-          React.createElement('span',{className:'name',title:c.name},c.kb_name?('📄 '+c.name):c.name),
-          React.createElement('button',{className:'act',onClick:e=>{e.stopPropagation();deleteConv(c.id)},title:'删除'},'✕')
-        ))
-      )
-    ),
-    // Main
-    React.createElement('main',{className:'main'},
-      React.createElement('header',{className:'topbar'},
-        React.createElement('button',{className:'toggle-btn',onClick:()=>setSidebarCollapsed(!sidebarCollapsed)},'☰'),
-        activeConv?.kb_name
-          ?React.createElement('span',{className:'kb-tag'},'📄 '+activeConv.kb_name)
-          :React.createElement('span',{className:'no-kb'},'未绑定知识库 — 上传文件开始')
-      ),
-      activeConv
-        ?React.createElement(ChatArea,{conv:activeConv,sendMessage,onUpload:handleUpload,kbs,onBindKb:bindKb,convId:activeConvId})
-        :React.createElement(EmptyState,{onUpload:handleUpload,onCreateConv:()=>setShowCreateDialog(true)})
-    ),
-    // Create dialog
-    showCreateDialog&&React.createElement(CreateDialog,{
-      kbs,onCreate:createConv,onClose:()=>setShowCreateDialog(false)
-    })
-  );
 }
 
-function EmptyState({onUpload,onCreateConv}){
-  return React.createElement('div',{className:'empty-state'},
-    React.createElement('h2',null,'RAGFlow'),
-    React.createElement('p',null,'上传文件创建知识库，开始智能问答'),
-    React.createElement('div',{className:'drop-zone',onClick:()=>document.getElementById('fileInput').click()},
-      React.createElement('p',null,'📂 点击或拖拽上传文件'),
-      React.createElement('p',{className:'sub'},'支持 PDF, DOCX, XLSX, CSV, TXT, MD')
-    ),
-    React.createElement('p',{style:{fontSize:13}},'或'),
-    React.createElement('button',{
-      onClick:onCreateConv,
-      style:{padding:'8px 20px',borderRadius:8,border:'1px solid var(--border)',background:'#fff',cursor:'pointer',fontSize:14}
-    },'＋ 新建空白对话')
-  );
+// ── Render ──
+function render() {
+    renderSidebar();
+    renderTopbar();
+    if (!S.activeCid) { showEmpty(); return; }
+    const c = S.convs[S.activeCid];
+    if (!c || !c.kb_name) { showUploadPage(c?.name||'新对话'); return; }
+    $('emptyState').classList.add('hidden');
+    $('chatInner').classList.remove('hidden');
+    $('inputArea').classList.remove('hidden');
+    renderChat();
 }
 
-function ChatArea({conv,sendMessage,onUpload,kbs,onBindKb,convId}){
-  const [text,setText]=useState('');
-  const [showBind,setShowBind]=useState(false);
-  const messagesEndRef=useRef(null);
+function renderSidebar() {
+    const el = $('convList');
+    const convs = Object.values(S.convs).sort((a,b)=>(b.created_at||0)-(a.created_at||0));
+    if (!convs.length) { el.innerHTML = '<div class="empty-hint">暂无对话<br>点击 ＋ 创建</div>'; return; }
+    el.innerHTML = convs.map(c => `
+        <div class="conv-item${c.id===S.activeCid?' active':''}" onclick="switchConv('${c.id}')">
+            <span class="cname" title="${esc(c.name)}">${c.kb_name?'📄 ':''}${esc(c.name)}</span>
+            <button class="cdel" onclick="event.stopPropagation();deleteConv('${c.id}')">✕</button>
+        </div>`).join('');
+}
 
-  useEffect(()=>{messagesEndRef.current?.scrollIntoView({behavior:'smooth'})},[conv.messages]);
+function renderTopbar() {
+    const c = S.activeCid ? S.convs[S.activeCid] : null;
+    $('topbarInfo').innerHTML = c?.kb_name
+        ? `<span class="kb-tag">📄 ${esc(c.kb_name)}</span>`
+        : '<span class="no-kb">未绑定知识库 — 上传文件开始</span>';
+}
 
-  const handleSend=()=>{
-    const t=text.trim();
-    if(!t)return;
-    sendMessage(t);
-    setText('');
-  };
+function showEmpty() {
+    $('emptyState').classList.remove('hidden');
+    $('chatInner').classList.add('hidden');
+    $('inputArea').classList.add('hidden');
+    $('emptyTitle').textContent = 'RAGFlow';
+    $('emptyDesc').textContent = '上传文件创建知识库，开始智能问答';
+    $('topbarInfo').innerHTML = '<span class="no-kb">未选择对话</span>';
+}
 
-  const handleKey=e=>{
-    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();handleSend()}
-  };
+function showUploadPage(name) {
+    $('emptyState').classList.remove('hidden');
+    $('chatInner').classList.add('hidden');
+    $('inputArea').classList.add('hidden');
+    $('emptyTitle').textContent = '📂 ' + (name||'');
+    $('emptyDesc').textContent = '此对话还没有知识库，上传文件开始';
+    $('topbarInfo').innerHTML = '<span class="no-kb">未绑定知识库</span>';
+}
 
-  const msgs=conv.messages||[];
-  const hasKb=!!conv.kb_name;
+function renderChat() {
+    const c = S.convs[S.activeCid];
+    if (!c) return;
+    const msgs = c.messages || [];
+    const el = $('chatInner');
+    el.innerHTML = '';
+    if (!msgs.length && !c.kb_name) return;
+    msgs.forEach(m => {
+        const d = E('div', 'msg ' + (m.role === 'user' ? 'user' : 'assistant'));
+        if (m.role === 'assistant') d.appendChild(E('div', 'avt', 'AI'));
+        const b = E('div', 'bub');
+        b.innerHTML = m.role === 'user' ? esc(m.content) : toMarkdown(m.content) + (m.sources||'');
+        d.appendChild(b);
+        el.appendChild(d);
+    });
+    scrollDown();
+}
 
-  // Upload trigger
-  const triggerUpload=()=>{
-    const inp=document.getElementById('fileInput');
-    inp.onchange=()=>{if(inp.files[0])onUpload(inp.files[0],conv.kb_name||undefined)};
+function scrollDown() {
+    const a = $('chatArea');
+    setTimeout(() => a.scrollTop = a.scrollHeight, 50);
+}
+
+// ── Actions ──
+async function switchConv(id) {
+    await api(`/api/conversations/${id}/switch`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid}) });
+    S.activeCid = id;
+    const md = await api(`/api/conversations/${id}/messages?session_id=${S.sid}`);
+    S.convs[id].messages = md.messages || [];
+    render();
+}
+
+async function deleteConv(id) {
+    await api(`/api/conversations/${id}?session_id=${S.sid}`, { method:'DELETE' });
+    await loadState();
+}
+
+function toggleSidebar() { $('sidebar').classList.toggle('collapsed'); }
+
+async function triggerUpload() {
+    const inp = $('fileInput');
+    inp.onchange = async () => { if (inp.files[0]) await uploadFile(inp.files[0]); inp.value = ''; };
     inp.click();
-  };
-
-  return React.createElement(React.Fragment,null,
-    React.createElement('div',{className:'chat-area'},
-      React.createElement('div',{className:'chat-inner'},
-        msgs.length===0?React.createElement('div',{className:'empty-state'},
-          React.createElement('h2',null,'📂 '+conv.name),
-          React.createElement('p',null,hasKb?'知识库已就绪，开始提问':'尚未绑定知识库'),
-          !hasKb&&React.createElement(React.Fragment,null,
-            React.createElement('button',{
-              onClick:triggerUpload,
-              style:{padding:'10px 24px',borderRadius:10,border:'none',background:'var(--brand)',color:'#fff',fontSize:14,cursor:'pointer'}
-            },'📂 上传文件创建知识库'),
-            kbs.length>0&&React.createElement('button',{
-              onClick:()=>setShowBind(true),
-              style:{padding:'8px 20px',borderRadius:8,border:'1px solid var(--border)',background:'#fff',cursor:'pointer',fontSize:13,marginTop:8}
-            },'📎 绑定已有知识库')
-          )
-        ):
-        msgs.map((m,i)=>React.createElement('div',{key:i,className:'msg '+(m.role==='user'?'user':'assistant')},
-          m.role==='assistant'&&React.createElement('div',{className:'avatar'},'AI'),
-          React.createElement('div',{className:'bubble',
-            dangerouslySetInnerHTML:m.role==='assistant'?{__html:(m._streaming?marked.parse(m.content):'')+(m.sourcesHtml||'')||marked.parse(m.content)+(m.sourcesHtml||''):undefined}
-          },m.role==='user'?esc(m.content):null)
-        )),
-        React.createElement('div',{ref:messagesEndRef})
-      )
-    ),
-    React.createElement('div',{className:'input-area'},
-      React.createElement('div',{className:'input-row'},
-        React.createElement('button',{className:'upload-btn',onClick:triggerUpload,title:'上传文件'},'📎'),
-        React.createElement('textarea',{
-          value:text,onChange:e=>setText(e.target.value),onKeyDown:handleKey,
-          placeholder:hasKb?'给 RAGFlow 发送消息...':'请先上传文件或绑定知识库...',
-          rows:1,onInput:e=>{e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,180)+'px'}
-        }),
-        React.createElement('button',{className:'send-btn'+(text.trim()?' has-text':''),onClick:handleSend,disabled:!text.trim()||!hasKb},'↑')
-      )
-    ),
-    // Bind KB dialog
-    showBind&&React.createElement(BindDialog,{
-      kbs,convName:conv.name,
-      onBind:kbName=>{onBindKb(convId,kbName);setShowBind(false)},
-      onClose:()=>setShowBind(false)
-    })
-  );
 }
 
-function CreateDialog({kbs,onCreate,onClose}){
-  const [name,setName]=useState('新对话');
-  const [selKb,setSelKb]=useState('');
-  return React.createElement('div',{className:'modal-overlay',onClick:e=>{if(e.target===e.currentTarget)onClose()}},
-    React.createElement('div',{className:'modal'},
-      React.createElement('h3',null,'新建对话'),
-      React.createElement('p',null,'对话可以绑定一个知识库，或后续再上传文件'),
-      React.createElement('div',{className:'modal-row'},
-        React.createElement('input',{placeholder:'对话名称',value:name,onChange:e=>setName(e.target.value),autoFocus:true})
-      ),
-      kbs.length>0&&React.createElement('div',{className:'modal-row'},
-        React.createElement('select',{value:selKb,onChange:e=>setSelKb(e.target.value)},
-          React.createElement('option',{value:''},'不绑定知识库（后续上传）'),
-          kbs.map(k=>React.createElement('option',{key:k.name,value:k.name},k.name+' ('+k.file_count+'文件)'))
-        )
-      ),
-      React.createElement('div',{className:'btns'},
-        React.createElement('button',{className:'btn-cancel',onClick:onClose},'取消'),
-        React.createElement('button',{className:'btn-ok',onClick:()=>onCreate(name||'新对话',selKb)},'创建')
-      )
-    )
-  );
+async function uploadFile(file) {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('session_id', S.sid);
+    const c = S.activeCid ? S.convs[S.activeCid] : null;
+    if (c?.kb_name) form.append('kb_name', c.kb_name);
+    try {
+        const d = await api('/api/upload', { method:'POST', body:form });
+        if (d.session_id !== S.sid) { S.sid = d.session_id; localStorage.ragflow_sid = S.sid; }
+        await loadState();
+        toast(`${d.is_new?'✅ 创建':'📎 追加到'} "${d.kb_name}"`);
+    } catch(e) { toast(e.message, true); }
 }
 
-function BindDialog({kbs,convName,onBind,onClose}){
-  const [selKb,setSelKb]=useState(kbs[0]?.name||'');
-  return React.createElement('div',{className:'modal-overlay',onClick:e=>{if(e.target===e.currentTarget)onClose()}},
-    React.createElement('div',{className:'modal'},
-      React.createElement('h3',null,'绑定知识库到 "'+convName+'"'),
-      React.createElement('div',{className:'modal-row'},
-        React.createElement('select',{value:selKb,onChange:e=>setSelKb(e.target.value)},
-          kbs.map(k=>React.createElement('option',{key:k.name,value:k.name},k.name+' ('+k.file_count+'文件 '+Math.round(k.chars/1000)+'k字)'))
-        )
-      ),
-      React.createElement('div',{className:'btns'},
-        React.createElement('button',{className:'btn-cancel',onClick:onClose},'取消'),
-        React.createElement('button',{className:'btn-ok',onClick:()=>onBind(selKb)},'绑定')
-      )
-    )
-  );
+function showCreateDialog() {
+    const ov = E('div', 'modal-overlay');
+    ov.innerHTML = `<div class="modal"><h3>新建对话</h3>
+        <p>对话可以绑定已有知识库，或留空后续上传文件</p>
+        <div class="modal-row"><input id="dlgName" placeholder="对话名称" value="新对话"></div>
+        ${S.kbs.length?`<div class="modal-row"><select id="dlgKb"><option value="">不绑定（后续上传）</option>
+            ${S.kbs.map(k=>`<option value="${esc(k.name)}">${esc(k.name)} (${k.file_count}文件)</option>`).join('')}
+        </select></div>`:''}
+        <div class="modal-btns"><button class="btn-cancel" onclick="this.closest('.modal-overlay').remove()">取消</button>
+        <button class="btn-ok" id="dlgOk">创建</button></div></div>`;
+    ov.onclick = e => { if (e.target === ov) ov.remove(); };
+    document.body.appendChild(ov);
+    $('dlgOk').onclick = async () => {
+        const name = $('dlgName').value.trim() || '新对话';
+        const kb = $('dlgKb')?.value || '';
+        await api('/api/conversations', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid, name, kb_name:kb}) });
+        ov.remove();
+        await loadState();
+        toast('已创建 "'+name+'"');
+    };
+    setTimeout(() => $('dlgName')?.focus(), 100);
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+// ── Chat ──
+function updateSend() {
+    const has = $('msgInput').value.trim();
+    $('sendBtn').classList.toggle('ok', !!has);
+    $('sendBtn').disabled = !has;
+}
+
+function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 180) + 'px';
+}
+
+function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+}
+
+async function sendMsg() {
+    const inp = $('msgInput');
+    const text = inp.value.trim();
+    if (!text || S.isStreaming) return;
+    const c = S.convs[S.activeCid];
+    if (!c?.kb_name) return toast('请先上传文件', true);
+
+    S.isStreaming = true;
+    S.convs[S.activeCid].messages.push({role:'user', content:text});
+    inp.value = ''; updateSend(); autoResize(inp);
+    renderChat();
+    const aib = appendStreamMsg();
+
+    try {
+        const r = await fetch(API+'/api/chat', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({question:text, session_id:S.sid, conv_id:S.activeCid})
+        });
+        if (!r.ok) { const e = await r.json(); aib.innerHTML = '❌ '+esc(e.error||'失败'); S.isStreaming = false; return; }
+
+        let full = '', src = '';
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, {stream:true});
+            const lines = buf.split('\n'); buf = lines.pop();
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const d = JSON.parse(line.slice(6));
+                    if (d.type === 'sources' && d.sources) {
+                        src = '<div class="src-box"><div class="src-title">📖 引用来源</div>'
+                            + d.sources.map(s=>`<div class="src-item">${esc(s)}</div>`).join('') + '</div>';
+                    } else if (d.type === 'token') {
+                        full += d.content;
+                        aib.innerHTML = toMarkdown(full) + src;
+                        scrollDown();
+                    }
+                } catch(e) {}
+            }
+        }
+        S.convs[S.activeCid].messages.push({role:'assistant', content:full, sources:src});
+    } catch(e) {
+        aib.innerHTML = '❌ '+esc(e.message);
+    }
+    S.isStreaming = false;
+}
+
+function appendStreamMsg() {
+    const el = $('chatInner');
+    const d = E('div', 'msg assistant');
+    d.innerHTML = '<div class="avt">AI</div><div class="bub"><div class="typing"><span></span><span></span><span></span></div></div>';
+    el.appendChild(d);
+    scrollDown();
+    return d.querySelector('.bub');
+}
+
+// Drag & drop
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f) uploadFile(f); });
+document.addEventListener('paste', e => {
+    const items = e.clipboardData?.items;
+    for (const item of items||[]) {
+        if (item.kind === 'file') { e.preventDefault(); uploadFile(item.getAsFile()); return; }
+    }
+});
+
+init();
 </script>
 </body>
 </html>
