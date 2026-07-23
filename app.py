@@ -115,7 +115,7 @@ if active is None:
                         st.rerun()
                     else:
                         st.error(msg)
-        elif uploaded_file:
+        elif uploaded_file and st.session_state.active_kb != uploaded_file.name:
             st.session_state.active_kb = uploaded_file.name
             st.rerun()
 else:
@@ -139,7 +139,7 @@ else:
                 else:
                     if ok:
                         st.rerun()
-        elif new_file:
+        elif new_file and st.session_state.active_kb != new_file.name:
             st.session_state.active_kb = new_file.name
             st.rerun()
 
