@@ -1,4 +1,5 @@
 import re
+import hashlib
 import chromadb
 from chromadb.utils import embedding_functions
 from src.config import logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME, VECTOR_DB_PATH, TOP_K
@@ -13,25 +14,43 @@ STOPWORDS = {
     "可", "以", "能", "够", "得", "地", "也"
 }
 
+_embedding_fn = None
 
-def init_vector_store():
-    try:
-        embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+
+def _get_embedding_fn():
+    global _embedding_fn
+    if _embedding_fn is None:
+        _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=EMBEDDING_MODEL
         )
+    return _embedding_fn
+
+
+def sanitize_collection_name(filename):
+    clean = re.sub(r'[^a-zA-Z0-9_-]', '_', filename)
+    clean = re.sub(r'_+', '_', clean).strip('_') or "kb"
+    suffix = hashlib.md5(filename.encode()).hexdigest()[:8]
+    return f"kb_{clean[:40]}_{suffix}"
+
+
+def init_vector_store(collection_name=None):
+    if collection_name is None:
+        collection_name = COLLECTION_NAME
+    try:
+        embedding_fn = _get_embedding_fn()
         chroma_client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
         try:
-            collection = chroma_client.get_collection(    COLLECTION_NAME)
+            collection = chroma_client.get_collection(collection_name)
             if collection.count() > 0:
-                logger.info("向量检索已就绪（已缓存）")
+                logger.info("向量检索已就绪（已缓存）: %s", collection_name)
                 return collection, True
             raise Exception("空库")
         except Exception:
             collection = chroma_client.create_collection(
-                name=    COLLECTION_NAME,
+                name=collection_name,
                 embedding_function=embedding_fn
             )
-            logger.info("向量检索已就绪（新库）")
+            logger.info("向量检索已就绪（新库）: %s", collection_name)
             return collection, True
     except Exception as e:
         logger.warning("向量检索不可用，将使用关键词匹配: %s", str(e)[:80])
