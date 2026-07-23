@@ -36,14 +36,29 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helv
 .sidebar-new button { width: 100%; height: 40px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); color: #D1D5DB; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 0 14px; transition: all .2s; }
 .sidebar-new button:hover { background: rgba(255,255,255,0.1); color: #fff; }
 .kb-list { flex: 1; overflow-y: auto; padding: 8px 12px; }
-.kb-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; color: #9CA3AF; font-size: 13px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; transition: all .2s; }
+.kb-item { padding: 8px 12px; border-radius: 8px; cursor: pointer; color: #9CA3AF; font-size: 13px; margin-bottom: 2px; transition: all .2s; }
+.kb-item-inner { display: flex; align-items: center; gap: 4px; }
 .kb-item:hover { background: rgba(255,255,255,0.06); color: #D1D5DB; }
 .kb-item.active { background: rgba(77,107,254,0.12); color: #fff; border-left: 3px solid var(--brand); padding-left: 9px; }
 .kb-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.kb-item .del { opacity: 0; width: 20px; height: 20px; border-radius: 4px; border: none; background: transparent; color: #9CA3AF; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: all .2s; }
-.kb-item:hover .del { opacity: 1; }
-.kb-item .del:hover { background: rgba(239,68,68,0.2); color: #EF4444; }
+.kb-item .name-input { flex: 1; background: rgba(255,255,255,0.1); border: 1px solid var(--brand); border-radius: 4px; color: #fff; font-size: 13px; padding: 2px 6px; outline: none; }
+.kb-item .meta { font-size: 10px; color: #6B7280; }
+.kb-item .act { opacity: 0; width: 22px; height: 22px; border-radius: 4px; border: none; background: transparent; color: #9CA3AF; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center; transition: all .2s; flex-shrink: 0; }
+.kb-item:hover .act { opacity: 1; }
+.kb-item .act:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.kb-item .act.del:hover { background: rgba(239,68,68,0.2); color: #EF4444; }
 .kb-empty { color: #6B7280; font-size: 12px; text-align: center; padding: 24px 8px; }
+
+/* ── Modal ── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 999; display: flex; align-items: center; justify-content: center; }
+.modal { background: #fff; border-radius: 14px; padding: 28px 32px; width: 380px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+.modal h3 { font-size: 18px; margin-bottom: 16px; color: var(--text-primary); }
+.modal input { width: 100%; height: 40px; border: 1px solid var(--border); border-radius: 8px; padding: 0 12px; font-size: 14px; outline: none; }
+.modal input:focus { border-color: var(--brand); }
+.modal .btns { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+.modal .btns button { height: 36px; padding: 0 20px; border-radius: 8px; border: none; font-size: 14px; cursor: pointer; }
+.modal .btn-cancel { background: #F3F4F6; color: var(--text-secondary); }
+.modal .btn-ok { background: var(--brand); color: #fff; }
 
 /* ── Main ── */
 .main { flex: 1; display: flex; flex-direction: column; background: var(--main-bg); height: 100vh; }
@@ -126,7 +141,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helv
         <span>RAGFlow</span>
     </div>
     <div class="sidebar-new">
-        <button onclick="document.getElementById('fileInput').click()">＋ 新建知识库</button>
+        <button onclick="showCreateDialog()">＋ 新建知识库</button>
     </div>
     <div class="kb-list" id="kbList">
         <div class="kb-empty">暂无知识库<br>上传文件开始使用</div>
@@ -146,7 +161,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helv
             <h2>有什么可以帮助你的？</h2>
             <p>上传 PDF / Word / Excel / TXT / Markdown，开始智能问答</p>
             <div class="drop-zone" onclick="document.getElementById('fileInput').click()">
-                <p>📂 点击上传文件</p>
+                <p>📂 点击上传文件创建知识库</p>
                 <p class="sub">支持 PDF, DOCX, XLSX, CSV, TXT, MD</p>
             </div>
         </div>
@@ -164,7 +179,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helv
     </div>
 </main>
 
-<input type="file" class="hidden-file" id="fileInput" accept=".pdf,.txt,.md,.docx,.xlsx,.csv" onchange="uploadFile(this.files[0])">
+<input type="file" class="hidden-file" id="fileInput" accept=".pdf,.txt,.md,.docx,.xlsx,.csv" onchange="uploadFile(this.files[0], activeKb)">
 
 <script>
 const API = '';
@@ -201,34 +216,89 @@ async function refreshKBs() {
 function renderKBs() {
     const el = document.getElementById('kbList');
     if (kbs.length === 0) {
-        el.innerHTML = '<div class="kb-empty">暂无知识库<br>上传文件开始使用</div>';
+        el.innerHTML = '<div class="kb-empty">暂无知识库<br>点击 ＋ 创建</div>';
         return;
     }
-    el.innerHTML = kbs.map(k => `
-        <div class="kb-item ${k.active ? 'active' : ''}" onclick="switchKb('${esc(k.name)}')">
-            <span class="name">${esc(k.name)}</span>
-            <button class="del" onclick="event.stopPropagation();deleteKb('${esc(k.name)}')">✕</button>
-        </div>`).join('');
+    el.innerHTML = kbs.map(k => {
+        const label = k.editing
+            ? `<input class="name-input" value="${esc(k.name)}" onkeydown="renameKb(event,'${esc(k.name)}')" onblur="cancelEdit('${esc(k.name)}')" onclick="event.stopPropagation()" autofocus>`
+            : `<span class="name">${esc(k.name)}</span>`;
+        return `<div class="kb-item ${k.active?'active':''}" onclick="${k.editing?'':'switchKb(\''+esc(k.name)+'\')'}">
+            <div class="kb-item-inner">${label}
+            <span style="flex-shrink:0;display:flex;gap:0;">
+            <button class="act" onclick="event.stopPropagation();startEdit('${esc(k.name)}')" title="重命名">✎</button>
+            <button class="act del" onclick="event.stopPropagation();deleteKb('${esc(k.name)}')">✕</button>
+            </span></div>
+            <div class="meta">${k.file_count} 个文件 · ${Math.round(k.chars/1000)||'<1'}k 字</div>
+            ${k.files&&k.files.length?`<div class="meta">${k.files.map(f=>esc(f)).join(', ')}</div>`:''}
+        </div>`;
+    }).join('');
 }
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
-async function uploadFile(file) {
+function showCreateDialog() {
+    const d = document.createElement('div');
+    d.className = 'modal-overlay';
+    d.innerHTML = `<div class="modal"><h3>新建知识库</h3>
+        <input id="newKbName" placeholder="输入知识库名称..." onkeydown="if(event.key==='Enter')createEmptyKb()" autofocus>
+        <p style="font-size:12px;color:#9CA3AF;margin-top:6px;">创建后可上传多个文件</p>
+        <div class="btns"><button class="btn-cancel" onclick="this.closest('.modal-overlay').remove()">取消</button>
+        <button class="btn-ok" onclick="createEmptyKb()">创建</button></div></div>`;
+    d.onclick = e => { if (e.target === d) d.remove(); };
+    document.body.appendChild(d);
+    setTimeout(()=>document.getElementById('newKbName').focus(), 100);
+}
+async function createEmptyKb() {
+    const inp = document.getElementById('newKbName');
+    const name = inp.value.trim();
+    if (!name) return toast('名称不能为空', true);
+    const r = await fetch(API + '/api/kb-create', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({session_id:sessionId, name})
+    });
+    if (!r.ok) { const e = await r.json(); return toast(e.error, true); }
+    document.querySelector('.modal-overlay')?.remove();
+    await refreshKBs();
+    toast(`✅ 已创建 "${name}"（可上传文件）`);
+}
+function startEdit(name) {
+    kbs.find(k => k.name === name).editing = true;
+    renderKBs();
+}
+async function renameKb(e, oldName) {
+    if (e.key !== 'Enter') return;
+    const newName = e.target.value.trim();
+    if (!newName || newName === oldName) { cancelEdit(oldName); return; }
+    const r = await fetch(API + `/api/kbs/${encodeURIComponent(oldName)}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({session_id:sessionId, new_name:newName})
+    });
+    if (!r.ok) { const err = await r.json(); toast(err.error, true); return; }
+    await refreshKBs();
+}
+function cancelEdit(name) {
+    const kb = kbs.find(k => k.name === name);
+    if (kb) { kb.editing = false; renderKBs(); }
+}
+
+async function uploadFile(file, kbName) {
     if (!file) return;
     const form = new FormData();
     form.append('file', file);
     form.append('session_id', sessionId);
+    if (kbName) form.append('kb_name', kbName);
     try {
         const r = await fetch(API + '/api/kbs', { method: 'POST', body: form });
         if (!r.ok) { const e = await r.json(); return toast(e.error, true); }
         const d = await r.json();
         if (d.session_id !== sessionId) { sessionId = d.session_id; localStorage.setItem('ragflow_sid', sessionId); }
         await refreshKBs();
-        toast(`✅ ${d.name} 加载成功，${d.chars} 字符`);
+        toast(`${d.is_new?'✅ 创建':'📎 追加到'} "${d.name}"，${d.chars} 字符`);
     } catch (e) { toast('上传失败: ' + e.message, true); }
     document.getElementById('fileInput').value = '';
 }
 async function switchKb(name) {
-    await fetch(API + '/api/kbs/switch', {
+    await fetch(API + '/api/kb-switch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, kb_name: name })
