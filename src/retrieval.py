@@ -15,6 +15,7 @@ STOPWORDS = {
 }
 
 _embedding_fn = None
+_chroma_client = None
 
 
 def _get_embedding_fn():
@@ -24,6 +25,13 @@ def _get_embedding_fn():
             model_name=EMBEDDING_MODEL
         )
     return _embedding_fn
+
+
+def _get_client():
+    global _chroma_client
+    if _chroma_client is None:
+        _chroma_client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
+    return _chroma_client
 
 
 def sanitize_collection_name(filename):
@@ -38,7 +46,7 @@ def init_vector_store(collection_name=None):
         collection_name = COLLECTION_NAME
     try:
         embedding_fn = _get_embedding_fn()
-        chroma_client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
+        chroma_client = _get_client()
         try:
             collection = chroma_client.get_collection(collection_name)
             if collection.count() > 0:

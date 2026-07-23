@@ -62,7 +62,8 @@ with st.sidebar:
     c1, c2 = st.columns([4, 1])
     c1.markdown("### 🚀 RAGFlow")
     if c2.button("＋", help="新建知识库", use_container_width=True):
-        st.session_state._upload_trigger = True
+        st.session_state._nav_upload = True
+        st.rerun()
 
     st.divider()
 
@@ -103,7 +104,7 @@ if active is None:
             "上传文件", type=SUPPORTED_TYPES,
             label_visibility="collapsed", key="home_upload"
         )
-        if uploaded_file:
+        if uploaded_file and uploaded_file.name not in st.session_state.kbs:
             with st.spinner("正在解析文件..."):
                 try:
                     ok, msg = _add_kb(uploaded_file)
@@ -111,10 +112,12 @@ if active is None:
                     st.error(f"加载失败: {e}")
                 else:
                     if ok:
-                        st.success(msg)
                         st.rerun()
                     else:
                         st.error(msg)
+        elif uploaded_file:
+            st.session_state.active_kb = uploaded_file.name
+            st.rerun()
 else:
     st.caption(f"📄 {active_kb}")
 
@@ -127,7 +130,7 @@ else:
             "选择文件", type=SUPPORTED_TYPES,
             label_visibility="collapsed", key="inline_upload"
         )
-        if new_file:
+        if new_file and new_file.name not in st.session_state.kbs:
             with st.spinner("正在解析..."):
                 try:
                     ok, msg = _add_kb(new_file)
@@ -135,8 +138,10 @@ else:
                     st.error(f"加载失败: {e}")
                 else:
                     if ok:
-                        st.success(msg)
                         st.rerun()
+        elif new_file:
+            st.session_state.active_kb = new_file.name
+            st.rerun()
 
     if prompt := st.chat_input("输入你的问题...", key="chat_input"):
         with st.chat_message("user"):
