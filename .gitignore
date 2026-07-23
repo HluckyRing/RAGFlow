@@ -13,8 +13,8 @@ __pycache__/
 *.pyo
 
 # 向量数据库缓存
-chroma_db_web/
 chroma_db/
+chroma_db_web/
 
 # IDE 配置
 .idea/
