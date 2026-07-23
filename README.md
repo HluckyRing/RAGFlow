@@ -1,4 +1,4 @@
-# 📚 Local PDF RAG Q&A System（本地PDF知识库问答系统）
+# 🚀 RAGFlow — 本地 PDF 知识库问答系统
 
 基于 **RAG（检索增强生成）** 架构，实现了一个完全本地化、支持多轮对话的 PDF 智能问答工具。系统通过 **HyDE（假设性文档检索）** 提升召回率，并强制大模型**引用原文**，确保回答可追溯、可验证。
 
@@ -26,5 +26,5 @@ MODEL_NAME="deepseek-v4-flash"
 
 ### 1. 克隆仓库
 ```bash
-git clone https://github.com/HluckyRing/ai_rag_project
-cd ai_rag_project
+git clone https://github.com/HluckyRing/RAGFlow
+cd RAGFlow
