@@ -352,13 +352,10 @@ async function uploadFile(file) {
         document.getElementById(tid)?.remove();
 
         const cid = d.conv_id;
-        if (!S.convs[cid]) {
-            S.convs[cid] = { id: cid, name: '', created_at: Date.now()/1000, messages: [], files: [] };
-        }
-        const cd = await api(`/api/conversations/${cid}?session_id=${S.sid}`);
-        S.convs[cid].name = cd.name;
-        S.convs[cid].messages = cd.messages || [];
-        S.convs[cid].files = cd.files || [];
+        S.convs[cid] = {
+            id: cid, name: d.conv_name, created_at: Date.now()/1000,
+            messages: d.messages || [], files: d.files || []
+        };
         S.activeCid = cid;
         renderSidebar();
         refreshView();

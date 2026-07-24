@@ -260,7 +260,12 @@ async def upload_file(file: UploadFile = File(...), session_id: str = "", conv_i
     _rebuild_collection(conv)
     _save_state(sid)
 
-    return {"conv_id": conv_id, "file_name": file_name, "file_count": len(conv["files"])}
+    return {
+        "conv_id": conv_id, "file_name": file_name, "file_count": len(conv["files"]),
+        "conv_name": conv["name"],
+        "files": [{"file_name": f["file_name"]} for f in conv["files"]],
+        "messages": conv.get("messages", []),
+    }
 
 
 @app.post("/api/chat")
