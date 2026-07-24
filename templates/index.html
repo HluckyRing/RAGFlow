@@ -187,10 +187,42 @@ async function loadState() {
         const cd = await api(`/api/conversations/${S.activeCid}?session_id=${S.sid}`);
         S.convs[S.activeCid].messages = cd.messages || [];
         S.convs[S.activeCid].files = cd.files || [];
-        showChat();
-    } else {
-        showEmpty();
     }
+    refreshView();
+}
+
+function refreshView() {
+    const c = S.activeCid ? S.convs[S.activeCid] : null;
+    if (!c) { showEmpty(); return; }
+    const hasFiles = (c.files||[]).length > 0;
+    if (hasFiles) { showChat(); }
+    else { showWelcome(c.name); }
+}
+
+function showWelcome(name) {
+    $('emptyState').classList.remove('hidden');
+    $('chatInner').classList.add('hidden');
+    $('inputArea').classList.add('hidden');
+    $('fileBar').classList.add('hidden');
+    $('fileBadge').classList.add('hidden');
+    $('emptyTitle').textContent = '📂 ' + (name || '新对话');
+    $('emptyDesc').textContent = '上传文件创建知识库，开始智能问答';
+    $('topName').textContent = name || '对话';
+}
+
+function showChat() {
+    const c = S.convs[S.activeCid];
+    $('emptyState').classList.add('hidden');
+    $('chatInner').classList.remove('hidden');
+    $('inputArea').classList.remove('hidden');
+    $('topName').textContent = c.name || '对话';
+    const fc = (c.files||[]).length;
+    if (fc) {
+        $('fileBadge').textContent = fc + ' 个文件';
+        $('fileBadge').classList.remove('hidden');
+        $('fileBar').classList.remove('hidden');
+    }
+    renderChat();
 }
 
 function renderSidebar() {
@@ -233,19 +265,6 @@ function showEmpty() {
     $('topName').textContent = 'RAGFlow'; $('fileBadge').classList.add('hidden');
 }
 
-function showChat() {
-    $('emptyState').classList.add('hidden'); $('chatInner').classList.remove('hidden');
-    $('inputArea').classList.remove('hidden');
-    const c = S.convs[S.activeCid];
-    if (c) {
-        $('topName').textContent = c.name || '对话';
-        const fc = (c.files||[]).length;
-        if (fc) { $('fileBadge').textContent = fc + ' 个文件'; $('fileBadge').classList.remove('hidden'); $('fileBar').classList.remove('hidden'); }
-        else { $('fileBadge').classList.add('hidden'); $('fileBar').classList.add('hidden'); }
-    }
-    renderChat();
-}
-
 // ── Actions ──
 async function createNewConv() {
     const d = await api('/api/conversations', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid}) });
@@ -259,7 +278,7 @@ async function switchConv(id) {
     const cd = await api(`/api/conversations/${id}?session_id=${S.sid}`);
     S.convs[id].messages = cd.messages || [];
     S.convs[id].files = cd.files || [];
-    showChat();
+    refreshView();
     renderSidebar();
 }
 

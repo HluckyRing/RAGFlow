@@ -230,7 +230,7 @@ async def upload_file(file: UploadFile = File(...), session_id: str = "", conv_i
         cname = _conv_cname(cid)
         collection, use_vector = init_vector_store(cname)
         conv = {
-            "id": cid, "name": file_name, "created_at": time.time(),
+            "id": cid, "name": time.strftime("%m-%d %H:%M"), "created_at": time.time(),
             "files": [], "full_text": "",
             "collection": collection, "use_vector": use_vector,
             "messages": [], "_cname": cname,
