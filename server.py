@@ -179,14 +179,6 @@ async def upload_file(file: UploadFile = File(...), session_id: str = "", kb_nam
 
     name = kb_name.strip() if kb_name.strip() else file.filename
     kb, is_new = _register_kb(sid, name, full_text, file.filename)
-
-    if is_new:
-        cid = uuid.uuid4().hex[:12]
-        sess["conversations"][cid] = {
-            "id": cid, "name": name, "kb_name": name,
-            "messages": [], "created_at": time.time(),
-        }
-        sess["active_conv"] = cid
     _save_state(sid)
     return {"session_id": sid, "kb_name": name, "is_new": is_new, "chars": len(full_text)}
 
