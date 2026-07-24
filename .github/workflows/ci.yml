@@ -1,0 +1,31 @@
+name: RAGFlow CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt --quiet
+
+      - name: Verify imports
+        run: |
+          python -c "from src.config import client, logger; print('config OK')"
+          python -c "from src.loaders import load_file; print('loaders OK')"
+          python -c "from src.pdf_ingestion import split_text; print('split OK')"
+          python -c "from src.retrieval import init_vector_store, sanitize_collection_name; print('retrieval OK')"
+          python -c "from src.llm import resolve_query, retrieve_and_build_context, stream_answer; print('llm OK')"
+          python -c "import py_compile; py_compile.compile('server.py', doraise=True); print('server OK')"
