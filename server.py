@@ -286,8 +286,11 @@ async def chat(request: Request):
 
     history = conv.get("messages", [])
     search_query = resolve_query(question, history)
+    file_count = len(conv.get("files", []))
+    dynamic_top_k = max(10, file_count * 3)
     context, sources = retrieve_and_build_context(
-        search_query, conv["full_text"], conv["collection"], conv["use_vector"]
+        search_query, conv["full_text"], conv["collection"], conv["use_vector"],
+        top_k=dynamic_top_k
     )
     if not context:
         return JSONResponse({"error": "未找到相关内容"}, status_code=400)

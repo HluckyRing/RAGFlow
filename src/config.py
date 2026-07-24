@@ -28,8 +28,8 @@ DATA_DIR = os.getenv("DATA_DIR", "data")
 
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
-TOP_K = int(os.getenv("TOP_K", "5"))
-MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "3000"))
+TOP_K = int(os.getenv("TOP_K", "10"))
+MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "8000"))
 VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./chroma_db")
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)

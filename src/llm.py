@@ -25,8 +25,8 @@ def resolve_query(question, history):
     return question
 
 
-def retrieve_and_build_context(question, full_text, collection, use_vector):
-    chunks = hyde_retrieve(question, collection, full_text, use_vector)
+def retrieve_and_build_context(question, full_text, collection, use_vector, top_k=None):
+    chunks = hyde_retrieve(question, collection, full_text, use_vector, top_k=top_k)
     if not chunks:
         return "", []
     context = "\n\n".join(chunks)
