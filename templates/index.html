@@ -313,7 +313,13 @@ function confirmDelete(id, name) {
     btns[1].onclick = async () => {
         ov.remove();
         await api(`/api/conversations/${id}?session_id=${S.sid}`, { method:'DELETE' });
-        await loadState();
+        delete S.convs[id];
+        if (S.activeCid === id) {
+            const remaining = Object.keys(S.convs);
+            S.activeCid = remaining[0] || null;
+        }
+        renderSidebar();
+        refreshView();
         toast('已删除');
     };
 }
