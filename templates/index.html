@@ -202,7 +202,10 @@ async function loadState() {
 
 function refreshView() {
     const c = S.activeCid ? S.convs[S.activeCid] : null;
-    if (!c) { showEmpty(); return; }
+    if (!c) {
+        showWelcome(null);
+        return;
+    }
     const hasFiles = (c.files||[]).length > 0;
     if (hasFiles) { showChat(); }
     else { showWelcome(c.name); }
@@ -214,9 +217,9 @@ function showWelcome(name) {
     $('inputArea').classList.add('hidden');
     $('fileBar').classList.add('hidden');
     $('fileBadge').classList.add('hidden');
-    $('emptyTitle').textContent = '📂 ' + (name || '新对话');
+    $('emptyTitle').textContent = name ? '📂 ' + name : 'RAGFlow';
     $('emptyDesc').textContent = '上传文件创建知识库，开始智能问答';
-    $('topName').textContent = name || '对话';
+    $('topName').textContent = name || 'RAGFlow';
 }
 
 function showChat() {
@@ -267,18 +270,11 @@ function renderChat() {
 
 function scrollDown() { const a = $('chatArea'); setTimeout(() => a.scrollTop = a.scrollHeight, 50); }
 
-function showEmpty() {
-    $('emptyState').classList.remove('hidden'); $('chatInner').classList.add('hidden');
-    $('inputArea').classList.add('hidden'); $('fileBar').classList.add('hidden');
-    $('emptyTitle').textContent = 'RAGFlow'; $('emptyDesc').textContent = '上传文件创建知识库，开始智能问答';
-    $('topName').textContent = 'RAGFlow'; $('fileBadge').classList.add('hidden');
-}
-
 // ── Actions ──
 async function createNewConv() {
-    const d = await api('/api/conversations', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid}) });
-    if (d.session_id) { S.sid = d.session_id; localStorage.ragflow_sid = S.sid; }
-    await loadState();
+    S.activeCid = null;
+    showWelcome('新对话');
+    renderSidebar();
 }
 
 async function switchConv(id) {
