@@ -67,10 +67,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .empty-state .drop-zone p{font-size:14px;color:var(--text-primary)}
 .empty-state .drop-zone .sub{color:var(--text-secondary);font-size:12px;margin-top:6px}
 
-.src-box{margin-top:8px;padding:10px 14px;background:#F9FAFB;border-radius:10px;font-size:12px;color:var(--text-secondary);border:1px solid var(--border)}
-.src-box .src-title{font-weight:600;color:var(--text-primary);margin-bottom:6px}
-.src-box .src-item{padding:4px 0;border-bottom:1px solid var(--border);font-size:12px}
-.src-box .src-item:last-child{border:none}
 
 .file-bar{padding:8px 24px 0;flex-shrink:0}
 .file-bar .file-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:#fff;font-size:12px;color:var(--text-secondary);cursor:pointer;transition:all .2s}
@@ -273,7 +269,7 @@ function renderChat() {
         const d = document.createElement('div'); d.className = 'msg ' + (m.role==='user'?'user':'assistant');
         if (m.role === 'assistant') { const a = document.createElement('div'); a.className = 'avt'; a.textContent = 'AI'; d.appendChild(a); }
         const b = document.createElement('div'); b.className = 'bub';
-        b.innerHTML = m.role === 'user' ? esc(m.content) : toMd(m.content) + (m.sources||'');
+        b.innerHTML = m.role === 'user' ? esc(m.content) : toMd(m.content);
         d.appendChild(b); el.appendChild(d);
     });
     scrollDown();
@@ -419,7 +415,7 @@ async function sendMsg() {
         });
         if (!r.ok) { const e = await r.json(); aib.innerHTML = '❌ '+esc(e.error||'失败'); S.isStreaming = false; return; }
 
-        let full='', src='';
+        let full='';
         const reader = r.body.getReader(); const dec = new TextDecoder(); let buf='';
         while(true) {
             const {done,value} = await reader.read(); if (done) break;
@@ -428,12 +424,11 @@ async function sendMsg() {
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
                 try { const d = JSON.parse(line.slice(6));
-                    if (d.type==='sources'&&d.sources) src = '<div class="src-box"><div class="src-title">📖 引用来源</div>'+d.sources.map(s=>`<div class="src-item">${esc(s)}</div>`).join('')+'</div>';
-                    else if (d.type==='token') { full += d.content; aib.innerHTML = toMd(full) + src; scrollDown(); }
+                    if (d.type==='token') { full += d.content; aib.innerHTML = toMd(full); scrollDown(); }
                 } catch(e) {}
             }
         }
-        c.messages.push({role:'assistant', content:full, sources:src});
+        c.messages.push({role:'assistant', content:full});
     } catch(e) { aib.innerHTML = '❌ '+esc(e.message); }
     S.isStreaming = false;
 }

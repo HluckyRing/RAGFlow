@@ -300,7 +300,6 @@ async def chat(request: Request):
 
     async def generate():
         full_answer = ""
-        yield f"data: {json.dumps({'type': 'sources', 'sources': [s[:300] for s in sources]})}\n\n"
         for token in stream_answer(question, context, history):
             full_answer += token
             yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
