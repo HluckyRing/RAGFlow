@@ -308,12 +308,13 @@ async function saveEdit(e, id) {
 
 function confirmDelete(id, name) {
     const ov = document.createElement('div'); ov.className = 'modal-overlay';
-    ov.innerHTML = `<div class="modal"><h3>删除对话</h3><p>确定要删除"${esc(name)}"及其所有上传文件吗？此操作不可恢复。</p>
-        <div class="modal-btns"><button class="btn-cancel" onclick="this.closest('.modal-overlay').remove()">取消</button>
-        <button class="btn-danger" id="delOk">确认删除</button></div></div>`;
+    ov.innerHTML = `<div class="modal"><h3>删除对话</h3><p>确定要删除"${esc(name)}"及其所有文件吗？此操作不可恢复。</p>
+        <div class="modal-btns"><button class="btn-cancel">取消</button><button class="btn-danger">确认删除</button></div></div>`;
     ov.onclick = e => { if (e.target === ov) ov.remove(); };
     document.body.appendChild(ov);
-    document.getElementById('delOk').onclick = async () => {
+    const btns = ov.querySelectorAll('button');
+    btns[0].onclick = () => ov.remove();
+    btns[1].onclick = async () => {
         ov.remove();
         await api(`/api/conversations/${id}?session_id=${S.sid}`, { method:'DELETE' });
         await loadState();
@@ -332,31 +333,25 @@ async function triggerUpload() {
 }
 
 async function uploadFile(file) {
-    if (S.isStreaming) return;
-    if (!S.activeCid) {
-        await createNewConv();
-    }
-    const convId = S.activeCid;
-    if (!convId) return toast('请先创建对话', true);
-
+    if (S.isStreaming || !file) return;
     const form = new FormData();
     form.append('file', file);
     form.append('session_id', S.sid);
-    form.append('conv_id', convId);
+    if (S.activeCid) form.append('conv_id', S.activeCid);
 
     const tid = toast('⏳ 文件解析中，请稍候...', false, 0);
-    const timer = setTimeout(() => { if (document.getElementById(tid)) document.getElementById(tid).textContent = '⏳ 仍在解析中...'; }, 8000);
+    const timer = setTimeout(() => { const t = document.getElementById(tid); if (t) t.textContent = '⏳ 仍在解析中...'; }, 8000);
 
     try {
-        await api('/api/upload', { method:'POST', body:form });
+        const d = await api('/api/upload', { method:'POST', body:form });
         clearTimeout(timer);
         document.getElementById(tid)?.remove();
         await loadState();
-        toast(`✅ 已添加 "${file.name}"`);
+        toast(`✅ 已添加 "${d.file_name}"`);
     } catch(e) {
         clearTimeout(timer);
         document.getElementById(tid)?.remove();
-        toast(e.message || '上传超时，请重试', true);
+        toast(e.message || '上传失败', true);
     }
 }
 
