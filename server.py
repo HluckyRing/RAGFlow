@@ -319,4 +319,10 @@ async def get_messages(conv_id: str, session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
+    try:
+        from pyngrok import ngrok
+        tunnel = ngrok.connect(8080, "http")
+        print(f"\n  🌐 公网地址: {tunnel.public_url}\n")
+    except Exception as e:
+        print(f"\n  ⚠️  ngrok 未配置: {e}\n  💡 局域网地址: http://{__import__('socket').gethostbyname(__import__('socket').gethostname())}:8080\n")
     uvicorn.run(app, host="0.0.0.0", port=8080)
