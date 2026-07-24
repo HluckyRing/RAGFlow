@@ -189,7 +189,9 @@ async function init() {
 
 async function loadState() {
     const d = await api(`/api/state?session_id=${S.sid}`);
-    S.convs = {}; (d.conversations||[]).forEach(c => S.convs[c.id] = { ...c, messages: [], files: [] });
+    const convs = {};
+    (d.conversations||[]).forEach(c => convs[c.id] = { id: c.id, name: c.name, created_at: c.created_at, messages: [], files: [] });
+    S.convs = convs;
     S.activeCid = d.active_conv;
     renderSidebar();
     if (S.activeCid && S.convs[S.activeCid]) {
@@ -348,7 +350,18 @@ async function uploadFile(file) {
         const d = await api('/api/upload', { method:'POST', body:form });
         clearTimeout(timer);
         document.getElementById(tid)?.remove();
-        await loadState();
+
+        const cid = d.conv_id;
+        if (!S.convs[cid]) {
+            S.convs[cid] = { id: cid, name: '', created_at: Date.now()/1000, messages: [], files: [] };
+        }
+        const cd = await api(`/api/conversations/${cid}?session_id=${S.sid}`);
+        S.convs[cid].name = cd.name;
+        S.convs[cid].messages = cd.messages || [];
+        S.convs[cid].files = cd.files || [];
+        S.activeCid = cid;
+        renderSidebar();
+        refreshView();
         toast(`✅ 已添加 "${d.file_name}"`);
     } catch(e) {
         clearTimeout(timer);
