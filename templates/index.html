@@ -5,11 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RAGFlow</title>
 <style>
-:root {
-    --brand: #4D6BFE; --sidebar-bg: #1E2130; --main-bg: #FFFFFF;
-    --input-bg: #F9FAFB; --bubble-user: #4D6BFE; --bubble-ai: #F9FAFB;
-    --text-primary: #1F2937; --text-secondary: #6B7280; --border: #E5E7EB;
-}
+:root{--brand:#4D6BFE;--sidebar-bg:#1E2130;--main-bg:#FFFFFF;--input-bg:#F9FAFB;--bubble-user:#4D6BFE;--bubble-ai:#F9FAFB;--text-primary:#1F2937;--text-secondary:#6B7280;--border:#E5E7EB}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:var(--text-primary);height:100vh;overflow:hidden}
 ::-webkit-scrollbar{width:6px}
@@ -26,21 +22,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .sidebar-new button{width:100%;height:40px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:#D1D5DB;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:all .2s}
 .sidebar-new button:hover{background:rgba(255,255,255,.1);color:#fff}
 .conv-list{flex:1;overflow-y:auto;padding:4px 12px}
-.conv-item{padding:8px 12px;border-radius:8px;cursor:pointer;color:#9CA3AF;font-size:13px;margin-bottom:2px;transition:all .2s;display:flex;align-items:center;gap:4px}
+.conv-item{padding:6px 10px;border-radius:8px;cursor:pointer;color:#9CA3AF;font-size:13px;margin-bottom:2px;transition:all .2s;display:flex;align-items:center;gap:4px}
 .conv-item:hover{background:rgba(255,255,255,.06);color:#D1D5DB}
-.conv-item.active{background:rgba(77,107,254,.12);color:#fff;border-left:3px solid var(--brand);padding-left:9px}
+.conv-item.active{background:rgba(77,107,254,.12);color:#fff;border-left:3px solid var(--brand);padding-left:7px}
 .conv-item .cname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.conv-item .cdel{width:22px;height:22px;border-radius:4px;border:none;background:transparent;color:transparent;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s}
-.conv-item:hover .cdel{color:#9CA3AF}
-.conv-item .cdel:hover{background:rgba(239,68,68,.15);color:#EF4444}
+.conv-item .cname-inp{flex:1;background:rgba(255,255,255,.12);border:1px solid var(--brand);border-radius:4px;color:#fff;font-size:13px;padding:2px 6px;outline:none}
+.conv-item .cact{width:22px;height:22px;border-radius:4px;border:none;background:transparent;color:transparent;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s}
+.conv-item:hover .cact{color:#9CA3AF}
+.conv-item .cact:hover{color:#fff;background:rgba(255,255,255,.1)}
+.conv-item .cact.del:hover{background:rgba(239,68,68,.2);color:#EF4444}
 .empty-hint{color:#6B7280;font-size:12px;text-align:center;padding:24px 8px}
 
 .main{flex:1;display:flex;flex-direction:column;background:var(--main-bg);height:100vh;min-width:0}
-.topbar{height:52px;padding:0 20px;display:flex;align-items:center;border-bottom:1px solid var(--border);flex-shrink:0;gap:8px}
+.topbar{height:52px;padding:0 20px;display:flex;align-items:center;border-bottom:1px solid var(--border);flex-shrink:0;gap:10px}
 .topbar .tbtn{width:32px;height:32px;border-radius:6px;border:none;background:transparent;color:var(--text-secondary);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center}
 .topbar .tbtn:hover{background:#F3F4F6}
-.topbar .kb-tag{font-size:12px;padding:3px 10px;border-radius:10px;background:#EEF2FF;color:var(--brand);font-weight:500}
-.topbar .no-kb{font-size:13px;color:var(--text-secondary)}
+.topbar .conv-name{font-size:14px;font-weight:600;color:var(--text-primary)}
+.topbar .file-badge{font-size:12px;padding:2px 10px;border-radius:10px;background:#EEF2FF;color:var(--brand)}
 
 .chat-area{flex:1;overflow-y:auto;padding:20px 0}
 .chat-inner{max-width:800px;margin:0 auto;padding:0 24px}
@@ -62,7 +60,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .typing span:nth-child(2){animation-delay:-.16s}
 @keyframes bounce{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
 
-.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-secondary);gap:16px}
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-secondary);gap:12px}
 .empty-state h2{font-size:22px;color:var(--text-primary)}
 .empty-state .drop-zone{border:2px dashed var(--border);border-radius:16px;padding:40px 56px;text-align:center;cursor:pointer;transition:all .3s;background:var(--input-bg)}
 .empty-state .drop-zone:hover{border-color:var(--brand);background:#EEF2FF}
@@ -73,6 +71,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .src-box .src-title{font-weight:600;color:var(--text-primary);margin-bottom:6px}
 .src-box .src-item{padding:4px 0;border-bottom:1px solid var(--border);font-size:12px}
 .src-box .src-item:last-child{border:none}
+
+.file-bar{padding:8px 24px 0;flex-shrink:0}
+.file-bar .file-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:#fff;font-size:12px;color:var(--text-secondary);cursor:pointer;transition:all .2s}
+.file-bar .file-btn:hover{background:#F3F4F6}
+.file-list{max-width:800px;margin:8px auto 0;padding:8px 12px;background:#F9FAFB;border-radius:8px;border:1px solid var(--border);font-size:12px;color:var(--text-secondary)}
+.file-list .fl-item{padding:3px 0}
+.file-list .fl-item:before{content:'📄 '}
 
 .input-area{padding:12px 24px 20px;flex-shrink:0}
 .input-row{max-width:800px;margin:0 auto;display:flex;align-items:flex-end;gap:8px;background:var(--input-bg);border:1px solid var(--border);border-radius:16px;padding:6px;transition:border-color .2s}
@@ -88,34 +93,35 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:999;display:flex;align-items:center;justify-content:center}
 .modal{background:#fff;border-radius:14px;padding:28px 32px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,.15)}
 .modal h3{font-size:18px;margin-bottom:12px}
-.modal p{font-size:12px;color:#9CA3AF;margin-bottom:12px}
-.modal-row{display:flex;gap:8px;margin-bottom:12px}
-.modal-row input,.modal-row select{flex:1;height:38px;border:1px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px;outline:none;background:#fff}
-.modal-row input:focus,.modal-row select:focus{border-color:var(--brand)}
+.modal p{font-size:13px;color:var(--text-secondary);margin-bottom:20px}
 .modal-btns{display:flex;gap:8px;justify-content:flex-end}
 .modal-btns button{height:36px;padding:0 20px;border-radius:8px;border:none;font-size:14px;cursor:pointer}
 .btn-cancel{background:#F3F4F6;color:var(--text-secondary)}
 .btn-ok{background:var(--brand);color:#fff}
+.btn-danger{background:#EF4444;color:#fff}
 
 .toast{position:fixed;top:20px;right:20px;background:#1F2937;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;z-index:9999;animation:slideIn .3s ease}
 .toast.error{background:#EF4444}
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
-
 .hidden{display:none!important}
 </style>
 </head>
 <body>
+
 <div class="app">
 <aside class="sidebar" id="sidebar">
     <div class="sidebar-logo"><div class="icon">R</div><span>RAGFlow</span></div>
-        <div class="sidebar-new"><button onclick="createNewConv()">＋ 新对话</button></div>
+    <div class="sidebar-new"><button onclick="createNewConv()">＋ 新对话</button></div>
     <div class="conv-list" id="convList"><div class="empty-hint">暂无对话</div></div>
 </aside>
+
 <main class="main">
     <header class="topbar">
         <button class="tbtn" onclick="toggleSidebar()">☰</button>
-        <span id="topbarInfo" class="no-kb">未绑定知识库</span>
+        <span class="conv-name" id="topName">RAGFlow</span>
+        <span class="file-badge hidden" id="fileBadge"></span>
     </header>
+
     <div class="chat-area" id="chatArea">
         <div class="empty-state" id="emptyState">
             <h2 id="emptyTitle">RAGFlow</h2>
@@ -124,10 +130,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
                 <p>📂 点击或拖拽上传文件</p>
                 <p class="sub">支持 PDF, DOCX, XLSX, CSV, TXT, MD</p>
             </div>
-            <button onclick="createNewConv()" style="padding:8px 20px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px">＋ 新建空白对话</button>
         </div>
         <div class="chat-inner hidden" id="chatInner"></div>
     </div>
+
+    <div class="file-bar hidden" id="fileBar">
+        <button class="file-btn" onclick="toggleFileList()">📂 查看文件</button>
+        <div class="file-list hidden" id="fileList"></div>
+    </div>
+
     <div class="input-area hidden" id="inputArea">
         <div class="input-row">
             <textarea id="msgInput" placeholder="给 RAGFlow 发送消息..." rows="1"
@@ -138,27 +149,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
     </div>
 </main>
 </div>
+
 <input type="file" id="fileInput" style="display:none" accept=".pdf,.txt,.md,.docx,.xlsx,.csv">
 
 <script>
 const API = '';
-let S = { sid: localStorage.ragflow_sid||'', convs: {}, activeCid: null, kbs: [], isStreaming: false };
+let S = { sid: localStorage.ragflow_sid||'', convs: {}, activeCid: null, isStreaming: false, editingCid: null };
 
 const $ = id => document.getElementById(id);
-const E = (tag, cls, html) => { const e = document.createElement(tag); if(cls) e.className = cls; if(html) e.innerHTML = html; return e; };
-
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function toast(m, err) { const t = document.createElement('div'); t.className = 'toast'+(err?' error':''); t.textContent = m; document.body.appendChild(t); setTimeout(() => t.remove(), 3000); }
-function toMarkdown(text) {
-    return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-        .replace(/\n/g, '<br>');
+function toMd(t) {
+    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/```(\w*)\n([\s\S]*?)```/g,'<pre><code>$2</code></pre>')
+        .replace(/`([^`]+)`/g,'<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g,'<em>$1</em>').replace(/\n/g,'<br>');
 }
 
-// ── API ──
 async function api(url, opts) {
     const r = await fetch(API + url, opts);
     if (!r.ok) { const e = await r.json().catch(()=>({error:'请求失败'})); throw new Error(e.error||e.detail||'请求失败'); }
@@ -169,104 +177,123 @@ async function init() {
     if (!S.sid) { const d = await api('/api/session'); S.sid = d.session_id; localStorage.ragflow_sid = S.sid; }
     await loadState();
 }
+
 async function loadState() {
     const d = await api(`/api/state?session_id=${S.sid}`);
-    S.convs = {}; (d.conversations||[]).forEach(c => S.convs[c.id] = {...c, messages:[]});
-    S.activeCid = d.active_conv || (d.conversations?.[0]?.id) || null;
-    S.kbs = d.kbs || [];
-    render();
-    if (S.activeCid && S.convs[S.activeCid]) {
-        const md = await api(`/api/conversations/${S.activeCid}/messages?session_id=${S.sid}`);
-        S.convs[S.activeCid].messages = md.messages || [];
-        renderChat();
-    }
-}
-
-// ── Render ──
-function render() {
+    S.convs = {}; (d.conversations||[]).forEach(c => S.convs[c.id] = { ...c, messages: [], files: [] });
+    S.activeCid = d.active_conv;
     renderSidebar();
-    renderTopbar();
-    if (!S.activeCid) { showEmpty(); return; }
-    const c = S.convs[S.activeCid];
-    if (!c || !c.kb_name) { showUploadPage(c?.name||'新对话'); return; }
-    $('emptyState').classList.add('hidden');
-    $('chatInner').classList.remove('hidden');
-    $('inputArea').classList.remove('hidden');
-    renderChat();
+    if (S.activeCid && S.convs[S.activeCid]) {
+        const cd = await api(`/api/conversations/${S.activeCid}?session_id=${S.sid}`);
+        S.convs[S.activeCid].messages = cd.messages || [];
+        S.convs[S.activeCid].files = cd.files || [];
+        showChat();
+    } else {
+        showEmpty();
+    }
 }
 
 function renderSidebar() {
     const el = $('convList');
-    const convs = Object.values(S.convs).sort((a,b)=>(b.created_at||0)-(a.created_at||0));
+    const convs = Object.values(S.convs).sort((a,b) => (b.created_at||0) - (a.created_at||0));
     if (!convs.length) { el.innerHTML = '<div class="empty-hint">暂无对话<br>点击 ＋ 创建</div>'; return; }
-    el.innerHTML = convs.map(c => `
-        <div class="conv-item${c.id===S.activeCid?' active':''}" onclick="switchConv('${c.id}')">
-            <span class="cname" title="${esc(c.name)}">${c.kb_name?'📄 ':''}${esc(c.name)}</span>
-            <button class="cdel" onclick="event.stopPropagation();deleteConv('${c.id}')">✕</button>
-        </div>`).join('');
-}
-
-function renderTopbar() {
-    const c = S.activeCid ? S.convs[S.activeCid] : null;
-    $('topbarInfo').innerHTML = c?.kb_name
-        ? `<span class="kb-tag">📄 ${esc(c.kb_name)}</span>`
-        : '<span class="no-kb">未绑定知识库 — 上传文件开始</span>';
-}
-
-function showEmpty() {
-    $('emptyState').classList.remove('hidden');
-    $('chatInner').classList.add('hidden');
-    $('inputArea').classList.add('hidden');
-    $('emptyTitle').textContent = 'RAGFlow';
-    $('emptyDesc').textContent = '上传文件创建知识库，开始智能问答';
-    $('topbarInfo').innerHTML = '<span class="no-kb">未选择对话</span>';
-}
-
-function showUploadPage(name) {
-    $('emptyState').classList.remove('hidden');
-    $('chatInner').classList.add('hidden');
-    $('inputArea').classList.add('hidden');
-    $('emptyTitle').textContent = '📂 ' + (name||'');
-    $('emptyDesc').textContent = '此对话还没有知识库，上传文件开始';
-    $('topbarInfo').innerHTML = '<span class="no-kb">未绑定知识库</span>';
+    el.innerHTML = convs.map(c => {
+        const isEdit = S.editingCid === c.id;
+        const nameHtml = isEdit
+            ? `<input class="cname-inp" value="${esc(c.name)}" onkeydown="saveEdit(event,'${c.id}')" onblur="saveEdit(null,'${c.id}')" onclick="event.stopPropagation()" autofocus>`
+            : `<span class="cname" title="${esc(c.name)}">${esc(c.name)}</span>`;
+        return `<div class="conv-item${c.id===S.activeCid?' active':''}" onclick="${isEdit?'':'switchConv(\''+c.id+'\')'}">
+            ${nameHtml}
+            <button class="cact" onclick="event.stopPropagation();startEdit('${c.id}')" title="重命名">✎</button>
+            <button class="cact del" onclick="event.stopPropagation();confirmDelete('${c.id}','${esc(c.name)}')" title="删除">✕</button>
+        </div>`;
+    }).join('');
 }
 
 function renderChat() {
     const c = S.convs[S.activeCid];
     if (!c) return;
-    const msgs = c.messages || [];
-    const el = $('chatInner');
-    el.innerHTML = '';
-    if (!msgs.length && !c.kb_name) return;
-    msgs.forEach(m => {
-        const d = E('div', 'msg ' + (m.role === 'user' ? 'user' : 'assistant'));
-        if (m.role === 'assistant') d.appendChild(E('div', 'avt', 'AI'));
-        const b = E('div', 'bub');
-        b.innerHTML = m.role === 'user' ? esc(m.content) : toMarkdown(m.content) + (m.sources||'');
-        d.appendChild(b);
-        el.appendChild(d);
+    const el = $('chatInner'); el.innerHTML = '';
+    (c.messages||[]).forEach(m => {
+        const d = document.createElement('div'); d.className = 'msg ' + (m.role==='user'?'user':'assistant');
+        if (m.role === 'assistant') { const a = document.createElement('div'); a.className = 'avt'; a.textContent = 'AI'; d.appendChild(a); }
+        const b = document.createElement('div'); b.className = 'bub';
+        b.innerHTML = m.role === 'user' ? esc(m.content) : toMd(m.content) + (m.sources||'');
+        d.appendChild(b); el.appendChild(d);
     });
     scrollDown();
 }
 
-function scrollDown() {
-    const a = $('chatArea');
-    setTimeout(() => a.scrollTop = a.scrollHeight, 50);
+function scrollDown() { const a = $('chatArea'); setTimeout(() => a.scrollTop = a.scrollHeight, 50); }
+
+function showEmpty() {
+    $('emptyState').classList.remove('hidden'); $('chatInner').classList.add('hidden');
+    $('inputArea').classList.add('hidden'); $('fileBar').classList.add('hidden');
+    $('emptyTitle').textContent = 'RAGFlow'; $('emptyDesc').textContent = '上传文件创建知识库，开始智能问答';
+    $('topName').textContent = 'RAGFlow'; $('fileBadge').classList.add('hidden');
+}
+
+function showChat() {
+    $('emptyState').classList.add('hidden'); $('chatInner').classList.remove('hidden');
+    $('inputArea').classList.remove('hidden');
+    const c = S.convs[S.activeCid];
+    if (c) {
+        $('topName').textContent = c.name || '对话';
+        const fc = (c.files||[]).length;
+        if (fc) { $('fileBadge').textContent = fc + ' 个文件'; $('fileBadge').classList.remove('hidden'); $('fileBar').classList.remove('hidden'); }
+        else { $('fileBadge').classList.add('hidden'); $('fileBar').classList.add('hidden'); }
+    }
+    renderChat();
 }
 
 // ── Actions ──
+async function createNewConv() {
+    const d = await api('/api/conversations', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid}) });
+    if (d.session_id) { S.sid = d.session_id; localStorage.ragflow_sid = S.sid; }
+    await loadState();
+}
+
 async function switchConv(id) {
     await api(`/api/conversations/${id}/switch`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid}) });
     S.activeCid = id;
-    const md = await api(`/api/conversations/${id}/messages?session_id=${S.sid}`);
-    S.convs[id].messages = md.messages || [];
-    render();
+    const cd = await api(`/api/conversations/${id}?session_id=${S.sid}`);
+    S.convs[id].messages = cd.messages || [];
+    S.convs[id].files = cd.files || [];
+    showChat();
+    renderSidebar();
 }
 
-async function deleteConv(id) {
-    await api(`/api/conversations/${id}?session_id=${S.sid}`, { method:'DELETE' });
-    await loadState();
+function startEdit(id) { S.editingCid = id; renderSidebar(); }
+
+async function saveEdit(e, id) {
+    if (e && e.key !== 'Enter') return;
+    const inp = document.querySelector('.cname-inp');
+    const name = inp ? inp.value.trim() : '';
+    S.editingCid = null;
+    if (name && name !== S.convs[id]?.name) {
+        await api(`/api/conversations/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid, name}) });
+        S.convs[id].name = name;
+    }
+    renderSidebar();
+    if (S.activeCid === id) $('topName').textContent = S.convs[id]?.name || '对话';
 }
+
+function confirmDelete(id, name) {
+    const ov = document.createElement('div'); ov.className = 'modal-overlay';
+    ov.innerHTML = `<div class="modal"><h3>删除对话</h3><p>确定要删除"${esc(name)}"及其所有上传文件吗？此操作不可恢复。</p>
+        <div class="modal-btns"><button class="btn-cancel" onclick="this.closest('.modal-overlay').remove()">取消</button>
+        <button class="btn-danger" id="delOk">确认删除</button></div></div>`;
+    ov.onclick = e => { if (e.target === ov) ov.remove(); };
+    document.body.appendChild(ov);
+    document.getElementById('delOk').onclick = async () => {
+        ov.remove();
+        await api(`/api/conversations/${id}?session_id=${S.sid}`, { method:'DELETE' });
+        await loadState();
+        toast('已删除');
+    };
+}
+
+async function deleteConv(id) { await confirmDelete(id, S.convs[id]?.name||'对话'); }
 
 function toggleSidebar() { $('sidebar').classList.toggle('collapsed'); }
 
@@ -276,32 +303,29 @@ async function triggerUpload() {
     inp.click();
 }
 
-async function createNewConv() {
-    await api('/api/conversations', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid, name:'新对话', kb_name:''}) });
-    await loadState();
-}
-
-function showCreateDialog() {} // unused, kept for compatibility
-
 async function uploadFile(file) {
     const form = new FormData();
     form.append('file', file);
     form.append('session_id', S.sid);
-    const c = S.activeCid ? S.convs[S.activeCid] : null;
-    if (c?.kb_name) form.append('kb_name', c.kb_name);
+    if (S.activeCid) form.append('conv_id', S.activeCid);
     try {
         const d = await api('/api/upload', { method:'POST', body:form });
         if (d.session_id !== S.sid) { S.sid = d.session_id; localStorage.ragflow_sid = S.sid; }
-        if (!S.activeCid) {
-            await api('/api/conversations', { method:'POST', headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({session_id:S.sid, name:d.kb_name, kb_name:d.kb_name}) });
-        } else if (!c.kb_name) {
-            await api(`/api/conversations/${S.activeCid}/bind-kb`, { method:'POST', headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({session_id:S.sid, kb_name:d.kb_name}) });
-        }
         await loadState();
-        toast(`${d.is_new?'✅ 创建':'📎 追加'} "${d.kb_name}"`);
+        toast(`📎 已添加 "${d.file_name}"（共 ${d.file_count} 个文件）`);
     } catch(e) { toast(e.message, true); }
+}
+
+function toggleFileList() {
+    const c = S.convs[S.activeCid];
+    if (!c?.files?.length) return;
+    const el = $('fileList');
+    if (el.classList.contains('hidden')) {
+        el.innerHTML = c.files.map(f => `<div class="fl-item">${esc(f.file_name)}</div>`).join('');
+        el.classList.remove('hidden');
+    } else {
+        el.classList.add('hidden');
+    }
 }
 
 // ── Chat ──
@@ -310,82 +334,58 @@ function updateSend() {
     $('sendBtn').classList.toggle('ok', !!has);
     $('sendBtn').disabled = !has;
 }
-
-function autoResize(el) {
-    el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 180) + 'px';
-}
-
-function handleKey(e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
-}
+function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 180) + 'px'; }
+function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); } }
 
 async function sendMsg() {
-    const inp = $('msgInput');
-    const text = inp.value.trim();
+    const inp = $('msgInput'); const text = inp.value.trim();
     if (!text || S.isStreaming) return;
     const c = S.convs[S.activeCid];
-    if (!c?.kb_name) return toast('请先上传文件', true);
+    if (!c?.files?.length) return toast('请先上传文件', true);
 
     S.isStreaming = true;
-    S.convs[S.activeCid].messages.push({role:'user', content:text});
-    inp.value = ''; updateSend(); autoResize(inp);
-    renderChat();
+    c.messages.push({role:'user', content:text});
+    inp.value = ''; updateSend(); autoResize(inp); renderChat();
     const aib = appendStreamMsg();
 
     try {
-        const r = await fetch(API+'/api/chat', {
-            method:'POST', headers:{'Content-Type':'application/json'},
+        const r = await fetch(API+'/api/chat',{
+            method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({question:text, session_id:S.sid, conv_id:S.activeCid})
         });
         if (!r.ok) { const e = await r.json(); aib.innerHTML = '❌ '+esc(e.error||'失败'); S.isStreaming = false; return; }
 
-        let full = '', src = '';
-        const reader = r.body.getReader();
-        const dec = new TextDecoder();
-        let buf = '';
-        while (true) {
-            const {done, value} = await reader.read();
-            if (done) break;
-            buf += dec.decode(value, {stream:true});
+        let full='', src='';
+        const reader = r.body.getReader(); const dec = new TextDecoder(); let buf='';
+        while(true) {
+            const {done,value} = await reader.read(); if (done) break;
+            buf += dec.decode(value,{stream:true});
             const lines = buf.split('\n'); buf = lines.pop();
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
-                try {
-                    const d = JSON.parse(line.slice(6));
-                    if (d.type === 'sources' && d.sources) {
-                        src = '<div class="src-box"><div class="src-title">📖 引用来源</div>'
-                            + d.sources.map(s=>`<div class="src-item">${esc(s)}</div>`).join('') + '</div>';
-                    } else if (d.type === 'token') {
-                        full += d.content;
-                        aib.innerHTML = toMarkdown(full) + src;
-                        scrollDown();
-                    }
+                try { const d = JSON.parse(line.slice(6));
+                    if (d.type==='sources'&&d.sources) src = '<div class="src-box"><div class="src-title">📖 引用来源</div>'+d.sources.map(s=>`<div class="src-item">${esc(s)}</div>`).join('')+'</div>';
+                    else if (d.type==='token') { full += d.content; aib.innerHTML = toMd(full) + src; scrollDown(); }
                 } catch(e) {}
             }
         }
-        S.convs[S.activeCid].messages.push({role:'assistant', content:full, sources:src});
-    } catch(e) {
-        aib.innerHTML = '❌ '+esc(e.message);
-    }
+        c.messages.push({role:'assistant', content:full, sources:src});
+    } catch(e) { aib.innerHTML = '❌ '+esc(e.message); }
     S.isStreaming = false;
 }
 
 function appendStreamMsg() {
     const el = $('chatInner');
-    const d = E('div', 'msg assistant');
+    const d = document.createElement('div'); d.className = 'msg assistant';
     d.innerHTML = '<div class="avt">AI</div><div class="bub"><div class="typing"><span></span><span></span><span></span></div></div>';
-    el.appendChild(d);
-    scrollDown();
+    el.appendChild(d); scrollDown();
     return d.querySelector('.bub');
 }
 
-// Drag & drop
 document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f) uploadFile(f); });
 document.addEventListener('paste', e => {
-    const items = e.clipboardData?.items;
-    for (const item of items||[]) {
+    for (const item of e.clipboardData?.items||[]) {
         if (item.kind === 'file') { e.preventDefault(); uploadFile(item.getAsFile()); return; }
     }
 });
