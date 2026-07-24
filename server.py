@@ -37,9 +37,13 @@ def _save_state(session_id):
             "collection_name": c.get("_cname", _conv_cname(cid)),
         }
     data["conversations"] = convs_out
+    tmp = STATE_FILE + ".tmp"
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, STATE_FILE)
     except Exception as e:
         logger.warning("save state failed: %s", e)
 
@@ -120,7 +124,7 @@ async def create_session():
 
 @app.get("/api/state")
 async def get_state(session_id: str):
-    _, sess = _ensure_session(session_id)
+    sid, sess = _ensure_session(session_id)
     convs = []
     for cid, c in sess.get("conversations", {}).items():
         convs.append({
