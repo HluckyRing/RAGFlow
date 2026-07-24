@@ -346,12 +346,10 @@ async function handleFileSelect(e) {
 
 async function uploadFile(file) {
     if (S.isStreaming || !file) return;
-    console.log('uploadFile: activeCid =', S.activeCid);
     const form = new FormData();
     form.append('file', file);
     form.append('session_id', S.sid);
-    if (S.activeCid) { form.append('conv_id', S.activeCid); console.log('conv_id appended:', S.activeCid); }
-    else { console.log('NO activeCid, will create new conversation'); }
+    if (S.activeCid) form.append('conv_id', S.activeCid);
 
     const tid = toast('⏳ 文件解析中，请稍候...', false, 0);
     const timer = setTimeout(() => { const t = document.getElementById(tid); if (t) t.textContent = '⏳ 仍在解析中...'; }, 8000);

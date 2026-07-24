@@ -4,6 +4,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 from src.config import logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME, VECTOR_DB_PATH, TOP_K
 from src.pdf_ingestion import split_text
+from src.prompts import HYDE_SYSTEM_PROMPT
 
 STOPWORDS = {
     "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一",
@@ -89,8 +90,7 @@ def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
         hyde_response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system",
-                 "content": "你是一个知识渊博的助手，请针对用户问题，写一段可能包含答案的假设性文档片段。不必太详细，但要包含关键概念。"},
+                {"role": "system", "content": HYDE_SYSTEM_PROMPT},
                 {"role": "user", "content": f"问题：{question}\n请生成一段假设性答案："}
             ],
             temperature=0.5,

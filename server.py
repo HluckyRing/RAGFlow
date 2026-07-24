@@ -319,10 +319,15 @@ async def get_messages(conv_id: str, session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
+    public_url = None
     try:
         from pyngrok import ngrok
+        token = os.getenv("NGROK_AUTHTOKEN")
+        if token:
+            ngrok.set_auth_token(token)
         tunnel = ngrok.connect(8080, "http")
-        print(f"\n  🌐 公网地址: {tunnel.public_url}\n")
+        public_url = tunnel.public_url
+        logger.info("ngrok 公网地址: %s", public_url)
     except Exception as e:
-        print(f"\n  ⚠️  ngrok 未配置: {e}\n  💡 局域网地址: http://{__import__('socket').gethostbyname(__import__('socket').gethostname())}:8080\n")
+        logger.info("ngrok 未配置 (%s)，使用局域网模式", str(e)[:60])
     uvicorn.run(app, host="0.0.0.0", port=8080)
