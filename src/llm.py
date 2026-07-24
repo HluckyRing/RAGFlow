@@ -35,33 +35,6 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
     return context, chunks[:3]
 
 
-def get_answer(question, full_text, collection, use_vector, history):
-    search_query = resolve_query(question, history)
-    context, source_chunks = retrieve_and_build_context(search_query, full_text, collection, use_vector)
-    if not context:
-        return "（未找到任何相关内容）", []
-
-    system_prompt = QA_SYSTEM_PROMPT_TEMPLATE.format(context=context)
-    history_messages = [msg for msg in history[-5:] if msg["role"] in ["user", "assistant"]]
-    llm_messages = [
-        {"role": "system", "content": system_prompt},
-        *history_messages,
-        {"role": "user", "content": question}
-    ]
-
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=llm_messages,
-            temperature=0.2
-        )
-        answer = response.choices[0].message.content
-    except Exception as e:
-        logger.error("LLM 调用失败: %s", e)
-        answer = f"调用大模型失败：{str(e)}"
-
-    return answer, source_chunks
-
 
 def stream_answer(question, context, history):
     system_prompt = QA_SYSTEM_PROMPT_TEMPLATE.format(context=context)

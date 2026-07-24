@@ -24,7 +24,6 @@ MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v4-flash")
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "knowledge_base")
-DATA_DIR = os.getenv("DATA_DIR", "data")
 
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))

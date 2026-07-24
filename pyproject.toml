@@ -8,7 +8,6 @@ version = "1.0.0"
 description = "Local PDF Knowledge Base Q&A System using RAG with HyDE retrieval"
 requires-python = ">=3.10"
 dependencies = [
-    "streamlit>=1.59.0",
     "chromadb>=1.5.0",
     "sentence-transformers>=5.6.0",
     "pypdf>=6.14.0",
@@ -19,6 +18,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",
     "python-multipart>=0.0.12",
+    "pyngrok>=8.1.0",
 ]
 
 [project.optional-dependencies]
