@@ -2,7 +2,7 @@ import json
 import uuid
 import os
 import time
-from fastapi import FastAPI, UploadFile, File, Request
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 
 from src.config import logger
@@ -219,7 +219,7 @@ async def get_conversation(conv_id: str, session_id: str):
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...), session_id: str = "", conv_id: str = ""):
+async def upload_file(file: UploadFile = File(...), session_id: str = Form(""), conv_id: str = Form("")):
     sid, sess = _ensure_session(session_id)
 
     try:
