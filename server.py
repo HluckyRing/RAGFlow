@@ -81,8 +81,9 @@ def _load_state(session_id):
 
 
 def _ensure_session(session_id):
-    if not session_id or session_id not in sessions:
+    if not session_id:
         session_id = uuid.uuid4().hex[:16]
+    if session_id not in sessions:
         sessions[session_id] = {"conversations": {}, "active_conv": None}
         _load_state(session_id)
     sess = sessions[session_id]
