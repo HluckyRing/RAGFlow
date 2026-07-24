@@ -216,6 +216,12 @@ async def get_conversation(conv_id: str, session_id: str):
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...), session_id: str = "", conv_id: str = ""):
     sid, sess = _ensure_session(session_id)
+    if not conv_id:
+        return JSONResponse({"error": "请先创建或选择对话"}, status_code=400)
+
+    conv = sess.get("conversations", {}).get(conv_id)
+    if not conv:
+        return JSONResponse({"error": "对话不存在"}, status_code=404)
 
     try:
         file_text = load_file(file)
@@ -225,24 +231,6 @@ async def upload_file(file: UploadFile = File(...), session_id: str = "", conv_i
         return JSONResponse({"error": "文件内容为空"}, status_code=400)
 
     file_name = file.filename
-    if not conv_id:
-        cid = uuid.uuid4().hex[:12]
-        cname = _conv_cname(cid)
-        collection, use_vector = init_vector_store(cname)
-        conv = {
-            "id": cid, "name": time.strftime("%m-%d %H:%M"), "created_at": time.time(),
-            "files": [], "full_text": "",
-            "collection": collection, "use_vector": use_vector,
-            "messages": [], "_cname": cname,
-        }
-        sess["conversations"][cid] = conv
-        sess["active_conv"] = cid
-        conv_id = cid
-
-    conv = sess["conversations"].get(conv_id)
-    if not conv:
-        return JSONResponse({"error": "对话不存在"}, status_code=404)
-
     existing = next((f for f in conv.get("files", []) if f["file_name"] == file_name), None)
     if existing:
         existing["file_text"] = file_text
@@ -254,8 +242,7 @@ async def upload_file(file: UploadFile = File(...), session_id: str = "", conv_i
     _rebuild_collection(conv)
     _save_state(sid)
 
-    file_count = len(conv["files"])
-    return {"session_id": sid, "conv_id": conv_id, "file_name": file_name, "file_count": file_count}
+    return {"file_name": file_name, "file_count": len(conv["files"])}
 
 
 @app.post("/api/chat")

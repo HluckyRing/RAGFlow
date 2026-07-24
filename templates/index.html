@@ -158,7 +158,16 @@ let S = { sid: localStorage.ragflow_sid||'', convs: {}, activeCid: null, isStrea
 
 const $ = id => document.getElementById(id);
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function toast(m, err) { const t = document.createElement('div'); t.className = 'toast'+(err?' error':''); t.textContent = m; document.body.appendChild(t); setTimeout(() => t.remove(), 3000); }
+function toast(m, err, dur) {
+    const t = document.createElement('div');
+    t.className = 'toast' + (err ? ' error' : '');
+    t.textContent = m;
+    const id = 'toast_' + Date.now();
+    t.id = id;
+    document.body.appendChild(t);
+    if (dur !== 0) setTimeout(() => t.remove(), dur || 3000);
+    return id;
+}
 function toMd(t) {
     return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/```(\w*)\n([\s\S]*?)```/g,'<pre><code>$2</code></pre>')
@@ -323,16 +332,32 @@ async function triggerUpload() {
 }
 
 async function uploadFile(file) {
+    if (S.isStreaming) return;
+    if (!S.activeCid) {
+        await createNewConv();
+    }
+    const convId = S.activeCid;
+    if (!convId) return toast('请先创建对话', true);
+
     const form = new FormData();
     form.append('file', file);
     form.append('session_id', S.sid);
-    if (S.activeCid) form.append('conv_id', S.activeCid);
+    form.append('conv_id', convId);
+
+    const tid = toast('⏳ 文件解析中，请稍候...', false, 0);
+    const timer = setTimeout(() => { if (document.getElementById(tid)) document.getElementById(tid).textContent = '⏳ 仍在解析中...'; }, 8000);
+
     try {
-        const d = await api('/api/upload', { method:'POST', body:form });
-        if (d.session_id !== S.sid) { S.sid = d.session_id; localStorage.ragflow_sid = S.sid; }
+        await api('/api/upload', { method:'POST', body:form });
+        clearTimeout(timer);
+        document.getElementById(tid)?.remove();
         await loadState();
-        toast(`📎 已添加 "${d.file_name}"（共 ${d.file_count} 个文件）`);
-    } catch(e) { toast(e.message, true); }
+        toast(`✅ 已添加 "${file.name}"`);
+    } catch(e) {
+        clearTimeout(timer);
+        document.getElementById(tid)?.remove();
+        toast(e.message || '上传超时，请重试', true);
+    }
 }
 
 function toggleFileList() {
