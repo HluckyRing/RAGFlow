@@ -315,7 +315,8 @@ function confirmDelete(id, name) {
     btns[1].onclick = async () => {
         ov.remove();
         await api(`/api/conversations/${id}?session_id=${S.sid}`, { method:'DELETE' });
-        delete S.convs[id];
+        const { [id]: _, ...rest } = S.convs;
+        S.convs = rest;
         if (S.activeCid === id) {
             const remaining = Object.keys(S.convs);
             S.activeCid = remaining[0] || null;
