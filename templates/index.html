@@ -126,7 +126,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
         <div class="empty-state" id="emptyState">
             <h2 id="emptyTitle">RAGFlow</h2>
             <p id="emptyDesc">上传文件创建知识库，开始智能问答</p>
-            <div class="drop-zone" onclick="triggerUpload()">
+            <div class="drop-zone" onclick="document.getElementById('fileInput').click()">
                 <p>📂 点击或拖拽上传文件</p>
                 <p class="sub">支持 PDF, DOCX, XLSX, CSV, TXT, MD</p>
             </div>
@@ -143,14 +143,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
         <div class="input-row">
             <textarea id="msgInput" placeholder="给 RAGFlow 发送消息..." rows="1"
                 oninput="autoResize(this);updateSend()" onkeydown="handleKey(event)"></textarea>
-            <button class="ubtn" onclick="triggerUpload()" title="上传文件">📎</button>
+            <button class="ubtn" onclick="document.getElementById('fileInput').click()" title="上传文件">📎</button>
             <button class="sbtn" id="sendBtn" onclick="sendMsg()">↑</button>
         </div>
     </div>
 </main>
 </div>
 
-<input type="file" id="fileInput" style="display:none" accept=".pdf,.txt,.md,.docx,.xlsx,.csv">
+<input type="file" id="fileInput" style="display:none" accept=".pdf,.txt,.md,.docx,.xlsx,.csv" onchange="handleFileSelect(event)">
 
 <script>
 const API = '';
@@ -331,10 +331,11 @@ async function deleteConv(id) { await confirmDelete(id, S.convs[id]?.name||'对�
 
 function toggleSidebar() { $('sidebar').classList.toggle('collapsed'); }
 
-async function triggerUpload() {
-    const inp = $('fileInput');
-    inp.onchange = async () => { if (inp.files[0]) await uploadFile(inp.files[0]); inp.value = ''; };
-    inp.click();
+async function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    await uploadFile(file);
+    e.target.value = '';
 }
 
 async function uploadFile(file) {
