@@ -62,7 +62,6 @@ python src/server.py
 RAGFlow/
 ├── src/
 │   ├── server.py         # FastAPI 服务端（启动入口）
-│   ├── cli.py            # ragflow 命令行入口
 │   ├── config.py         # 环境配置、日志、OpenAI 客户端
 │   ├── loaders.py        # 多格式文件加载器
 │   ├── pdf_ingestion.py  # 文本切片

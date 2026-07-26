@@ -100,8 +100,8 @@ def _rebuild_collection(conv):
         ids = collection.get()["ids"]
         if ids:
             collection.delete(ids=ids)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("清理 collection 数据失败: %s", e)
     full_text = conv.get("full_text", "")
     if full_text:
         chunks = split_text(full_text)
@@ -195,8 +195,9 @@ async def delete_conversation(conv_id: str, session_id: str):
             ids = collection.get().get("ids", [])
             if ids:
                 collection.delete(ids=ids)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("删除 collection 数据失败: %s", e)
+
     if sess.get("active_conv") == conv_id:
         remaining = list(sess["conversations"].keys())
         sess["active_conv"] = remaining[0] if remaining else None
@@ -288,7 +289,7 @@ async def chat(request: Request):
     search_query = resolve_query(question, history)
     file_count = len(conv.get("files", []))
     dynamic_top_k = max(10, file_count * 3)
-    context, sources = retrieve_and_build_context(
+    context, _ = retrieve_and_build_context(
         search_query, conv["full_text"], conv["collection"], conv["use_vector"],
         top_k=dynamic_top_k
     )
