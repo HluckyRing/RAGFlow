@@ -1,4 +1,4 @@
-name: Publish
+name: Release
 
 on:
   push:
@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -21,17 +20,6 @@ jobs:
 
       - name: Build wheel
         run: pip install build && python -m build --wheel
-
-      - name: Publish to GitHub Packages
-        run: |
-          pip install twine
-          echo "[distutils]" > ~/.pypirc
-          echo "index-servers = github" >> ~/.pypirc
-          echo "[github]" >> ~/.pypirc
-          echo "repository = https://upload.pkg.github.com/HluckyRing/RAGFlow/" >> ~/.pypirc
-          echo "username = __token__" >> ~/.pypirc
-          echo "password = ${{ secrets.GITHUB_TOKEN }}" >> ~/.pypirc
-          twine upload -r github dist/*.whl
 
       - name: Create Release
         run: gh release create ${{ github.ref_name }} dist/*.whl --title "${{ github.ref_name }}" --generate-notes
