@@ -113,7 +113,7 @@ def _rebuild_collection(conv):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    with open("templates/index.html", encoding="utf-8") as f:
+    with open(os.path.join(os.path.dirname(__file__), "templates", "index.html"), encoding="utf-8") as f:
         return f.read()
 
 

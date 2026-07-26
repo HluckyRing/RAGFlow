@@ -22,7 +22,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -c "import py_compile; py_compile.compile('server.py', doraise=True); print('server OK')"
+          python -c "import py_compile; py_compile.compile('src/server.py', doraise=True); print('server OK')"
           python -c "import py_compile; py_compile.compile('src/config.py', doraise=True); print('config OK')"
           python -c "import py_compile; py_compile.compile('src/loaders.py', doraise=True); print('loaders OK')"
           python -c "import py_compile; py_compile.compile('src/prompts.py', doraise=True); print('prompts OK')"

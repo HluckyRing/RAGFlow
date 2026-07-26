@@ -40,23 +40,30 @@ BASE_URL="https://api.deepseek.com"
 MODEL_NAME="deepseek-v4-flash"
 ```
 
-### 1. 克隆仓库
+### 1. 安装
+
+```bash
+pip install ragflow-1.0.0-py3-none-any.whl
+```
+
+或从源码运行：
 
 ```bash
 git clone https://github.com/HluckyRing/RAGFlow
 cd RAGFlow
-```
-
-### 2. 安装依赖
-
-```bash
 pip install -r requirements.txt
 ```
 
-### 3. 启动
+### 2. 启动
 
 ```bash
-python server.py
+ragflow
+```
+
+或直接：
+
+```bash
+python src/server.py
 ```
 
 打开浏览器访问 `http://localhost:8080`。
@@ -65,16 +72,16 @@ python server.py
 
 ```
 RAGFlow/
-├── server.py             # FastAPI 服务端（启动入口）
-├── templates/
-│   └── index.html        # 前端界面
 ├── src/
+│   ├── server.py         # FastAPI 服务端（启动入口）
+│   ├── cli.py            # ragflow 命令行入口
 │   ├── config.py         # 环境配置、日志、OpenAI 客户端
 │   ├── loaders.py        # 多格式文件加载器
 │   ├── pdf_ingestion.py  # 文本切片
 │   ├── retrieval.py      # 向量检索 + 关键词回退 + HyDE
 │   ├── llm.py            # 指代消解 + 多轮对话 + 流式答案生成
-│   └── prompts.py        # Prompt 模板
+│   ├── prompts.py        # Prompt 模板
+│   └── templates/        # 前端界面
 ├── legacy/               # 历史版本归档
 ├── requirements.txt
 └── pyproject.toml
