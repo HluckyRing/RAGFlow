@@ -1,0 +1,29 @@
+name: RAGFlow CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install core deps
+        run: pip install python-dotenv openai pypdf python-docx openpyxl fastapi uvicorn python-multipart --quiet
+
+      - name: Syntax check
+        run: |
+          python -c "import py_compile; py_compile.compile('server.py', doraise=True); print('server OK')"
+          python -c "import py_compile; py_compile.compile('src/config.py', doraise=True); print('config OK')"
+          python -c "import py_compile; py_compile.compile('src/loaders.py', doraise=True); print('loaders OK')"
+          python -c "import py_compile; py_compile.compile('src/prompts.py', doraise=True); print('prompts OK')"
+          python -c "import py_compile; py_compile.compile('src/pdf_ingestion.py', doraise=True); print('split OK')"
