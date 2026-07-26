@@ -40,13 +40,7 @@ BASE_URL="https://api.deepseek.com"
 MODEL_NAME="deepseek-v4-flash"
 ```
 
-### 1. 安装
-
-```bash
-pip install ragflow-1.0.0-py3-none-any.whl
-```
-
-或从源码运行：
+### 1. 安装依赖
 
 ```bash
 git clone https://github.com/HluckyRing/RAGFlow
@@ -55,12 +49,6 @@ pip install -r requirements.txt
 ```
 
 ### 2. 启动
-
-```bash
-ragflow
-```
-
-或直接：
 
 ```bash
 python src/server.py
