@@ -1,0 +1,35 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: pip install build twine --quiet
+
+      - name: Build wheel
+        run: python -m build --wheel
+
+      - name: Publish to GitHub Packages
+        run: twine upload --repository-url https://upload.pkg.github.com/HluckyRing/RAGFlow/ dist/*.whl -u __token__ -p ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release & upload wheel
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+          generate_release_notes: true

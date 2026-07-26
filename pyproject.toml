@@ -1,3 +1,5 @@
+# GitHub Packages 配置
+# 安装方式: pip install ragflow --index-url https://pip.pkg.github.com/HluckyRing/RAGFlow/simple/
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -11,17 +13,6 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "HluckyRing" }]
 keywords = ["rag", "qa", "knowledge-base", "deepseek", "chromadb", "hyde"]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Environment :: Web Environment",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-]
 dependencies = [
     "chromadb>=1.5.0",
     "sentence-transformers>=5.6.0",
@@ -44,7 +35,6 @@ ragflow = "src.cli:main"
 [project.urls]
 Homepage = "https://github.com/HluckyRing/RAGFlow"
 Repository = "https://github.com/HluckyRing/RAGFlow"
-Issues = "https://github.com/HluckyRing/RAGFlow/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
