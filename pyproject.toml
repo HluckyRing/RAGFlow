@@ -1,16 +1,8 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "ragflow"
 version = "1.0.0"
-description = "RAGFlow — 多格式知识库问答系统。上传 PDF/Word/Excel/TXT，基于 HyDE 检索和 DeepSeek 大模型进行智能问答。"
+description = "RAGFlow — 多格式知识库问答系统"
 requires-python = ">=3.10"
-readme = "README.md"
-license = { text = "MIT" }
-authors = [{ name = "HluckyRing" }]
-keywords = ["rag", "qa", "knowledge-base", "deepseek", "chromadb", "hyde"]
 dependencies = [
     "chromadb>=1.5.0",
     "sentence-transformers>=5.6.0",
@@ -23,20 +15,3 @@ dependencies = [
     "uvicorn>=0.34.0",
     "python-multipart>=0.0.12",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0"]
-
-[project.scripts]
-ragflow = "src.cli:main"
-
-[project.urls]
-Homepage = "https://github.com/HluckyRing/RAGFlow"
-Repository = "https://github.com/HluckyRing/RAGFlow"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
-
-[tool.setuptools.package-data]
-src = ["templates/*"]

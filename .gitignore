@@ -19,11 +19,6 @@ chroma_db_web/
 # 运行时状态
 kb_state.json
 
-# 构建产物
-dist/
-build/
-*.egg-info/
-
 # IDE 配置
 .idea/
 .vscode/
