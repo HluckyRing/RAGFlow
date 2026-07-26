@@ -6,11 +6,11 @@ on:
       - 'v*'
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     permissions:
-      packages: write
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -19,17 +19,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install build tools
-        run: pip install build twine --quiet
-
       - name: Build wheel
-        run: python -m build --wheel
+        run: pip install build && python -m build --wheel
 
       - name: Publish to GitHub Packages
-        run: twine upload --repository-url https://upload.pkg.github.com/HluckyRing/RAGFlow/ dist/*.whl -u __token__ -p ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pip install twine
+          echo "[distutils]" > ~/.pypirc
+          echo "index-servers = github" >> ~/.pypirc
+          echo "[github]" >> ~/.pypirc
+          echo "repository = https://upload.pkg.github.com/HluckyRing/RAGFlow/" >> ~/.pypirc
+          echo "username = __token__" >> ~/.pypirc
+          echo "password = ${{ secrets.GITHUB_TOKEN }}" >> ~/.pypirc
+          twine upload -r github dist/*.whl
 
-      - name: Create Release & upload wheel
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.whl
-          generate_release_notes: true
+      - name: Create Release
+        run: gh release create ${{ github.ref_name }} dist/*.whl --title "${{ github.ref_name }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
