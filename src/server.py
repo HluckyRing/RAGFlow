@@ -2,6 +2,7 @@ import json
 import uuid
 import os
 import time
+import threading
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 
@@ -13,6 +14,7 @@ from src.llm import resolve_query, retrieve_and_build_context, stream_answer
 
 STATE_FILE = "kb_state.json"
 sessions = {}
+_sessions_lock = threading.Lock()
 
 app = FastAPI(title="RAGFlow")
 
@@ -22,21 +24,23 @@ def _conv_cname(conv_id):
 
 
 def _save_state(session_id):
-    sess = sessions.get(session_id)
-    if not sess:
-        return
-    data = {"active_conv": sess.get("active_conv")}
-    convs_out = {}
-    for cid, c in sess.get("conversations", {}).items():
-        convs_out[cid] = {
-            "name": c["name"],
-            "created_at": c["created_at"],
-            "files": [{"file_name": f["file_name"], "file_text": f["file_text"]} for f in c.get("files", [])],
-            "messages": c.get("messages", []),
-            "full_text": c.get("full_text", ""),
-            "collection_name": c.get("_cname", _conv_cname(cid)),
-        }
-    data["conversations"] = convs_out
+    # 先持锁读取数据，释放锁后再做文件 I/O
+    with _sessions_lock:
+        sess = sessions.get(session_id)
+        if not sess:
+            return
+        data = {"active_conv": sess.get("active_conv")}
+        convs_out = {}
+        for cid, c in sess.get("conversations", {}).items():
+            convs_out[cid] = {
+                "name": c["name"],
+                "created_at": c["created_at"],
+                "files": [{"file_name": f["file_name"], "file_text": f["file_text"]} for f in c.get("files", [])],
+                "messages": c.get("messages", []),
+                "full_text": c.get("full_text", ""),
+                "collection_name": c.get("_cname", _conv_cname(cid)),
+            }
+        data["conversations"] = convs_out
     tmp = STATE_FILE + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -54,7 +58,6 @@ def _load_state(session_id):
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        sess = sessions[session_id]
         convs = {}
         for cid, cd in data.get("conversations", {}).items():
             cname = cd.get("collection_name", _conv_cname(cid))
@@ -73,8 +76,10 @@ def _load_state(session_id):
                 "messages": cd.get("messages", []),
                 "_cname": cname,
             }
-        sess["conversations"] = convs
-        sess["active_conv"] = data.get("active_conv")
+        with _sessions_lock:
+            sess = sessions[session_id]
+            sess["conversations"] = convs
+            sess["active_conv"] = data.get("active_conv")
         logger.info("restored %d conversations", len(convs))
     except Exception as e:
         logger.warning("load state failed: %s", e)
@@ -83,11 +88,13 @@ def _load_state(session_id):
 def _ensure_session(session_id):
     if not session_id:
         session_id = uuid.uuid4().hex[:16]
-    if session_id not in sessions:
-        sessions[session_id] = {"conversations": {}, "active_conv": None}
-        _load_state(session_id)
-    sess = sessions[session_id]
-    sess.setdefault("conversations", {})
+    with _sessions_lock:
+        if session_id not in sessions:
+            sessions[session_id] = {"conversations": {}, "active_conv": None}
+    _load_state(session_id)
+    with _sessions_lock:
+        sess = sessions[session_id]
+        sess.setdefault("conversations", {})
     return session_id, sess
 
 
@@ -186,9 +193,13 @@ async def rename_conversation(conv_id: str, request: Request):
 @app.delete("/api/conversations/{conv_id}")
 async def delete_conversation(conv_id: str, session_id: str):
     _, sess = _ensure_session(session_id)
-    if conv_id not in sess.get("conversations", {}):
-        return JSONResponse({"error": "对话不存在"}, status_code=404)
-    conv = sess["conversations"].pop(conv_id)
+    with _sessions_lock:
+        if conv_id not in sess.get("conversations", {}):
+            return JSONResponse({"error": "对话不存在"}, status_code=404)
+        conv = sess["conversations"].pop(conv_id)
+        if sess.get("active_conv") == conv_id:
+            remaining = list(sess["conversations"].keys())
+            sess["active_conv"] = remaining[0] if remaining else None
     try:
         collection = conv.get("collection")
         if collection:
@@ -198,9 +209,6 @@ async def delete_conversation(conv_id: str, session_id: str):
     except Exception as e:
         logger.debug("删除 collection 数据失败: %s", e)
 
-    if sess.get("active_conv") == conv_id:
-        remaining = list(sess["conversations"].keys())
-        sess["active_conv"] = remaining[0] if remaining else None
     _save_state(session_id)
     return {"ok": True}
 

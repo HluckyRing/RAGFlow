@@ -32,3 +32,6 @@ build/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+#claude code 本地配置
+.claude/
