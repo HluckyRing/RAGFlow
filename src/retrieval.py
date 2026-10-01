@@ -66,6 +66,19 @@ def init_vector_store(collection_name=None):
         return None, False
 
 
+def drop_collection(collection_name):
+    """删除整个向量集合（删除对话时调用，避免集合只增不减）。"""
+    if not collection_name:
+        return False
+    try:
+        _get_client().delete_collection(collection_name)
+        logger.info("已删除向量集合: %s", collection_name)
+        return True
+    except Exception as e:
+        logger.warning("删除向量集合失败（%s）: %s", collection_name, str(e)[:80])
+        return False
+
+
 def retrieve_keyword(question, chunks):
     question_words = re.findall(r'[\u4e00-\u9fa5]{2,}', question) + \
                      re.findall(r'[a-zA-Z]{2,}', question.lower())

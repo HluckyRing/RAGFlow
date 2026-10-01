@@ -8,6 +8,8 @@
 - 🔍 **HyDE 检索**：先让 AI 生成"假设性答案"再去向量库匹配，显著提升复杂问题命中率
 - 💬 **多轮对话记忆**：结合历史上下文理解代词（"它"、"这"），避免语义丢失
 - 💾 **状态持久化**：对话和文件数据自动保存，重启不丢失
+- 🔒 **会话隔离**：每个浏览器会话独立存储，互不可见、互不覆盖
+- ✅ **测试覆盖**：`pytest tests -v` 覆盖状态隔离、并发保存、旧数据迁移
 - ⚡ **工程降级**：向量检索不可用时自动切换关键词匹配，保证服务不中断
 
 ## 📋 支持格式
@@ -62,6 +64,7 @@ python src/server.py
 RAGFlow/
 ├── src/
 │   ├── server.py         # FastAPI 服务端（启动入口）
+│   ├── state.py          # 会话状态持久化（按 session_id 隔离）
 │   ├── config.py         # 环境配置、日志、OpenAI 客户端
 │   ├── loaders.py        # 多格式文件加载器
 │   ├── pdf_ingestion.py  # 文本切片
@@ -69,7 +72,10 @@ RAGFlow/
 │   ├── llm.py            # 指代消解 + 多轮对话 + 流式答案生成
 │   ├── prompts.py        # Prompt 模板
 │   └── templates/        # 前端界面
+├── tests/                # pytest 测试
+├── state/                # 会话状态，每个会话一个 JSON 文件（gitignore）
 ├── legacy/               # 历史版本归档
 ├── requirements.txt
+├── requirements-dev.txt
 └── pyproject.toml
 ```

@@ -19,6 +19,8 @@ chroma_db_web/
 # 用户数据
 data/
 kb_state.json
+kb_state.json.migrated
+state/
 
 # 构建产物
 dist/

@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## 项目概述
 
@@ -88,7 +88,7 @@ LLM API 使用 OpenAI 兼容接口，`BASE_URL` + `API_KEY` 决定实际调用�
 
 ## 可用 Skills
 
-Skills 位于 `.claude/skills/` 目录（不入 git），每个 skill 有独立的 `SKILL.md` 文件。
+Skills 位于 `.Codex/skills/` 目录（不入 git），每个 skill 有独立的 `SKILL.md` 文件。
 
 - **brainstorming**: 在任何创造性工作之前必须使用此技能——创建功能、构建组件、添加功能或修改行为。在实现之前先探索用户意图、需求和设计。
 - **chinese-code-review**: 中文 review 沟通参考——话术模板、分级标注（必须修复/建议修改/仅供参考）、国内团队常见反模式应对。仅在用户显式 /chinese-code-review 时调用，不要根据上下文自动触发。
@@ -107,7 +107,7 @@ Skills 位于 `.claude/skills/` 目录（不入 git），每个 skill 有独立�
 - **using-git-worktrees**: 当需要开始与当前工作区隔离的功能开发，或在执行实现计划之前使用——通过原生工具或 git worktree 回退机制确保隔离工作区存在
 - **using-superpowers**: 在开始任何对话时使用——确立如何查找和使用技能，要求在任何响应（包括澄清性问题）之前调用 Skill 工具
 - **verification-before-completion**: 在宣称工作完成、已修复或测试通过之前使用，在提交或创建 PR 之前——必须运行验证命令并确认输出后才能声称成功；始终用证据支撑断言
-- **workflow-runner**: 在 Claude Code / OpenClaw / Cursor 中直接运行 agency-orchestrator YAML 工作流——无需 API key，使用当前会话的 LLM 作为执行引擎。当用户提供 .yaml 工作流文件或要求多角色协作完成任务时触发。
+- **workflow-runner**: 在 Codex / OpenClaw / Cursor 中直接运行 agency-orchestrator YAML 工作流——无需 API key，使用当前会话的 LLM 作为执行引擎。当用户提供 .yaml 工作流文件或要求多角色协作完成任务时触发。
 - **writing-plans**: 当你有规格说明或需求用于多步骤任务时使用，在动手写代码之前
 - **writing-skills**: 当创建新技能、编辑现有技能或在部署前验证技能是否有效时使用
 
