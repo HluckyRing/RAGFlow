@@ -157,7 +157,7 @@ def answer_question(question, full_text):
         context = "（未找到任何相关内容）"
 
     response = client.chat.completions.create(
-        model=os.getenv("MODEL_NAME", "deepseek-v4-flash"),
+        model=os.getenv("MODEL_NAME", "deepseek-flash"),
         messages=[
             {"role": "system", "content": "请严格根据【参考背景】回答问题。如果背景中没有相关信息，请直接说'背景中没有提到相关内容'，不要编造。"},
             {"role": "user", "content": f"【参考背景】：\n{context}\n\n用户问题：{question}"}

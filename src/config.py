@@ -20,7 +20,7 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 API_KEY = os.getenv("API_KEY")
 BASE_URL = os.getenv("BASE_URL")
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v4-flash")
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-flash")
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "knowledge_base")

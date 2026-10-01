@@ -39,7 +39,7 @@
 ```
 API_KEY="sk-你的密钥"
 BASE_URL="https://api.deepseek.com"
-MODEL_NAME="deepseek-v4-flash"
+MODEL_NAME="deepseek-flash"
 ```
 
 ### 1. 安装依赖

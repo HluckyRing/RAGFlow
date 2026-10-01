@@ -61,7 +61,7 @@ python src/server.py            # 直接启动
 ```ini
 API_KEY="sk-xxx"
 BASE_URL="https://api.deepseek.com"
-MODEL_NAME="deepseek-v4-flash"
+MODEL_NAME="deepseek-flash"
 # 可选
 EMBEDDING_MODEL="BAAI/bge-small-zh-v1.5"
 CHUNK_SIZE=600
