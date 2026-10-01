@@ -1,27 +1,46 @@
-import re
 from src.config import logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH
 from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE
 from src.retrieval import hyde_retrieve
+from src.text_utils import content_phrases
 
-STOP_ENTITIES = {
-    "什么", "如何", "为什么", "怎样", "哪个", "哪些", "一个", "这个",
-    "那个", "这些", "那些", "它们", "他们", "她们", "自己", "大家", "咱们"
-}
+# 指代词。刻意不收裸「这」「那」：它们太常见（「这是什么」并不需要指代消解），
+# 收进来只会把无关的上一轮问题拼进检索词。
+PRONOUNS = (
+    "它", "它们", "他", "他们", "她", "她们", "其", "该", "此",
+    "上述", "前面", "刚才", "这个", "那个", "这些", "那些",
+)
+# 这些词里含有指代词，但本身不是指代（「其他指标有哪些」不该触发消解）
+NON_PRONOUN_WORDS = ("其他", "其它", "其余", "其实", "其中", "尤其", "与其")
+MAX_COREF_LENGTH = 15   # 太长的问题一般自带完整上下文
 
 
 def extract_entities(text):
-    words = re.findall(r'[\u4e00-\u9fa5]{2,}', text)
-    return [w for w in words if w not in STOP_ENTITIES]
+    """从上一轮问题里抽出实义片段（「什么是市盈率」→ [「市盈率」]）。"""
+    return content_phrases(text)
 
 
 def resolve_query(question, history):
-    if len(question) < 15 and any(w in question for w in ["它", "这", "其", "那", "她", "他"]):
-        user_msgs = [msg["content"] for msg in history if msg["role"] == "user"]
-        if len(user_msgs) >= 2:
-            prev_q = user_msgs[-2]
-            entities = extract_entities(prev_q)
-            if entities:
-                return " ".join(entities) + " " + question
+    """短问题里出现指代词时，把上一轮问题的实体拼进来，避免语义丢失。
+
+    注意：history 是【尚未包含当前提问】的历史快照（见 server.chat），
+    所以「上一轮用户消息」就是 user_msgs[-1]。
+    """
+    if len(question) >= MAX_COREF_LENGTH:
+        return question
+
+    probe = question
+    for word in NON_PRONOUN_WORDS:
+        probe = probe.replace(word, "")
+    if not any(p in probe for p in PRONOUNS):
+        return question
+
+    user_msgs = [msg["content"] for msg in history if msg["role"] == "user"]
+    if not user_msgs:
+        return question
+
+    entities = extract_entities(user_msgs[-1])
+    if entities:
+        return " ".join(entities) + " " + question
     return question
 
 

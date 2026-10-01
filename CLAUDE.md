@@ -36,8 +36,9 @@ python src/server.py            # 直接启动
 | 文件 | 职责 |
 | --- | --- |
 | `src/config.py` | 环境变量加载、OpenAI 客户端初始化、日志配置、全局常量（CHUNK_SIZE, TOP_K 等） |
-| `src/loaders.py` | 多格式文件加载器，通过 `LOADERS` 字典按扩展名分发，`load_file()` 为统一入口 |
+| `src/loaders.py` | 多格式文件加载器，通过 `LOADERS` 字典按扩展名分发，`load_file()` 为统一入口；`_decode_bytes()` 做多编码回退（utf-8-sig/utf-8/gbk/gb2312/big5/latin-1） |
 | `src/pdf_ingestion.py` | `split_text()` — 按段落切分文本，支持 chunk_size/overlap 可配 |
+| `src/text_utils.py` | 中文文本轻量处理：`strip_question_words()` 剥离疑问词，`content_phrases()` 抽实义片段（指代消解用），`extract_terms()` 生成 2/3-gram（关键词检索用） |
 | `src/retrieval.py` | ChromaDB 向量存储管理 + `hyde_retrieve()` 核心检索（向量检索 → 失败降级关键词匹配） |
 | `src/llm.py` | `resolve_query()` 指代消解（短问题 + 代词时拼接上文实体）+ `stream_answer()` SSE 流式生成 |
 | `src/prompts.py` | HyDE 和 QA 两套 system prompt 模板 |
@@ -46,11 +47,12 @@ python src/server.py            # 直接启动
 
 **关键设计决策**:
 - **HyDE 检索**: 先让 LLM 生成"假设性答案"，用这个答案文本去做向量匹配，比直接用问题检索召回率更高
-- **工程降级链**: 向量检索失败 → 自动切换关键词匹配（正则提取 2+ 字中英文词做词频打分），保证服务不中断
+- **工程降级链**: 向量检索失败 → 自动切换关键词匹配（中文 2/3-gram + 英文词打分，`sqrt(长度)` 归一化）。一条都没命中时返回空，由上层提示「未找到相关内容」，不拿无关段落喂模型。降级时**不再**调用 HyDE
+- **HyDE 按需调用**: 只有 `use_vector` 为真时才生成假设性答案；关键词检索用原始问题（HyDE 生成的长段落不适合做词频匹配）
 - **状态持久化**: 会话和对话数据按 session_id 隔离，存于 `state/<sha1(sid)>.json`。文件名由 sid 哈希派生，客户端传什么都无法写出 STATE_DIR（防路径穿越）。使用 atomic write（写唯一临时文件 → fsync → rename）
 - **会话隔离**: 状态只在会话首次访问时从磁盘加载一次，之后以内存为准；同一会话的「改内存 + 落盘」由每会话 RLock 串行化。缓存和锁都在进程内，因此**只支持单 worker 部署**
 - **旧数据迁移**: 首次遇到「客户端自带、服务端未见过的 sid」时，把旧版 `kb_state.json` 原子改名认领给它（保留为 `kb_state.json.migrated` 便于回滚）；`/api/session` 新发的 sid 不参与认领
-- **多轮对话**: `resolve_query()` 检测代词（它/这/那/其/她/他）且问题 < 15 字符时，从上一轮用户消息提取实体拼接到当前问题
+- **多轮对话**: `resolve_query()` 在问题 < 15 字且含指代词（它/它们/这个/该/上述…，刻意不含裸「这」「那」；含「其他」「其中」等也不算）时，从上一轮用户消息提取实义片段拼到当前问题前。注意 `history` 是**不含当前提问**的快照，所以上一轮就是 `user_msgs[-1]`
 - **ChromaDB**: 使用 PersistentClient 持久化到 `./chroma_db/`，每个对话独立 collection（命名 `kb_{name}_{hash}`）
 - **Embedding 模型**: BAAI/bge-small-zh-v1.5，通过 `HF_ENDPOINT` 环境变量支持 HuggingFace 镜像
 

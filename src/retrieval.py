@@ -5,15 +5,7 @@ from chromadb.utils import embedding_functions
 from src.config import logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME, VECTOR_DB_PATH, TOP_K
 from src.pdf_ingestion import split_text
 from src.prompts import HYDE_SYSTEM_PROMPT
-
-STOPWORDS = {
-    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一",
-    "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有",
-    "看", "好", "自己", "这", "那", "它", "他", "她", "们", "与", "或", "等",
-    "但", "而", "因", "为", "对", "从", "把", "被", "让", "给", "跟", "比",
-    "更", "最", "太", "非常", "十分", "特别", "相当", "比较", "挺", "蛮",
-    "可", "以", "能", "够", "得", "地", "也"
-}
+from src.text_utils import extract_terms
 
 _embedding_fn = None
 _chroma_client = None
@@ -79,26 +71,30 @@ def drop_collection(collection_name):
         return False
 
 
-def retrieve_keyword(question, chunks):
-    question_words = re.findall(r'[\u4e00-\u9fa5]{2,}', question) + \
-                     re.findall(r'[a-zA-Z]{2,}', question.lower())
-    question_words = [w for w in question_words if w not in STOPWORDS]
-    if not question_words:
-        return chunks[:2]
+def retrieve_keyword(question, chunks, top_n=3):
+    """关键词降级检索：中文 2/3-gram + 英文单词打分。
+
+    返回按相关度排序的 chunk；一条都没沾上时返回空列表，由上层提示
+    「未找到相关内容」，而不是拿不相关的段落去喂模型。
+    """
+    terms = extract_terms(question)
+    if not terms or not chunks:
+        return []
     scored = []
     for chunk in chunks:
-        score = sum(chunk.lower().count(w.lower()) for w in question_words)
+        low = chunk.lower()
+        score = sum(low.count(t) * len(t) for t in terms)
         if score > 0:
-            scored.append((score, chunk))
-    scored.sort(reverse=True, key=lambda x: x[0])
-    top = [chunk for _, chunk in scored[:3]]
-    return top if top else chunks[:2]
+            # 除以 sqrt(长度) 归一化，避免长段落仅因为字多就排到前面
+            scored.append((score / (len(chunk) ** 0.5), chunk))
+    if not scored:
+        return []
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [chunk for _, chunk in scored[:top_n]]
 
 
-def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
-    if top_k is None:
-        top_k = TOP_K
-
+def _generate_hyde(question):
+    """让 LLM 生成一段假设性答案，用于向量检索；失败则退回原问题。"""
     try:
         hyde_response = client.chat.completions.create(
             model=MODEL_NAME,
@@ -109,13 +105,20 @@ def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
             temperature=0.5,
             max_tokens=200
         )
-        search_query = hyde_response.choices[0].message.content
+        return (hyde_response.choices[0].message.content or "").strip() or question
     except Exception as e:
         logger.warning("HyDE 生成失败，降级为原问题: %s", str(e)[:80])
-        search_query = question
+        return question
+
+
+def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
+    if top_k is None:
+        top_k = TOP_K
 
     context_chunks = []
     if use_vector and collection is not None:
+        # 只有真要查向量库时才值得花一次 API 调用来生成 HyDE
+        search_query = _generate_hyde(question)
         try:
             count = collection.count()
             if count == 0:
@@ -138,6 +141,7 @@ def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
     if not context_chunks:
         logger.info("使用关键词检索作为备用方案")
         chunks = split_text(full_text)
-        context_chunks = retrieve_keyword(search_query, chunks)
+        # 关键词检索用原始问题：search_query 是 HyDE 生成的长段落，不适合做词频匹配
+        context_chunks = retrieve_keyword(question, chunks)
 
     return context_chunks

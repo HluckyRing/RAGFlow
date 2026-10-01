@@ -27,14 +27,22 @@ def load_pdf(uploaded_file):
     return text
 
 
-def load_txt(uploaded_file):
-    content = uploaded_file.read()
-    for encoding in ('utf-8', 'gbk', 'gb2312', 'latin-1'):
+# 依次尝试的编码：utf-8-sig 处理 Excel 导出的带 BOM 文件；latin-1 永不抛错，作兜底。
+ENCODINGS = ('utf-8-sig', 'utf-8', 'gbk', 'gb2312', 'big5', 'latin-1')
+
+
+def _decode_bytes(content):
+    """按常见中文编码依次尝试解码，保证不抛 UnicodeDecodeError。"""
+    for encoding in ENCODINGS:
         try:
             return content.decode(encoding)
         except (UnicodeDecodeError, LookupError):
             continue
     return content.decode('utf-8', errors='replace')
+
+
+def load_txt(uploaded_file):
+    return _decode_bytes(uploaded_file.read())
 
 
 def load_docx(uploaded_file):
@@ -71,7 +79,7 @@ def load_xlsx(uploaded_file):
 
 
 def load_csv(uploaded_file):
-    content = uploaded_file.read().decode('utf-8')
+    content = _decode_bytes(uploaded_file.read())
     reader = csv.reader(io.StringIO(content))
     rows = [" | ".join(row) for row in reader if any(cell.strip() for cell in row)]
     return "\n".join(rows)
