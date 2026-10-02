@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """指代消解回归：既要取对轮次，也不能被「这/那/其他」这类词误触发。"""
+import pytest
+
 import src.llm as llm
 
 
@@ -50,3 +52,58 @@ def test_pronoun_late_in_question_still_triggers():
     history = _hist("什么是市盈率")
     out = llm.resolve_query("请帮我详细解释一下它", history)
     assert "市盈率" in out
+
+
+# ── 流式健壮性 ──
+
+class _Delta:
+    def __init__(self, content):
+        self.content = content
+
+
+class _Choice:
+    def __init__(self, content):
+        self.delta = _Delta(content)
+
+
+class _Chunk:
+    def __init__(self, choices):
+        self.choices = choices
+
+
+def test_usage_only_chunk_is_skipped(monkeypatch):
+    """choices 为空的 usage-only chunk 不该让流式回答崩掉（原来是 IndexError）。"""
+    stream = [
+        _Chunk([]),                       # usage-only
+        _Chunk([_Choice("净资")]),
+        _Chunk([_Choice(None)]),          # 空 delta
+        _Chunk([_Choice("产")]),
+    ]
+    monkeypatch.setattr(llm.client.chat.completions, "create", lambda **kwargs: iter(stream))
+    assert list(llm.stream_answer("q", "ctx", [])) == ["净资", "产"]
+
+
+def test_stream_error_raises_instead_of_yielding_error_text(monkeypatch):
+    """失败要抛 LLMStreamError，而不是把错误文案当成回答 yield 出去。"""
+    def boom(**kwargs):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", boom)
+
+    with pytest.raises(llm.LLMStreamError) as ei:
+        list(llm.stream_answer("q", "ctx", []))
+    assert "connection reset" in str(ei.value)
+
+
+def test_error_mid_stream_still_returns_earlier_tokens(monkeypatch):
+    def gen(**kwargs):
+        yield _Chunk([_Choice("半截")])
+        raise RuntimeError("mid-stream boom")
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", gen)
+
+    got = []
+    with pytest.raises(llm.LLMStreamError):
+        for token in llm.stream_answer("q", "ctx", []):
+            got.append(token)
+    assert got == ["半截"], "出错前已经产出的 token 应当照常返回"

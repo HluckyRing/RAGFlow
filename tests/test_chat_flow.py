@@ -95,3 +95,41 @@ def test_chat_rejects_missing_file(client, asked, monkeypatch):
     r = client.post("/api/chat", json={"question": "随便问问", "session_id": sid, "conv_id": conv_id})
     assert r.status_code == 400
     assert not seen, "没上传文件就不该调用 LLM"
+
+
+def test_partial_answer_persisted_but_error_text_is_not(client, monkeypatch):
+    """流式中途失败：落已生成的部分回答，错误文案只推给前端、不进历史。
+
+    改造前错误文案是当作正常 token yield 出去的，会被写进 messages，
+    下一轮又作为上下文喂回模型。
+    """
+    def flaky_stream(question, context, history):
+        yield "半截回答"
+        raise server.LLMStreamError("调用大模型失败：connection reset")
+
+    monkeypatch.setattr(server, "stream_answer", flaky_stream)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+
+    r = client.post("/api/chat", json={"question": "问题", "session_id": sid, "conv_id": conv_id})
+    assert r.status_code == 200
+    assert "connection reset" in r.text, "错误文案仍然要推给前端"
+
+    msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[1]["content"] == "半截回答", "已生成的部分应当落盘"
+    assert "失败" not in msgs[1]["content"], "错误文案绝不能进历史"
+
+
+def test_empty_answer_is_not_persisted(client, monkeypatch):
+    monkeypatch.setattr(server, "stream_answer", lambda q, c, h: iter([]))
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+
+    r = client.post("/api/chat", json={"question": "问题", "session_id": sid, "conv_id": conv_id})
+    assert r.status_code == 200
+
+    msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
+    assert [m["role"] for m in msgs] == ["user"], "空回答不该落一条空的 assistant 消息"

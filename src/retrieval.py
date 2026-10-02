@@ -2,7 +2,8 @@ import re
 import hashlib
 import chromadb
 from chromadb.utils import embedding_functions
-from src.config import logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME, VECTOR_DB_PATH, TOP_K
+from src.config import (logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME,
+                        VECTOR_DB_PATH, TOP_K, MAX_DISTANCE)
 from src.pdf_ingestion import split_text
 from src.prompts import HYDE_SYSTEM_PROMPT
 from src.text_utils import extract_terms
@@ -111,6 +112,36 @@ def _generate_hyde(question):
         return question
 
 
+def _filter_by_distance(docs, distances, max_distance=None):
+    """丢掉距离过大（与问题不相关）的块，避免噪音进 prompt。
+
+    这些 collection 建的时候没指定 hnsw:space，Chroma 用的是默认度量 l2（平方欧氏）；
+    BGE 输出是归一化向量，所以距离 = 2 - 2*cos，取值范围 [0, 4]。
+    阈值默认 0.55，可用环境变量 MAX_DISTANCE 覆盖。
+    """
+    if max_distance is None:
+        max_distance = MAX_DISTANCE
+    if not distances:
+        return list(docs)          # 拿不到距离就不敢乱丢
+
+    kept, dropped = [], 0
+    for doc, dist in zip(docs, distances):
+        if dist <= max_distance:
+            kept.append(doc)
+        else:
+            dropped += 1
+
+    if dropped:
+        best = min(distances)
+        if kept:
+            logger.info("向量检索丢弃 %d 块（距离 > %.2f），保留 %d 块；最佳距离 %.4f",
+                        dropped, max_distance, len(kept), best)
+        else:
+            logger.info("向量检索结果全部超过阈值 %.2f（最佳距离 %.4f），判定为未命中",
+                        max_distance, best)
+    return kept
+
+
 def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
     if top_k is None:
         top_k = TOP_K
@@ -133,8 +164,9 @@ def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
                     n_results=min(top_k, count)
                 )
                 docs = results["documents"][0] if results["documents"] else []
+                dists = results["distances"][0] if results.get("distances") else []
                 if docs:
-                    context_chunks = docs
+                    context_chunks = _filter_by_distance(docs, dists)
         except Exception as e:
             logger.warning("向量检索失败，降级为关键词检索: %s", str(e)[:80])
 

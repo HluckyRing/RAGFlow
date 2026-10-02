@@ -55,6 +55,14 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
 
 
 
+class LLMStreamError(RuntimeError):
+    """流式调用大模型失败。
+
+    刻意不让 stream_answer 把错误文案当成回答 yield 出去：那样 server 会把它当
+    正常回答写进 messages，下一轮又被当作上下文喂回模型。呈现方式交给 server 决定。
+    """
+
+
 def stream_answer(question, context, history):
     system_prompt = QA_SYSTEM_PROMPT_TEMPLATE.format(context=context)
     history_messages = [msg for msg in history[-5:] if msg["role"] in ["user", "assistant"]]
@@ -71,8 +79,13 @@ def stream_answer(question, context, history):
             stream=True
         )
         for chunk in response:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            # 有些 OpenAI 兼容实现会发 usage-only chunk（choices 为空），必须判空
+            if not chunk.choices:
+                continue
+            delta = getattr(chunk.choices[0], "delta", None)
+            content = getattr(delta, "content", None)
+            if content:
+                yield content
     except Exception as e:
         logger.error("LLM 流式调用失败: %s", e)
-        yield f"\n\n调用大模型失败：{str(e)}"
+        raise LLMStreamError(f"调用大模型失败：{e}") from e

@@ -57,6 +57,8 @@ python src/server.py            # 直接启动
 - **不阻塞事件循环**: 所有可能阻塞的调用（文件解析、embedding 推理、LLM 网络请求、写盘）一律经 `run_in_threadpool` 执行。SSE 的 `generate()` 必须是**同步**生成器 —— Starlette 只对非 AsyncIterable 用 `iterate_in_threadpool` 迭代，写成 `async def` 反而会在事件循环上迭代、把全服务卡死
 - **按需建向量库**: 建对话时不创建 Chroma collection，推迟到首次上传时在 `_commit_upload` 里补建（不论对话是 API 建的还是上传时顺带建的），避免「建了对话没传文件」留下空集合
 - **Embedding 模型**: BAAI/bge-small-zh-v1.5，通过 `HF_ENDPOINT` 环境变量支持 HuggingFace 镜像
+- **相关性阈值**: 向量结果按 l2 距离过滤（collection 未指定 `hnsw:space`，走 Chroma 默认的 l2；BGE 是归一化向量，距离 = 2 − 2cos）。默认 `MAX_DISTANCE=0.55` —— 实测本项目语料上相关查询 max≈0.47、无关查询 min≈0.62，取分离带中点。超阈值的块不进 context；全部超阈值则走关键词兜底。**换语料或换 embedding 模型必须重新标定**
+- **流式失败不入历史**: `stream_answer` 失败时抛 `LLMStreamError`，而不是把错误文案当回答 yield 出去（否则会被写进 `messages`，下一轮又被当上下文喂回模型）。server 捕获后仍把错误推给前端，但只落盘**已生成的部分回答**，错误文案绝不入库
 
 ## 配置
 
@@ -72,6 +74,7 @@ CHUNK_SIZE=600
 CHUNK_OVERLAP=100
 TOP_K=10
 MAX_CONTEXT_LENGTH=8000
+MAX_DISTANCE=0.55
 VECTOR_DB_PATH="./chroma_db"
 HF_ENDPOINT="https://hf-mirror.com"
 ```

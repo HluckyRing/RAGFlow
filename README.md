@@ -40,6 +40,8 @@
 API_KEY="sk-你的密钥"
 BASE_URL="https://api.deepseek.com"
 MODEL_NAME="deepseek-flash"
+# 可选：向量相关性阈值（l2 距离，越小越严格），默认 0.55
+# MAX_DISTANCE=0.55
 ```
 
 ### 1. 安装依赖

@@ -13,7 +13,7 @@ from src.config import logger
 from src.loaders import load_file
 from src.pdf_ingestion import split_text
 from src.retrieval import init_vector_store, sanitize_collection_name, drop_collection
-from src.llm import resolve_query, retrieve_and_build_context, stream_answer
+from src.llm import resolve_query, retrieve_and_build_context, stream_answer, LLMStreamError
 
 # session_id -> 状态 dict。与 state 模块的缓存共用同一个对象，改动会被 _save_state 落盘。
 sessions = {}
@@ -341,10 +341,19 @@ async def chat(request: Request):
         把整个服务卡住 —— 这正是改造前的问题。）
         """
         full_answer = ""
-        for token in stream_answer(question, context, history):
-            full_answer += token
-            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
-        _append_message(sid, conv_id, {"role": "assistant", "content": full_answer})
+        try:
+            for token in stream_answer(question, context, history):
+                full_answer += token
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+        except LLMStreamError as e:
+            logger.warning("流式回答中断，错误文案不写入历史: %s", e)
+            # 错误照样推给前端（前端不用改），但绝不写进 messages
+            message = "\n\n" + str(e)
+            yield f"data: {json.dumps({'type': 'token', 'content': message})}\n\n"
+
+        # 已生成的部分照常落盘，不丢用户已经看到的内容；错误文案不入历史
+        if full_answer.strip():
+            _append_message(sid, conv_id, {"role": "assistant", "content": full_answer})
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

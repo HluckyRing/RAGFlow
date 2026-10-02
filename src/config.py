@@ -29,6 +29,9 @@ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
 TOP_K = int(os.getenv("TOP_K", "10"))
 MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "8000"))
+# 向量检索相关性阈值（l2 距离，越小越严格）。实测本项目语料上相关查询 max≈0.47、
+# 无关查询 min≈0.62，默认取分离带中点 0.55；换语料/换 embedding 模型时应重新标定。
+MAX_DISTANCE = float(os.getenv("MAX_DISTANCE", "0.55"))
 VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./chroma_db")
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)

@@ -70,3 +70,49 @@ def test_keyword_mode_skips_hyde_and_uses_original_question(monkeypatch):
 
     assert called == [], "关键词模式下不该白花一次 API 调用"
     assert out and out[0] == ROE_CHUNK
+
+
+# ── 相关性阈值（l2 距离）──
+
+class _DistanceCollection:
+    """按给定距离返回候选块，用来确定性地测阈值过滤。"""
+
+    def __init__(self, docs, distances):
+        self._docs = docs
+        self._distances = distances
+
+    def count(self):
+        return len(self._docs)
+
+    def query(self, query_texts, n_results):
+        return {"documents": [self._docs], "distances": [self._distances]}
+
+
+def test_filter_by_distance_keeps_close_drops_far():
+    kept = retrieval._filter_by_distance(["近的块", "远的块"], [0.40, 0.90], max_distance=0.55)
+    assert kept == ["近的块"]
+
+
+def test_filter_by_distance_keeps_everything_when_no_distances():
+    docs = ["a", "b"]
+    assert retrieval._filter_by_distance(docs, [], max_distance=0.55) == docs
+
+
+def test_vector_results_over_threshold_are_dropped(monkeypatch):
+    """阈值内的块保留，超阈值的块不进 context。"""
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection(["相关的块", "无关的块"], [0.40, 0.62])
+
+    out = retrieval.hyde_retrieve("问题", coll, "全文", use_vector=True)
+
+    assert out == ["相关的块"]
+
+
+def test_all_above_threshold_falls_back_to_keyword(monkeypatch):
+    """向量全部超阈值 → 走关键词兜底；关键词也不命中才最终返回空。"""
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection(["块A", "块B"], [0.80, 0.90])
+
+    out = retrieval.hyde_retrieve("量子纠缠退相干时间", coll, "完全无关的一段文字", use_vector=True)
+
+    assert out == []
