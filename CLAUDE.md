@@ -54,6 +54,8 @@ python src/server.py            # 直接启动
 - **旧数据迁移**: 首次遇到「客户端自带、服务端未见过的 sid」时，把旧版 `kb_state.json` 原子改名认领给它（保留为 `kb_state.json.migrated` 便于回滚）；`/api/session` 新发的 sid 不参与认领
 - **多轮对话**: `resolve_query()` 在问题 < 15 字且含指代词（它/它们/这个/该/上述…，刻意不含裸「这」「那」；含「其他」「其中」等也不算）时，从上一轮用户消息提取实义片段拼到当前问题前。注意 `history` 是**不含当前提问**的快照，所以上一轮就是 `user_msgs[-1]`
 - **ChromaDB**: 使用 PersistentClient 持久化到 `./chroma_db/`，每个对话独立 collection（命名 `kb_{name}_{hash}`）
+- **不阻塞事件循环**: 所有可能阻塞的调用（文件解析、embedding 推理、LLM 网络请求、写盘）一律经 `run_in_threadpool` 执行。SSE 的 `generate()` 必须是**同步**生成器 —— Starlette 只对非 AsyncIterable 用 `iterate_in_threadpool` 迭代，写成 `async def` 反而会在事件循环上迭代、把全服务卡死
+- **按需建向量库**: 建对话时不创建 Chroma collection，推迟到首次上传时在 `_commit_upload` 里补建（不论对话是 API 建的还是上传时顺带建的），避免「建了对话没传文件」留下空集合
 - **Embedding 模型**: BAAI/bge-small-zh-v1.5，通过 `HF_ENDPOINT` 环境变量支持 HuggingFace 镜像
 
 ## 配置
