@@ -64,6 +64,10 @@ class LLMStreamError(RuntimeError):
 
 
 def stream_answer(question, context, history):
+    # client 为 None 表示没配 API_KEY（见 config.build_client）。此时不该把
+    # AttributeError 当成「调用大模型失败」，而要直接告诉用户怎么配。
+    if client is None:
+        raise LLMStreamError("未配置 API_KEY：请在项目根目录的 .env 中填入 API_KEY 后重启服务")
     system_prompt = QA_SYSTEM_PROMPT_TEMPLATE.format(context=context)
     history_messages = [msg for msg in history[-5:] if msg["role"] in ["user", "assistant"]]
     llm_messages = [

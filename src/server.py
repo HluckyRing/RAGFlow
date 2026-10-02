@@ -9,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 
 import src.state as state
-from src.config import logger
+from src.config import logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB
 from src.loaders import load_file
 from src.pdf_ingestion import split_text
 from src.retrieval import init_vector_store, sanitize_collection_name, drop_collection
@@ -28,6 +28,18 @@ def _conv_cname(conv_id):
     return sanitize_collection_name("conv_" + conv_id)
 
 
+def _conv_full_text(conv):
+    """对话全文 = 各文件文本拼接，是派生值。
+
+    P1-9 起不再把它落盘（存两份等于正文在磁盘上写两遍）。没有文件时保留
+    磁盘上可能存在的旧值，避免历史数据在迁移过程中丢掉正文。
+    """
+    files = conv.get("files") or []
+    if not files:
+        return conv.get("full_text", "")
+    return "\n\n".join(f.get("file_text", "") for f in files)
+
+
 def _serializable(sess):
     """剥掉 collection / use_vector / _cname 这些不可序列化的运行时字段。"""
     convs_out = {}
@@ -38,7 +50,8 @@ def _serializable(sess):
             "files": [{"file_name": f.get("file_name"), "file_text": f.get("file_text", "")}
                       for f in c.get("files", [])],
             "messages": c.get("messages", []),
-            "full_text": c.get("full_text", ""),
+            # 不落盘 full_text：它是 files 里各 file_text 的拼接，加载时由
+            # _hydrate_collections 重新派生（见 P1-9）。
             "collection_name": c.get("_cname") or c.get("collection_name") or _conv_cname(cid),
         }
     return {"active_conv": sess.get("active_conv"), "conversations": convs_out}
@@ -64,8 +77,8 @@ def _hydrate_collections(session_id, data):
         cd["collection"] = collection
         cd["use_vector"] = use_vector
         cd["_cname"] = cname
-        if not cd.get("full_text") and cd.get("files"):
-            cd["full_text"] = "\n\n".join(f.get("file_text", "") for f in cd["files"])
+        # full_text 不落盘，每次加载都从 files 重新拼，顺带修正历史文件里可能过期的值
+        cd["full_text"] = _conv_full_text(cd)
 
 
 def _ensure_session(session_id, client_supplied=True):
@@ -140,7 +153,7 @@ def _commit_upload(sid, conv_id, file_name, file_text):
         else:
             conv.setdefault("files", []).append({"file_name": file_name, "file_text": file_text})
 
-        conv["full_text"] = "\n\n".join(f["file_text"] for f in conv["files"])
+        conv["full_text"] = _conv_full_text(conv)
         _rebuild_collection(conv)
         _save_state(sid)
 
@@ -163,7 +176,7 @@ def _rebuild_collection(conv):
             collection.delete(ids=ids)
     except Exception as e:
         logger.debug("清理 collection 数据失败: %s", e)
-    full_text = conv.get("full_text", "")
+    full_text = _conv_full_text(conv)
     if full_text:
         chunks = split_text(full_text)
         for i, chunk in enumerate(chunks):
@@ -283,8 +296,37 @@ async def get_conversation(conv_id: str, session_id: str):
     }
 
 
+def _upload_size(file):
+    """取上传文件的字节数。
+
+    Starlette 会给 UploadFile 带 size；拿不到时（老版本 / 非 multipart 来源）
+    退回 seek 量一次长度，保证上限判断不会因为缺字段而形同虚设。
+    """
+    size = getattr(file, "size", None)
+    if size is not None:
+        return size
+    stream = getattr(file, "file", None)
+    if stream is None or not hasattr(stream, "seek"):
+        return None
+    pos = stream.tell()
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    stream.seek(pos)
+    return size
+
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...), session_id: str = Form(""), conv_id: str = Form("")):
+    # 上限挡在入口：解析大 PDF/DOCX 是全流程最贵的一步，不该等解析完再拒
+    size = _upload_size(file)
+    if size is not None and size > MAX_UPLOAD_BYTES:
+        logger.warning("拒绝超限上传: %s (%.1f MB > %d MB)",
+                       file.filename, size / 1024 / 1024, MAX_UPLOAD_MB)
+        return JSONResponse(
+            {"error": f"文件过大：{size / 1024 / 1024:.1f} MB，超过上限 {MAX_UPLOAD_MB} MB"},
+            status_code=413,
+        )
+
     sid, _ = await run_in_threadpool(_ensure_session, session_id)
 
     try:
@@ -324,7 +366,7 @@ async def chat(request: Request):
     dynamic_top_k = max(10, file_count * 3)
     # HyDE 的 LLM 调用 + Chroma 查询 + embedding 推理全是阻塞的
     context, _ = await run_in_threadpool(
-        retrieve_and_build_context, search_query, conv["full_text"],
+        retrieve_and_build_context, search_query, _conv_full_text(conv),
         conv["collection"], conv["use_vector"], dynamic_top_k,
     )
     if not context:

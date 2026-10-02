@@ -5,6 +5,7 @@
 - 流式回答结束后必须落盘（改造前会写进已被换掉的对象里，静默丢失）
 - 当前提问不能在传给 LLM 的 history 里出现两次
 """
+import io
 import json
 
 import pytest
@@ -133,3 +134,56 @@ def test_empty_answer_is_not_persisted(client, monkeypatch):
 
     msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
     assert [m["role"] for m in msgs] == ["user"], "空回答不该落一条空的 assistant 消息"
+
+
+# ── P1-16 上传大小上限 ──
+
+def test_upload_size_prefers_reported_size():
+    class Reported:
+        size = 123
+        file = None
+
+    assert server._upload_size(Reported()) == 123
+
+
+def test_upload_size_falls_back_to_seek_when_unreported():
+    class Stream:
+        def __init__(self, data):
+            self.file = io.BytesIO(data)
+
+    assert server._upload_size(Stream(b"x" * 7)) == 7
+
+
+def test_upload_over_size_limit_is_rejected_before_parsing(client, monkeypatch):
+    """超限文件必须在上传入口就被挡掉：解析大 PDF 是最贵的一步。"""
+    parsed = []
+    monkeypatch.setattr(server, "load_file", lambda f: parsed.append(f) or "内容")
+    monkeypatch.setattr(server, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(server, "MAX_UPLOAD_MB", 1)
+
+    sid = client.get("/api/session").json()["session_id"]
+    r = client.post("/api/upload",
+                    files={"file": ("big.txt", b"x" * 64, "text/plain")},
+                    data={"session_id": sid})
+
+    assert r.status_code == 413
+    assert "过大" in r.json()["error"], "要给中文提示"
+    assert not parsed, "超限文件不该再走解析"
+
+
+# ── P1-16 缺 API_KEY 时的降级 ──
+
+def test_chat_without_api_key_gives_chinese_hint_and_persists_nothing(client, monkeypatch):
+    """缺 API_KEY 时用户要看到中文提示，且提示绝不能落进 messages。"""
+    import src.llm as llm
+    monkeypatch.setattr(llm, "client", None)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+
+    r = client.post("/api/chat", json={"question": "问题", "session_id": sid, "conv_id": conv_id})
+    assert r.status_code == 200
+    assert "API_KEY" in r.text, "缺 API_KEY 的中文提示要推给前端"
+
+    msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
+    assert [m["role"] for m in msgs] == ["user"], "错误提示不该作为回答落盘"

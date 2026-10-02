@@ -96,6 +96,9 @@ def retrieve_keyword(question, chunks, top_n=3):
 
 def _generate_hyde(question):
     """让 LLM 生成一段假设性答案，用于向量检索；失败则退回原问题。"""
+    if client is None:
+        logger.warning("未配置 API_KEY，跳过 HyDE，直接用原问题做向量检索")
+        return question
     try:
         hyde_response = client.chat.completions.create(
             model=MODEL_NAME,

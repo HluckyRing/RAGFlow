@@ -53,12 +53,16 @@ python src/server.py            # 直接启动
 - **会话隔离**: 状态只在会话首次访问时从磁盘加载一次，之后以内存为准；同一会话的「改内存 + 落盘」由每会话 RLock 串行化。缓存和锁都在进程内，因此**只支持单 worker 部署**
 - **旧数据迁移**: 首次遇到「客户端自带、服务端未见过的 sid」时，把旧版 `kb_state.json` 原子改名认领给它（保留为 `kb_state.json.migrated` 便于回滚）；`/api/session` 新发的 sid 不参与认领
 - **多轮对话**: `resolve_query()` 在问题 < 15 字且含指代词（它/它们/这个/该/上述…，刻意不含裸「这」「那」；含「其他」「其中」等也不算）时，从上一轮用户消息提取实义片段拼到当前问题前。注意 `history` 是**不含当前提问**的快照，所以上一轮就是 `user_msgs[-1]`
-- **ChromaDB**: 使用 PersistentClient 持久化到 `./chroma_db/`，每个对话独立 collection（命名 `kb_{name}_{hash}`）
+- **ChromaDB**: 使用 PersistentClient 持久化到项目根下的 `chroma_db/`（`VECTOR_DB_PATH`，相对路径锚定项目根），每个对话独立 collection（命名 `kb_{name}_{hash}`）
 - **不阻塞事件循环**: 所有可能阻塞的调用（文件解析、embedding 推理、LLM 网络请求、写盘）一律经 `run_in_threadpool` 执行。SSE 的 `generate()` 必须是**同步**生成器 —— Starlette 只对非 AsyncIterable 用 `iterate_in_threadpool` 迭代，写成 `async def` 反而会在事件循环上迭代、把全服务卡死
 - **按需建向量库**: 建对话时不创建 Chroma collection，推迟到首次上传时在 `_commit_upload` 里补建（不论对话是 API 建的还是上传时顺带建的），避免「建了对话没传文件」留下空集合
 - **Embedding 模型**: BAAI/bge-small-zh-v1.5，通过 `HF_ENDPOINT` 环境变量支持 HuggingFace 镜像
 - **相关性阈值**: 向量结果按 l2 距离过滤（collection 未指定 `hnsw:space`，走 Chroma 默认的 l2；BGE 是归一化向量，距离 = 2 − 2cos）。默认 `MAX_DISTANCE=0.55` —— 实测本项目语料上相关查询 max≈0.47、无关查询 min≈0.62，取分离带中点。超阈值的块不进 context；全部超阈值则走关键词兜底。**换语料或换 embedding 模型必须重新标定**
 - **流式失败不入历史**: `stream_answer` 失败时抛 `LLMStreamError`，而不是把错误文案当回答 yield 出去（否则会被写进 `messages`，下一轮又被当上下文喂回模型）。server 捕获后仍把错误推给前端，但只落盘**已生成的部分回答**，错误文案绝不入库
+- **路径锚定项目根**: `config.PROJECT_ROOT` 是唯一的项目根定义，`resolve_path()` 把相对路径（含默认值）锚定到它。`VECTOR_DB_PATH` / `STATE_DIR` / `LEGACY_STATE_FILE` 都走它 —— 从任何目录启动都不会各自生出一份向量库或状态目录
+- **状态文件不存派生字段**: 磁盘上只存 `files[].file_text`；`full_text` 由 `server._conv_full_text()` 在运行时拼接、加载时重新派生。旧文件里带 `full_text` 也能无损读，但新写入不再把正文存两遍
+- **缺 API_KEY 只降级不崩**: `config.build_client()` 缺 key 时记一条中文 ERROR 并返回 `None`（不再让 openai SDK 抛英文异常把 import 阶段带崩）。此时向量/关键词检索照常，HyDE 跳过，问答抛 `LLMStreamError` 给前端中文提示
+- **上传大小上限**: `MAX_UPLOAD_MB`（默认 20）在 `/api/upload` 入口按 `_upload_size()` 判断，超限直接 413，不进入解析 —— 解析大 PDF/DOCX 是全流程最贵的一步
 
 ## 配置
 
@@ -75,7 +79,11 @@ CHUNK_OVERLAP=100
 TOP_K=10
 MAX_CONTEXT_LENGTH=8000
 MAX_DISTANCE=0.55
+MAX_UPLOAD_MB=20
+LLM_TIMEOUT=60
+# 相对路径一律锚定项目根，可填绝对路径
 VECTOR_DB_PATH="./chroma_db"
+STATE_DIR="./state"
 HF_ENDPOINT="https://hf-mirror.com"
 ```
 

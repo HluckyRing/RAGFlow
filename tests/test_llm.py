@@ -107,3 +107,14 @@ def test_error_mid_stream_still_returns_earlier_tokens(monkeypatch):
         for token in llm.stream_answer("q", "ctx", []):
             got.append(token)
     assert got == ["半截"], "出错前已经产出的 token 应当照常返回"
+
+
+def test_stream_answer_without_api_key_raises_chinese_hint(monkeypatch):
+    """没配 API_KEY 时 client 是 None，要抛 LLMStreamError 给用户看中文提示，
+    而不是把 AttributeError 当成「调用大模型失败」糊弄过去。"""
+    monkeypatch.setattr(llm, "client", None)
+
+    with pytest.raises(llm.LLMStreamError) as ei:
+        list(llm.stream_answer("q", "ctx", []))
+
+    assert "API_KEY" in str(ei.value)

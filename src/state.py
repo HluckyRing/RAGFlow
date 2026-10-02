@@ -22,11 +22,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from src.config import PROJECT_ROOT, resolve_path
+
 logger = logging.getLogger("ai_rag.state")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-STATE_DIR = Path(os.getenv("STATE_DIR") or (PROJECT_ROOT / "state"))
-LEGACY_STATE_FILE = Path(os.getenv("LEGACY_STATE_FILE") or (PROJECT_ROOT / "kb_state.json"))
+STATE_DIR = Path(resolve_path(os.getenv("STATE_DIR"), "state"))
+LEGACY_STATE_FILE = Path(resolve_path(os.getenv("LEGACY_STATE_FILE"), "kb_state.json"))
 SCHEMA_VERSION = 2
 
 # 文件存在但不可用（损坏已备份 / 归属校验不符）。不要用它去覆盖原文件。

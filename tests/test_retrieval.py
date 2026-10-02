@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """关键词降级检索回归：必须按相关性排序，而不是永远返回文档前两块。"""
+import logging
+
 import src.retrieval as retrieval
 from src.text_utils import extract_terms, strip_question_words
 
@@ -116,3 +118,17 @@ def test_all_above_threshold_falls_back_to_keyword(monkeypatch):
     out = retrieval.hyde_retrieve("量子纠缠退相干时间", coll, "完全无关的一段文字", use_vector=True)
 
     assert out == []
+
+
+# ── 缺 API_KEY 时的降级（P1-16）──
+
+def test_hyde_skips_with_clear_hint_when_client_is_none(monkeypatch, caplog):
+    """没配 API_KEY 时 client 是 None：HyDE 直接用原问题，并给出明确中文提示，
+    而不是把它混在「HyDE 生成失败」的普通告警里。"""
+    monkeypatch.setattr(retrieval, "client", None)
+
+    with caplog.at_level(logging.WARNING, logger="ai_rag"):
+        out = retrieval._generate_hyde("什么是净资产收益率")
+
+    assert out == "什么是净资产收益率"
+    assert any("API_KEY" in r.getMessage() for r in caplog.records), "应提示缺少 API_KEY"

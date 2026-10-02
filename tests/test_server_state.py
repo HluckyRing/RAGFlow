@@ -74,3 +74,65 @@ def test_two_sessions_do_not_see_each_other(app_state):
     # A 的数据仍然完好
     on_disk_a = json.loads(state.file_for(sid_a).read_text(encoding="utf-8"))
     assert list(on_disk_a["conversations"]) == ["convA"]
+
+
+# ── P1-9 状态瘦身：full_text 不再重复落盘，改为从 files 派生 ──
+
+def _conv_with_two_files():
+    return {
+        "id": "c1", "name": "对话", "created_at": 1,
+        "files": [{"file_name": "a.txt", "file_text": "第一段"},
+                  {"file_name": "b.txt", "file_text": "第二段"}],
+        "full_text": "第一段\n\n第二段",
+        "collection": None, "use_vector": False, "messages": [], "_cname": "kb_c1",
+    }
+
+
+def test_state_file_does_not_store_duplicate_full_text(app_state):
+    """full_text 等于 files 的拼接，重复存等于把正文在磁盘上写两遍。"""
+    sid, sess = server._ensure_session("e" * 16)
+    sess["conversations"]["c1"] = _conv_with_two_files()
+    server._save_state(sid)
+
+    saved = json.loads(state.file_for(sid).read_text(encoding="utf-8"))
+    conv = saved["conversations"]["c1"]
+    assert "full_text" not in conv, "full_text 是派生值，不该落盘"
+    assert [f["file_text"] for f in conv["files"]] == ["第一段", "第二段"], "原始文本必须保留"
+
+
+def test_full_text_is_derived_from_files_on_load(app_state):
+    """磁盘上只有 files（新格式）时，加载后必须能把全文拼回来给检索用。"""
+    sid = "f" * 16
+    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state.file_for(sid).write_text(json.dumps({
+        "version": 2, "session_id": sid, "active_conv": "c1",
+        "conversations": {"c1": {
+            "name": "对话", "created_at": 1,
+            "files": [{"file_name": "a.txt", "file_text": "第一段"},
+                      {"file_name": "b.txt", "file_text": "第二段"}],
+            "messages": [],
+        }},
+    }, ensure_ascii=False), encoding="utf-8")
+    state._cache.clear()
+
+    _, sess = server._ensure_session(sid)
+    assert sess["conversations"]["c1"]["full_text"] == "第一段\n\n第二段"
+
+
+def test_legacy_state_with_full_text_still_loads(app_state):
+    """旧状态文件里带 full_text，仍要能无损加载（向后兼容）。"""
+    sid = "1" * 16
+    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state.file_for(sid).write_text(json.dumps({
+        "version": 2, "session_id": sid, "active_conv": "c1",
+        "conversations": {"c1": {
+            "name": "旧对话", "created_at": 1,
+            "files": [{"file_name": "a.txt", "file_text": "旧文本"}],
+            "full_text": "旧文本", "messages": [],
+        }},
+    }, ensure_ascii=False), encoding="utf-8")
+    state._cache.clear()
+
+    _, sess = server._ensure_session(sid)
+    assert sess["conversations"]["c1"]["full_text"] == "旧文本"
+    assert sess["conversations"]["c1"]["files"][0]["file_text"] == "旧文本"
