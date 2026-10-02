@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import os
-import ssl
 import re
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -10,11 +9,6 @@ from pypdf import PdfReader
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 os.environ['TRANSFORMERS_VERBOSITY'] = 'error'      # 隐藏模型加载警告
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'      # 避免并行警告
-
-try:
-    ssl._create_default_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
 
 load_dotenv()
 client = OpenAI(

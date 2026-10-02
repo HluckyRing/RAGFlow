@@ -9,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 
 import src.state as state
-from src.config import logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB
+from src.config import logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, HOST, PORT
 from src.loaders import load_file
 from src.pdf_ingestion import split_text
 from src.retrieval import init_vector_store, sanitize_collection_name, drop_collection
@@ -466,5 +466,5 @@ async def get_messages(conv_id: str, session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("RAGFlow 启动: http://localhost:8080")
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    logger.info("RAGFlow 启动: http://%s:%d", HOST, PORT)
+    uvicorn.run(app, host=HOST, port=PORT)

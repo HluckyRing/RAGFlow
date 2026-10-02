@@ -58,6 +58,11 @@ MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 # 调用大模型的超时（秒）。没有它，网络挂起时 SSE 会一直不出声。
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 
+# 服务监听地址：默认只绑回环，避免这个没有鉴权的服务被同网段直接访问。
+# 确实要对外提供（局域网/容器）时显式设 HOST=0.0.0.0。
+HOST = os.getenv("HOST", "127.0.0.1")
+PORT = int(os.getenv("PORT", "8080"))
+
 
 def build_client(api_key, base_url, timeout):
     """构造 OpenAI 客户端。

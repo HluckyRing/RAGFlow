@@ -65,6 +65,9 @@ python src/server.py            # 直接启动
 - **上传大小上限**: `MAX_UPLOAD_MB`（默认 20）在 `/api/upload` 入口按 `_upload_size()` 判断，**按整批总字节数**算，超限直接 413、不进入解析 —— 解析大 PDF/DOCX 是全流程最贵的一步
 - **多文件上传与单文件删除**: 上传用复数 `files` 字段一次提交整批（兼容旧的单数 `file`），`_commit_upload(sid, conv_id, [(name, text)])` 一次只重建一次索引 —— `_rebuild_collection` 是全量重写，逐文件提交会退化成 O(N²) 次重复嵌入。`DELETE /api/conversations/{conv_id}/files/{file_name}` 删除单个文件并重建索引；**删光文件时派生 `full_text` 必须为空**，否则索引里会残留已删正文
 - **前端动态数据不进内联处理器**: 对话名/文件名一律经 `textContent` / `dataset` 落地，事件用 `addEventListener` 绑定。内联事件处理器是 HTML 属性、会被当代码解析，动态数据里一个单引号就能闭合字符串执行任意 JS（P1-15 的老写法）；`esc()` 也补了单引号转义作为纵深防御
+- **默认只监听回环**: `HOST`（默认 `127.0.0.1`）/ `PORT`（默认 8080）统一定义在 `config.py`，两个启动入口（`python server.py`、`python src/server.py`）都复用它。这个服务没有鉴权，要对外提供必须显式设 `HOST=0.0.0.0`，不要在代码里写死对外地址
+- **归档脚本不关 TLS 校验**: `legacy/` 里曾用 `ssl._create_default_https_context = ssl._create_unverified_context` 全局关掉证书校验，已移除；`tests/test_security.py` 有静态守卫防止被写回来
+- **孤儿 collection 清理**: `scripts/cleanup_orphan_collections.py` —— 默认干跑，要 `--apply` 才真删；只删名字以 `kb_conv_` 开头且不被任何状态文件引用的集合；如果一个被引用的集合都没扫到（通常是路径指错）就中止，只有 `--force` 能越过。状态来源含 `state/*.json` 与旧版 `kb_state.json(.migrated)`
 
 ## 配置
 
@@ -86,6 +89,9 @@ LLM_TIMEOUT=60
 # 相对路径一律锚定项目根，可填绝对路径
 VECTOR_DB_PATH="./chroma_db"
 STATE_DIR="./state"
+# 监听地址：默认只绑回环；要对外提供才改成 0.0.0.0
+HOST="127.0.0.1"
+PORT=8080
 HF_ENDPOINT="https://hf-mirror.com"
 ```
 

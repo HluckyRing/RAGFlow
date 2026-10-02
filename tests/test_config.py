@@ -68,3 +68,10 @@ def test_client_gets_configured_timeout():
     built = config.build_client("sk-test", "https://example.invalid", 12.5)
     assert built is not None
     assert built.timeout == pytest.approx(12.5), "超时必须真的传到 OpenAI 客户端上"
+
+
+# ── 启动绑定（P1-21）──
+
+def test_host_defaults_to_loopback_and_port_to_8080():
+    assert config.HOST == "127.0.0.1", "默认只监听回环，避免无鉴权服务暴露到局域网"
+    assert config.PORT == 8080

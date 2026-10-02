@@ -1,16 +1,9 @@
 # -*- coding: utf-8 -*-
 import os
-import ssl
 import re
 from dotenv import load_dotenv
 from openai import OpenAI
 from pypdf import PdfReader
-
-# 解决 SSL 问题
-try:
-    ssl._create_default_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
 
 # 加载环境变量
 load_dotenv()

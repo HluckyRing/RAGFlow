@@ -389,8 +389,6 @@ function confirmDelete(id, name) {
     });
 }
 
-async function deleteConv(id) { await confirmDelete(id, S.convs[id]?.name||'对话'); }
-
 function toggleSidebar() { $('sidebar').classList.toggle('collapsed'); }
 
 async function handleFileSelect(e) {
