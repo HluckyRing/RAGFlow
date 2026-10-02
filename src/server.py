@@ -29,15 +29,12 @@ def _conv_cname(conv_id):
 
 
 def _conv_full_text(conv):
-    """对话全文 = 各文件文本拼接，是派生值。
+    """对话全文 = 各文件文本拼接。这是派生值，不落盘（见 P1-9）。
 
-    P1-9 起不再把它落盘（存两份等于正文在磁盘上写两遍）。没有文件时保留
-    磁盘上可能存在的旧值，避免历史数据在迁移过程中丢掉正文。
+    这里**不做空值兜底**：文件被删光时结果必须是空串，否则索引里会残留已删掉的
+    正文。历史状态文件里「有 full_text 却没有 files」的兼容放在 _hydrate_collections。
     """
-    files = conv.get("files") or []
-    if not files:
-        return conv.get("full_text", "")
-    return "\n\n".join(f.get("file_text", "") for f in files)
+    return "\n\n".join(f.get("file_text", "") for f in (conv.get("files") or []))
 
 
 def _serializable(sess):
@@ -77,8 +74,9 @@ def _hydrate_collections(session_id, data):
         cd["collection"] = collection
         cd["use_vector"] = use_vector
         cd["_cname"] = cname
-        # full_text 不落盘，每次加载都从 files 重新拼，顺带修正历史文件里可能过期的值
-        cd["full_text"] = _conv_full_text(cd)
+        # full_text 不落盘，每次加载都从 files 重新拼，顺带修正历史文件里可能过期的值；
+        # 只有「有 full_text 却没有 files」的旧格式才保留原值，免得把正文弄丢
+        cd["full_text"] = _conv_full_text(cd) if cd.get("files") else cd.get("full_text", "")
 
 
 def _ensure_session(session_id, client_supplied=True):
@@ -114,9 +112,12 @@ def _append_message(sid, conv_id, message):
         return True
 
 
-def _commit_upload(sid, conv_id, file_name, file_text):
-    """把上传内容并入会话、重建向量库并落盘。整块同步执行，交给线程池跑。
+def _commit_upload(sid, conv_id, uploads):
+    """把一批上传内容并入会话、重建向量库并落盘。整块同步执行，交给线程池跑。
 
+    uploads 是 [(file_name, file_text), ...]。**一次批量只重建一次索引** ——
+    _rebuild_collection 是「清空 + 全量重写」，逐文件提交会让 N 个文件退化成
+    O(N²) 次重复嵌入。
     embedding 推理和写盘都是阻塞操作，放在事件循环上会卡住所有请求。
     返回 None 表示对话不存在。
     """
@@ -147,20 +148,50 @@ def _commit_upload(sid, conv_id, file_name, file_text):
             conv["collection"], conv["use_vector"] = init_vector_store(cname)
             conv["_cname"] = cname
 
-        existing = next((f for f in conv.get("files", []) if f["file_name"] == file_name), None)
-        if existing:
-            existing["file_text"] = file_text
-        else:
-            conv.setdefault("files", []).append({"file_name": file_name, "file_text": file_text})
+        names = []
+        for file_name, file_text in uploads:
+            names.append(file_name)
+            existing = next((f for f in conv.get("files", []) if f["file_name"] == file_name), None)
+            if existing:
+                existing["file_text"] = file_text
+            else:
+                conv.setdefault("files", []).append({"file_name": file_name, "file_text": file_text})
 
         conv["full_text"] = _conv_full_text(conv)
         _rebuild_collection(conv)
         _save_state(sid)
 
         return {
-            "conv_id": conv_id, "file_name": file_name, "file_count": len(conv["files"]),
+            "conv_id": conv_id, "file_names": names, "file_count": len(conv["files"]),
             "conv_name": conv["name"],
             "files": [{"file_name": f["file_name"]} for f in conv["files"]],
+            "messages": conv.get("messages", []),
+        }
+
+
+def _remove_file(sid, conv_id, file_name):
+    """从对话里移除一个文件、重建索引并落盘。
+
+    返回 None 表示对话不存在，False 表示该对话里没有这个文件。
+    """
+    sess = sessions.get(sid)
+    if sess is None:
+        return None
+    with state.lock_for(sid):
+        conv = sess.get("conversations", {}).get(conv_id)
+        if not conv:
+            return None
+        before = conv.get("files", [])
+        after = [f for f in before if f.get("file_name") != file_name]
+        if len(after) == len(before):
+            return False
+        conv["files"] = after
+        conv["full_text"] = _conv_full_text(conv)
+        _rebuild_collection(conv)
+        _save_state(sid)
+        return {
+            "file_count": len(after),
+            "files": [{"file_name": f["file_name"]} for f in after],
             "messages": conv.get("messages", []),
         }
 
@@ -296,6 +327,18 @@ async def get_conversation(conv_id: str, session_id: str):
     }
 
 
+@app.delete("/api/conversations/{conv_id}/files/{file_name}")
+async def delete_file(conv_id: str, file_name: str, session_id: str):
+    """删除对话里的单个文件，并重建该对话的索引。"""
+    sid, _ = await run_in_threadpool(_ensure_session, session_id)
+    result = await run_in_threadpool(_remove_file, sid, conv_id, file_name)
+    if result is None:
+        return JSONResponse({"error": "对话不存在"}, status_code=404)
+    if result is False:
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    return result
+
+
 def _upload_size(file):
     """取上传文件的字节数。
 
@@ -316,28 +359,41 @@ def _upload_size(file):
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...), session_id: str = Form(""), conv_id: str = Form("")):
-    # 上限挡在入口：解析大 PDF/DOCX 是全流程最贵的一步，不该等解析完再拒
-    size = _upload_size(file)
-    if size is not None and size > MAX_UPLOAD_BYTES:
-        logger.warning("拒绝超限上传: %s (%.1f MB > %d MB)",
-                       file.filename, size / 1024 / 1024, MAX_UPLOAD_MB)
+async def upload_file(files: list[UploadFile] | None = File(None),
+                      file: UploadFile | None = File(None),
+                      session_id: str = Form(""), conv_id: str = Form("")):
+    # files（复数，可一次多个）是首选；file（单数）保留兼容既有调用方
+    uploads = ([file] if file is not None else []) + list(files or [])
+    if not uploads:
+        return JSONResponse({"error": "没有收到文件"}, status_code=400)
+
+    # 上限按整批总字节数算，并挡在入口：解析大 PDF/DOCX 是全流程最贵的一步。
+    # 只累计拿得到的大小 —— 不能因为某个文件量不出大小就整批放行。
+    total = sum(s for s in (_upload_size(f) for f in uploads) if s is not None)
+    if total > MAX_UPLOAD_BYTES:
+        logger.warning("拒绝超限上传: %d 个文件共 %.1f MB (> %d MB)",
+                       len(uploads), total / 1024 / 1024, MAX_UPLOAD_MB)
         return JSONResponse(
-            {"error": f"文件过大：{size / 1024 / 1024:.1f} MB，超过上限 {MAX_UPLOAD_MB} MB"},
+            {"error": f"本次上传过大：共 {total} 字节（{total / 1024 / 1024:.1f} MB），"
+                      f"超过上限 {MAX_UPLOAD_MB} MB"},
             status_code=413,
         )
 
     sid, _ = await run_in_threadpool(_ensure_session, session_id)
 
-    try:
-        # 解析 PDF/DOCX/XLSX 是纯阻塞 I/O + CPU，必须移出事件循环
-        file_text = await run_in_threadpool(load_file, file)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    if not file_text.strip():
-        return JSONResponse({"error": "文件内容为空"}, status_code=400)
+    parsed = []
+    for uf in uploads:
+        name = uf.filename or "未命名文件"
+        try:
+            # 解析 PDF/DOCX/XLSX 是纯阻塞 I/O + CPU，必须移出事件循环
+            text = await run_in_threadpool(load_file, uf)
+        except Exception as e:
+            return JSONResponse({"error": f"{name}: {e}"}, status_code=400)
+        if not text.strip():
+            return JSONResponse({"error": f"文件内容为空：{name}"}, status_code=400)
+        parsed.append((name, text))
 
-    result = await run_in_threadpool(_commit_upload, sid, conv_id, file.filename, file_text)
+    result = await run_in_threadpool(_commit_upload, sid, conv_id, parsed)
     if result is None:
         return JSONResponse({"error": "对话不存在"}, status_code=404)
     return result

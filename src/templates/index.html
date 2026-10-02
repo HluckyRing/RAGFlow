@@ -73,8 +73,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .file-bar .file-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:#fff;font-size:12px;color:var(--text-secondary);cursor:pointer;transition:all .2s}
 .file-bar .file-btn:hover{background:#F3F4F6}
 .file-list{max-width:800px;margin:8px auto 0;padding:8px 12px;background:#F9FAFB;border-radius:8px;border:1px solid var(--border);font-size:12px;color:var(--text-secondary)}
-.file-list .fl-item{padding:3px 0}
-.file-list .fl-item:before{content:'📄 '}
+.file-list .fl-item{display:flex;align-items:center;gap:8px;padding:3px 0}
+.file-list .fl-item .fl-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-list .fl-item .fl-name:before{content:'📄 '}
+.file-list .fl-item .fl-del{width:20px;height:20px;border:none;background:transparent;color:#9CA3AF;cursor:pointer;border-radius:4px;font-size:11px;line-height:1;flex-shrink:0}
+.file-list .fl-item .fl-del:hover{background:rgba(239,68,68,.15);color:#EF4444}
 
 .input-area{padding:12px 24px 20px;flex-shrink:0}
 .input-row{max-width:800px;margin:0 auto;display:flex;align-items:flex-end;gap:8px;background:var(--input-bg);border:1px solid var(--border);border-radius:16px;padding:6px;transition:border-color .2s}
@@ -155,14 +158,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 </main>
 </div>
 
-<input type="file" id="fileInput" style="display:none" accept=".pdf,.txt,.md,.docx,.xlsx,.csv" onchange="handleFileSelect(event)">
+<input type="file" id="fileInput" style="display:none" multiple accept=".pdf,.txt,.md,.docx,.xlsx,.csv" onchange="handleFileSelect(event)">
 
 <script>
 const API = '';
 let S = { sid: localStorage.ragflow_sid||'', convs: {}, activeCid: null, isStreaming: false, editingCid: null };
 
 const $ = id => document.getElementById(id);
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function toast(m, err, dur) {
     const t = document.createElement('div');
     t.className = 'toast' + (err ? ' error' : '');
@@ -248,18 +251,58 @@ function showChat() {
 function renderSidebar() {
     const el = $('convList');
     const convs = Object.values(S.convs).sort((a,b) => (b.created_at||0) - (a.created_at||0));
-    if (!convs.length) { el.innerHTML = '<div class="empty-hint">暂无对话<br>点击 ＋ 创建</div>'; return; }
-    el.innerHTML = convs.map(c => {
+    el.innerHTML = '';
+    if (!convs.length) {
+        const hint = document.createElement('div');
+        hint.className = 'empty-hint';
+        hint.innerHTML = '暂无对话<br>点击 ＋ 创建';
+        el.appendChild(hint);
+        return;
+    }
+    // 动态数据（对话名）只经 textContent / dataset 落地，绝不拼进 onclick 之类的
+    // 内联事件处理器 —— 内联处理器是 HTML 属性，会被当代码解析，名字里一个单引号
+    // 就能闭合字符串执行任意 JS（改造前 index.html:260 就是这么被注入的）。
+    convs.forEach(c => {
         const isEdit = S.editingCid === c.id;
-        const nameHtml = isEdit
-            ? `<input class="cname-inp" value="${esc(c.name)}" onkeydown="saveEdit(event,'${c.id}')" onblur="saveEdit(null,'${c.id}')" onclick="event.stopPropagation()" autofocus>`
-            : `<span class="cname" title="${esc(c.name)}">${esc(c.name)}</span>`;
-        return `<div class="conv-item${c.id===S.activeCid?' active':''}" onclick="${isEdit?'':'switchConv(\''+c.id+'\')'}">
-            ${nameHtml}
-            <button class="cact" onclick="event.stopPropagation();startEdit('${c.id}')" title="重命名">✎</button>
-            <button class="cact del" onclick="event.stopPropagation();confirmDelete('${c.id}','${esc(c.name)}')" title="删除">✕</button>
-        </div>`;
-    }).join('');
+        const item = document.createElement('div');
+        item.className = 'conv-item' + (c.id === S.activeCid ? ' active' : '');
+        item.dataset.cid = c.id;
+
+        if (isEdit) {
+            const inp = document.createElement('input');
+            inp.className = 'cname-inp';
+            inp.value = c.name;
+            inp.addEventListener('keydown', ev => saveEdit(ev, c.id));
+            inp.addEventListener('blur', () => saveEdit(null, c.id));
+            inp.addEventListener('click', ev => ev.stopPropagation());
+            item.appendChild(inp);
+        } else {
+            const span = document.createElement('span');
+            span.className = 'cname';
+            span.title = c.name;
+            span.textContent = c.name;
+            item.appendChild(span);
+            item.addEventListener('click', () => switchConv(c.id));
+        }
+
+        const renameBtn = document.createElement('button');
+        renameBtn.className = 'cact';
+        renameBtn.title = '重命名';
+        renameBtn.textContent = '✎';
+        renameBtn.addEventListener('click', ev => { ev.stopPropagation(); startEdit(c.id); });
+        item.appendChild(renameBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'cact del';
+        delBtn.title = '删除';
+        delBtn.textContent = '✕';
+        delBtn.addEventListener('click', ev => { ev.stopPropagation(); confirmDelete(c.id, c.name); });
+        item.appendChild(delBtn);
+
+        el.appendChild(item);
+    });
+    const focusInp = el.querySelector('.cname-inp');
+    if (focusInp) { focusInp.focus(); focusInp.select(); }
 }
 
 function renderChat() {
@@ -310,27 +353,40 @@ async function saveEdit(e, id) {
     if (S.activeCid === id) $('topName').textContent = S.convs[id]?.name || '对话';
 }
 
-function confirmDelete(id, name) {
+// 通用确认弹窗：文案一律用 textContent 写入，动态数据不进 HTML
+function confirmDialog({title, text, okText, onOk}) {
     const ov = document.createElement('div'); ov.className = 'modal-overlay';
-    ov.innerHTML = `<div class="modal"><h3>删除对话</h3><p>确定要删除"${esc(name)}"及其所有文件吗？此操作不可恢复。</p>
-        <div class="modal-btns"><button class="btn-cancel">取消</button><button class="btn-danger">确认删除</button></div></div>`;
-    ov.onclick = e => { if (e.target === ov) ov.remove(); };
-    document.body.appendChild(ov);
+    ov.innerHTML = `<div class="modal"><h3></h3><p></p>
+        <div class="modal-btns"><button class="btn-cancel"></button><button class="btn-danger"></button></div></div>`;
+    ov.querySelector('h3').textContent = title;
+    ov.querySelector('p').textContent = text;
     const btns = ov.querySelectorAll('button');
-    btns[0].onclick = () => ov.remove();
-    btns[1].onclick = async () => {
-        ov.remove();
-        await api(`/api/conversations/${id}?session_id=${S.sid}`, { method:'DELETE' });
-        const { [id]: _, ...rest } = S.convs;
-        S.convs = rest;
-        if (S.activeCid === id) {
-            const remaining = Object.keys(S.convs);
-            S.activeCid = remaining[0] || null;
-        }
-        renderSidebar();
-        refreshView();
-        toast('已删除');
-    };
+    btns[0].textContent = '取消';
+    btns[1].textContent = okText || '确认';
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    document.body.appendChild(ov);
+    btns[0].addEventListener('click', () => ov.remove());
+    btns[1].addEventListener('click', () => { ov.remove(); onOk(); });
+}
+
+function confirmDelete(id, name) {
+    confirmDialog({
+        title: '删除对话',
+        text: `确定要删除"${name}"及其所有文件吗？此操作不可恢复。`,
+        okText: '确认删除',
+        onOk: async () => {
+            await api(`/api/conversations/${id}?session_id=${S.sid}`, { method:'DELETE' });
+            const { [id]: _, ...rest } = S.convs;
+            S.convs = rest;
+            if (S.activeCid === id) {
+                const remaining = Object.keys(S.convs);
+                S.activeCid = remaining[0] || null;
+            }
+            renderSidebar();
+            refreshView();
+            toast('已删除');
+        },
+    });
 }
 
 async function deleteConv(id) { await confirmDelete(id, S.convs[id]?.name||'对话'); }
@@ -338,20 +394,21 @@ async function deleteConv(id) { await confirmDelete(id, S.convs[id]?.name||'对�
 function toggleSidebar() { $('sidebar').classList.toggle('collapsed'); }
 
 async function handleFileSelect(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    await uploadFile(file);
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
+    if (files.length) await uploadFiles(files);
 }
 
-async function uploadFile(file) {
-    if (S.isStreaming || !file) return;
+// 一次请求提交整批文件：后端一次只重建一次索引，逐文件传会退化成 O(N²)
+async function uploadFiles(files) {
+    if (S.isStreaming || !files || !files.length) return;
     const form = new FormData();
-    form.append('file', file);
+    files.forEach(f => form.append('files', f));
     form.append('session_id', S.sid);
     if (S.activeCid) form.append('conv_id', S.activeCid);
 
-    const tid = toast('⏳ 文件解析中，请稍候...', false, 0);
+    const many = files.length > 1;
+    const tid = toast(many ? `⏳ ${files.length} 个文件解析中，请稍候...` : '⏳ 文件解析中，请稍候...', false, 0);
     const timer = setTimeout(() => { const t = document.getElementById(tid); if (t) t.textContent = '⏳ 仍在解析中...'; }, 8000);
 
     try {
@@ -367,7 +424,8 @@ async function uploadFile(file) {
         S.activeCid = cid;
         renderSidebar();
         refreshView();
-        toast(`✅ 已添加 "${d.file_name}"`);
+        const names = d.file_names || [];
+        toast(names.length > 1 ? `✅ 已添加 ${names.length} 个文件` : `✅ 已添加 "${names[0] || ''}"`);
     } catch(e) {
         clearTimeout(timer);
         document.getElementById(tid)?.remove();
@@ -375,12 +433,57 @@ async function uploadFile(file) {
     }
 }
 
+function renderFileList() {
+    const c = S.convs[S.activeCid];
+    const el = $('fileList');
+    el.innerHTML = '';
+    (c?.files || []).forEach(f => {
+        const row = document.createElement('div');
+        row.className = 'fl-item';
+
+        const name = document.createElement('span');
+        name.className = 'fl-name';
+        name.textContent = f.file_name;
+        row.appendChild(name);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'fl-del';
+        delBtn.title = '删除该文件';
+        delBtn.textContent = '✕';
+        delBtn.dataset.fileName = f.file_name;
+        delBtn.addEventListener('click', () => confirmDeleteFile(f.file_name));
+        row.appendChild(delBtn);
+
+        el.appendChild(row);
+    });
+}
+
+function confirmDeleteFile(name) {
+    confirmDialog({
+        title: '删除文件',
+        text: `确定要从本对话移除"${name}"吗？该文件的内容会从索引里一并清掉。`,
+        okText: '确认删除',
+        onOk: async () => {
+            try {
+                const d = await api(`/api/conversations/${S.activeCid}/files/${encodeURIComponent(name)}?session_id=${S.sid}`, { method:'DELETE' });
+                const c = S.convs[S.activeCid];
+                if (c) { c.files = d.files || []; c.messages = d.messages || []; }
+                renderFileList();
+                refreshView();
+                toast(`已移除 "${name}"`);
+            } catch (e) {
+                toast(e.message || '删除失败', true);
+            }
+        },
+    });
+}
+
 function toggleFileList() {
     const c = S.convs[S.activeCid];
     if (!c?.files?.length) return;
     const el = $('fileList');
     if (el.classList.contains('hidden')) {
-        el.innerHTML = c.files.map(f => `<div class="fl-item">${esc(f.file_name)}</div>`).join('');
+        renderFileList();
         el.classList.remove('hidden');
     } else {
         el.classList.add('hidden');
@@ -441,11 +544,17 @@ function appendStreamMsg() {
 }
 
 document.addEventListener('dragover', e => e.preventDefault());
-document.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f) uploadFile(f); });
+document.addEventListener('drop', e => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length) uploadFiles(files);
+});
 document.addEventListener('paste', e => {
-    for (const item of e.clipboardData?.items||[]) {
-        if (item.kind === 'file') { e.preventDefault(); uploadFile(item.getAsFile()); return; }
+    const files = [];
+    for (const item of e.clipboardData?.items || []) {
+        if (item.kind === 'file') { const f = item.getAsFile(); if (f) files.push(f); }
     }
+    if (files.length) { e.preventDefault(); uploadFiles(files); }
 });
 
 init();

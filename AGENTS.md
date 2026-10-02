@@ -62,7 +62,9 @@ python src/server.py            # 直接启动
 - **路径锚定项目根**: `config.PROJECT_ROOT` 是唯一的项目根定义，`resolve_path()` 把相对路径（含默认值）锚定到它。`VECTOR_DB_PATH` / `STATE_DIR` / `LEGACY_STATE_FILE` 都走它 —— 从任何目录启动都不会各自生出一份向量库或状态目录
 - **状态文件不存派生字段**: 磁盘上只存 `files[].file_text`；`full_text` 由 `server._conv_full_text()` 在运行时拼接、加载时重新派生。旧文件里带 `full_text` 也能无损读，但新写入不再把正文存两遍
 - **缺 API_KEY 只降级不崩**: `config.build_client()` 缺 key 时记一条中文 ERROR 并返回 `None`（不再让 openai SDK 抛英文异常把 import 阶段带崩）。此时向量/关键词检索照常，HyDE 跳过，问答抛 `LLMStreamError` 给前端中文提示
-- **上传大小上限**: `MAX_UPLOAD_MB`（默认 20）在 `/api/upload` 入口按 `_upload_size()` 判断，超限直接 413，不进入解析 —— 解析大 PDF/DOCX 是全流程最贵的一步
+- **上传大小上限**: `MAX_UPLOAD_MB`（默认 20）在 `/api/upload` 入口按 `_upload_size()` 判断，**按整批总字节数**算，超限直接 413、不进入解析 —— 解析大 PDF/DOCX 是全流程最贵的一步
+- **多文件上传与单文件删除**: 上传用复数 `files` 字段一次提交整批（兼容旧的单数 `file`），`_commit_upload(sid, conv_id, [(name, text)])` 一次只重建一次索引 —— `_rebuild_collection` 是全量重写，逐文件提交会退化成 O(N²) 次重复嵌入。`DELETE /api/conversations/{conv_id}/files/{file_name}` 删除单个文件并重建索引；**删光文件时派生 `full_text` 必须为空**，否则索引里会残留已删正文
+- **前端动态数据不进内联处理器**: 对话名/文件名一律经 `textContent` / `dataset` 落地，事件用 `addEventListener` 绑定。内联事件处理器是 HTML 属性、会被当代码解析，动态数据里一个单引号就能闭合字符串执行任意 JS（P1-15 的老写法）；`esc()` 也补了单引号转义作为纵深防御
 
 ## 配置
 
