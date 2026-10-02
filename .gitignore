@@ -3,9 +3,9 @@
 venv/
 env/
 
-# 敏感配置
+# 敏感配置（.env 不入库；模板 .env.example 必须留在版本库里）
 .env
-!?.env.example
+!.env.example
 
 # Python 缓存
 __pycache__/

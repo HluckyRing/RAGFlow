@@ -68,6 +68,7 @@ python src/server.py            # 直接启动
 - **默认只监听回环**: `HOST`（默认 `127.0.0.1`）/ `PORT`（默认 8080）统一定义在 `config.py`，两个启动入口（`python server.py`、`python src/server.py`）都复用它。这个服务没有鉴权，要对外提供必须显式设 `HOST=0.0.0.0`，不要在代码里写死对外地址
 - **归档脚本不关 TLS 校验**: `legacy/` 里曾用 `ssl._create_default_https_context = ssl._create_unverified_context` 全局关掉证书校验，已移除；`tests/test_security.py` 有静态守卫防止被写回来
 - **孤儿 collection 清理**: `scripts/cleanup_orphan_collections.py` —— 默认干跑，要 `--apply` 才真删；只删名字以 `kb_conv_` 开头且不被任何状态文件引用的集合；如果一个被引用的集合都没扫到（通常是路径指错）就中止，只有 `--force` 能越过。状态来源含 `state/*.json` 与旧版 `kb_state.json(.migrated)`
+- **审查清单与 CI**: 2026-10-01 那次代码审查的原始条目归档在 `docs/code-review-2026-10-01.md`（**编号连续**：P0 1–7 / P1 8–17 / P2 18–21；**不存在 P1-1~7 与 P1-18**），整改状态随代码更新；`.github/workflows/ci.yml` 在 push/PR 上跑 `pytest -q`
 
 ## 配置
 

@@ -95,7 +95,6 @@ LOADERS = {
 }
 
 SUPPORTED_EXTENSIONS = list(LOADERS.keys())
-SUPPORTED_TYPES = [ext.lstrip('.') for ext in SUPPORTED_EXTENSIONS]
 
 
 def _unwrap(uploaded_file):

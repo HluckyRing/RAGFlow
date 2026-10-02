@@ -457,13 +457,6 @@ async def chat(request: Request):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-@app.get("/api/conversations/{conv_id}/messages")
-async def get_messages(conv_id: str, session_id: str):
-    sid, sess = await run_in_threadpool(_ensure_session, session_id)
-    conv = sess.get("conversations", {}).get(conv_id)
-    return {"messages": conv.get("messages", []) if conv else []}
-
-
 if __name__ == "__main__":
     import uvicorn
     logger.info("RAGFlow 启动: http://%s:%d", HOST, PORT)
