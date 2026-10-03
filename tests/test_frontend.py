@@ -149,3 +149,10 @@ def test_switching_conversation_clears_edit_state():
     start = html.index("async function switchConv")
     end = html.index("function startEdit(")
     assert "cancelEditMsg" in html[start:end]
+
+
+def test_file_input_accepts_pptx():
+    """PPT 支持链上，前端 accept 是最容易漏的一环：漏了用户在选择器里根本选不到。"""
+    tag = re.search(r'<input[^>]*id="fileInput"[^>]*>', _html()).group(0)
+    assert ".pptx" in tag, "file input 要接受 .pptx"
+    assert ".pptm" in tag, "file input 要接受 .pptm"

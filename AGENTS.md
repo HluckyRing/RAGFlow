@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## 项目概述
 
-RAGFlow — 基于 RAG 架构的本地知识库问答系统，支持 PDF/Word/Excel/CSV/TXT/Markdown 多格式文件上传，通过 HyDE（假设性文档检索）提升召回率，FastAPI + SSE 流式输出，前端为零依赖原生 HTML/CSS/JS。
+RAGFlow — 基于 RAG 架构的本地知识库问答系统，支持 PDF/Word/Excel/PPT/CSV/TXT/Markdown 多格式文件上传，通过 HyDE（假设性文档检索）提升召回率，FastAPI + SSE 流式输出，前端为零依赖原生 HTML/CSS/JS。
 
 ## 启动与开发
 
@@ -66,6 +66,7 @@ python -m src.server            # 等价写法
 - **缺 API_KEY 只降级不崩**: `config.build_client()` 缺 key 时记一条中文 ERROR 并返回 `None`（不再让 openai SDK 抛英文异常把 import 阶段带崩）。此时向量/关键词检索照常，HyDE 跳过，问答抛 `LLMStreamError` 给前端中文提示
 - **上传大小上限**: `MAX_UPLOAD_MB`（默认 20）在 `/api/upload` 入口按 `_upload_size()` 判断，**按整批总字节数**算，超限直接 413、不进入解析 —— 解析大 PDF/DOCX 是全流程最贵的一步
 - **多文件上传与单文件删除**: 上传用复数 `files` 字段一次提交整批（兼容旧的单数 `file`），`_commit_upload(sid, conv_id, [(name, text)])` 一次只重建一次索引 —— `_rebuild_collection` 是全量重写，逐文件提交会退化成 O(N²) 次重复嵌入。`DELETE /api/conversations/{conv_id}/files/{file_name}` 删除单个文件并重建索引；**删光文件时派生 `full_text` 必须为空**，否则索引里会残留已删正文
+- **PPT 只支持 OOXML**: `.pptx`/`.pptm` 走 `python-pptx`（同名软降级标志 `HAS_PPTX`）；旧版二进制 `.ppt` 明确拒绝并提示「另存为 .pptx」。**不要把 `.ppt` 塞进 `LOADERS`** —— `load_file()` 报错里的「支持: …」是按 `LOADERS.keys()` 生成的，塞进去等于把不支持的格式列成支持的。抽取内容 = 文本框/占位符段落 + 表格（`" | "` 拼接）+ **组合形状递归下钻** + 演讲者备注（`[备注]` 前缀），页间用 `=== 第 N 页 ===` 分隔；**整页无文字时不输出页头**，纯图片 PPT 因此照旧落回「文件内容为空」的 400
 - **前端动态数据不进内联处理器**: 对话名/文件名一律经 `textContent` / `dataset` 落地，事件用 `addEventListener` 绑定。内联事件处理器是 HTML 属性、会被当代码解析，动态数据里一个单引号就能闭合字符串执行任意 JS（P1-15 的老写法）；`esc()` 也补了单引号转义作为纵深防御
 - **前端主题与响应式**: 配色收敛为 CSS 变量，深色值挂在 `html[data-theme="dark"]`。`<head>` 里的内联脚本在 CSS 生效前定主题（避免首屏闪白）：没手动选过就跟随 `prefers-color-scheme`，手动切换后写入 `localStorage.ragflow_theme` 并长期优先。≤820px 时侧边栏改为固定抽屉 + 遮罩，`syncSidebar()` 在断点变化时同步开合
 - **重新生成/编辑重发靠 truncate_to 覆盖旧轮次**: `/api/chat` 多了可选整数 `truncate_to`（`0..len(messages)`），语义是「先把 `messages` 截到该长度，再追加本次提问」；不传时行为与改造前完全一致，越界/非整数/布尔一律 400 中文提示。截断与追加在 `_append_message` 的**同一把会话锁内**完成，不会被并发写截到一半。重新生成不需要新接口：截到这条提问处 + 用同样的文字重发即可，服务端因此不会留下重复轮次

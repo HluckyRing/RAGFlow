@@ -6,7 +6,7 @@
 
 ## ✨ 核心亮点
 
-- 📄 **多格式支持**：上传 PDF、Word、Excel、CSV、TXT、Markdown 等文件，自动提取文本
+- 📄 **多格式支持**：上传 PDF、Word、Excel、PPT、CSV、TXT、Markdown 等文件，自动提取文本
 - 🔍 **HyDE 检索**：先让 AI 生成"假设性答案"再去向量库匹配，显著提升复杂问题命中率
 - 💬 **多轮对话记忆**：短问题里的指代词（"它"、"这个"）自动接上上一轮的问题，避免检索时语义丢失
 - 💾 **状态持久化**：对话和文件数据自动保存，重启不丢失
@@ -24,6 +24,7 @@
 | PDF | `.pdf` | pypdf |
 | Word | `.docx` | python-docx |
 | Excel | `.xlsx` | openpyxl |
+| PPT | `.pptx` `.pptm` | python-pptx |
 | CSV | `.csv` | 标准库 |
 | 文本 | `.txt` `.md` | 无 |
 
