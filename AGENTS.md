@@ -12,9 +12,11 @@ RAGFlow — 基于 RAG 架构的本地知识库问答系统，支持 PDF/Word/Ex
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动服务（两种方式等效）
-python server.py                # 根目录快捷入口
-python src/server.py            # 直接启动
+# 启动服务（从项目根执行）
+python server.py                # 根目录快捷入口（推荐）
+python -m src.server            # 等价写法
+# 注意：python src/server.py 不可用 —— 以脚本方式运行时 sys.path[0] 是 src/，
+# import src.xxx 会因找不到项目根而报 ModuleNotFoundError
 # 服务运行在 http://localhost:8080
 ```
 
@@ -54,7 +56,7 @@ python src/server.py            # 直接启动
 - **旧数据迁移**: 首次遇到「客户端自带、服务端未见过的 sid」时，把旧版 `kb_state.json` 原子改名认领给它（保留为 `kb_state.json.migrated` 便于回滚）；`/api/session` 新发的 sid 不参与认领
 - **多轮对话**: `resolve_query()` 在问题 < 15 字且含指代词（它/它们/这个/该/上述…，刻意不含裸「这」「那」；含「其他」「其中」等也不算）时，从上一轮用户消息提取实义片段拼到当前问题前。注意 `history` 是**不含当前提问**的快照，所以上一轮就是 `user_msgs[-1]`
 - **ChromaDB**: 使用 PersistentClient 持久化到项目根下的 `chroma_db/`（`VECTOR_DB_PATH`，相对路径锚定项目根），每个对话独立 collection（命名 `kb_{name}_{hash}`）
-- **不阻塞事件循环**: 所有可能阻塞的调用（文件解析、embedding 推理、LLM 网络请求、写盘）一律经 `run_in_threadpool` 执行。SSE 的 `generate()` 必须是**同步**生成器 —— Starlette 只对非 AsyncIterable 用 `iterate_in_threadpool` 迭代，写成 `async def` 反而会在事件循环上迭代、把全服务卡死
+- **不阻塞事件循环**: 所有可能阻塞的调用（文件解析、embedding 推理、LLM 网络请求、写盘）一律经 `run_in_threadpool` 执行。SSE 的 `_chat_stream()` 必须是**同步**生成器 —— Starlette 只对非 AsyncIterable 用 `iterate_in_threadpool` 迭代，写成 `async def` 反而会在事件循环上迭代、把全服务卡死
 - **按需建向量库**: 建对话时不创建 Chroma collection，推迟到首次上传时在 `_commit_upload` 里补建（不论对话是 API 建的还是上传时顺带建的），避免「建了对话没传文件」留下空集合
 - **Embedding 模型**: BAAI/bge-small-zh-v1.5，通过 `HF_ENDPOINT` 环境变量支持 HuggingFace 镜像
 - **相关性阈值**: 向量结果按 l2 距离过滤（collection 未指定 `hnsw:space`，走 Chroma 默认的 l2；BGE 是归一化向量，距离 = 2 − 2cos）。默认 `MAX_DISTANCE=0.55` —— 实测本项目语料上相关查询 max≈0.47、无关查询 min≈0.62，取分离带中点。超阈值的块不进 context；全部超阈值则走关键词兜底。**换语料或换 embedding 模型必须重新标定**
@@ -65,7 +67,11 @@ python src/server.py            # 直接启动
 - **上传大小上限**: `MAX_UPLOAD_MB`（默认 20）在 `/api/upload` 入口按 `_upload_size()` 判断，**按整批总字节数**算，超限直接 413、不进入解析 —— 解析大 PDF/DOCX 是全流程最贵的一步
 - **多文件上传与单文件删除**: 上传用复数 `files` 字段一次提交整批（兼容旧的单数 `file`），`_commit_upload(sid, conv_id, [(name, text)])` 一次只重建一次索引 —— `_rebuild_collection` 是全量重写，逐文件提交会退化成 O(N²) 次重复嵌入。`DELETE /api/conversations/{conv_id}/files/{file_name}` 删除单个文件并重建索引；**删光文件时派生 `full_text` 必须为空**，否则索引里会残留已删正文
 - **前端动态数据不进内联处理器**: 对话名/文件名一律经 `textContent` / `dataset` 落地，事件用 `addEventListener` 绑定。内联事件处理器是 HTML 属性、会被当代码解析，动态数据里一个单引号就能闭合字符串执行任意 JS（P1-15 的老写法）；`esc()` 也补了单引号转义作为纵深防御
-- **默认只监听回环**: `HOST`（默认 `127.0.0.1`）/ `PORT`（默认 8080）统一定义在 `config.py`，两个启动入口（`python server.py`、`python src/server.py`）都复用它。这个服务没有鉴权，要对外提供必须显式设 `HOST=0.0.0.0`，不要在代码里写死对外地址
+- **前端主题与响应式**: 配色收敛为 CSS 变量，深色值挂在 `html[data-theme="dark"]`。`<head>` 里的内联脚本在 CSS 生效前定主题（避免首屏闪白）：没手动选过就跟随 `prefers-color-scheme`，手动切换后写入 `localStorage.ragflow_theme` 并长期优先。≤820px 时侧边栏改为固定抽屉 + 遮罩，`syncSidebar()` 在断点变化时同步开合
+- **重新生成/编辑重发靠 truncate_to 覆盖旧轮次**: `/api/chat` 多了可选整数 `truncate_to`（`0..len(messages)`），语义是「先把 `messages` 截到该长度，再追加本次提问」；不传时行为与改造前完全一致，越界/非整数/布尔一律 400 中文提示。截断与追加在 `_append_message` 的**同一把会话锁内**完成，不会被并发写截到一半。重新生成不需要新接口：截到这条提问处 + 用同样的文字重发即可，服务端因此不会留下重复轮次
+- **停止生成要落半截回答**: SSE 生成器 `_chat_stream()` 用 `try/finally` 落盘已生成的部分，客户端中断（生成器被 `close()` → `GeneratorExit`）时给消息标 `stopped=true`，前端显示「⏹ 已停止生成」；错误文案仍然绝不进 `messages`。抽成模块级函数是为了能直接测「客户端中途断开」这条路径
+- **消息时间戳由服务端落盘**: `_append_message()` 给缺 `time` 的消息补服务器时间。时间戳只活在前端内存里的话，刷新就没了
+- **默认只监听回环**: `HOST`（默认 `127.0.0.1`）/ `PORT`（默认 8080）统一定义在 `config.py`，两个可用入口（`python server.py`、`python -m src.server`）都复用它。**`python src/server.py` 不能当脚本跑**（`sys.path[0]` 会变成 `src/`，`import src.xxx` 直接 ModuleNotFoundError，只能作为模块被导入）。这个服务没有鉴权，要对外提供必须显式设 `HOST=0.0.0.0`，不要在代码里写死对外地址
 - **归档脚本不关 TLS 校验**: `legacy/` 里曾用 `ssl._create_default_https_context = ssl._create_unverified_context` 全局关掉证书校验，已移除；`tests/test_security.py` 有静态守卫防止被写回来
 - **孤儿 collection 清理**: `scripts/cleanup_orphan_collections.py` —— 默认干跑，要 `--apply` 才真删；只删名字以 `kb_conv_` 开头且不被任何状态文件引用的集合；如果一个被引用的集合都没扫到（通常是路径指错）就中止，只有 `--force` 能越过。状态来源含 `state/*.json` 与旧版 `kb_state.json(.migrated)`
 - **审查清单与 CI**: 2026-10-01 那次代码审查的原始条目归档在 `docs/code-review-2026-10-01.md`（**编号连续**：P0 1–7 / P1 8–17 / P2 18–21；**不存在 P1-1~7 与 P1-18**），整改状态随代码更新；`.github/workflows/ci.yml` 在 push/PR 上跑 `pytest -q`

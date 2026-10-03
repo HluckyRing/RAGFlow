@@ -68,3 +68,84 @@ def test_file_list_deletion_is_wired():
     assert "dataset.fileName" in html
     assert re.search(r"method:\s*'DELETE'", html), "缺少 DELETE 调用"
     assert "/files/" in html
+
+
+# ── 2026-10-03 前端改版新增守卫 ──
+# 约定不变：零依赖、动态数据不进内联处理器（上面三条通用 regex 已覆盖全文件，
+# 这里只补新功能的「接线是否真的接上了」）。
+
+
+def test_theme_follows_system_and_remembers_manual_choice():
+    html = _html()
+    assert "prefers-color-scheme" in html, "首次访问要跟随系统"
+    assert "ragflow_theme" in html, "手动切换过就要记住，下次不再跟系统"
+    assert "data-theme" in html, "主题要落在 html[data-theme] 上供 CSS 覆盖"
+    assert 'id="themeBtn"' in html, "要有手动切换入口"
+
+
+def test_responsive_drawer_has_breakpoint_and_backdrop():
+    html = _html()
+    assert "820px" in html, "移动端断点"
+    assert 'id="sidebarBackdrop"' in html, "抽屉打开时要有遮罩可点关闭"
+    assert "translateX" in html, "移动端侧边栏用位移收起，不是压宽度"
+
+
+def test_stop_generation_uses_abort_controller():
+    html = _html()
+    assert "AbortController" in html
+    assert ".abort()" in html
+    assert "signal" in html, "fetch 要带 signal，否则中断不了"
+
+
+def test_regenerate_and_edit_send_truncate_to():
+    """前端必须把 truncate_to 发给服务端，否则服务端只会追加，历史重复。"""
+    html = _html()
+    assert "truncate_to" in html
+    assert "regenerateMsg" in html
+    assert "startEditMsg" in html
+
+
+def test_export_conversation_as_markdown():
+    html = _html()
+    assert "new Blob" in html
+    assert "text/markdown" in html
+    assert "download" in html
+
+
+def test_conversation_search_and_shortcut():
+    html = _html()
+    assert 'id="convSearch"' in html
+    assert "ctrlKey" in html or "metaKey" in html, "Ctrl/Cmd+K 聚焦搜索"
+
+
+def test_markdown_renderer_supports_tables_lists_quotes():
+    html = _html()
+    assert "thead" in html, "表格要渲染成真表格"
+    assert "<li>" in html, "列表要渲染成真列表"
+    assert "blockquote" in html, "引用块要渲染"
+    assert "inlineMd" in html, "行内规则要复用，别每处各写一套"
+
+
+def test_message_actions_are_bound_with_listener():
+    html = _html()
+    assert "mact" in html, "消息级操作按钮"
+    assert "copyText" in html
+    assert "fmtTime" in html, "时间戳格式化"
+
+
+def test_quick_prompts_offered_when_knowledge_base_is_ready():
+    html = _html()
+    assert "QUICK_PROMPTS" in html, "知识库就绪但没有消息时给几个示例问题"
+    assert "renderEmptyChat" in html
+
+
+def test_switching_conversation_clears_edit_state():
+    """编辑态绑在「某个对话的第 N 条」上。
+
+    换对话不清掉的话，下一次发送会把那个下标当成 truncate_to 用到新对话上，
+    把新对话的历史截掉一部分。
+    """
+    html = _html()
+    start = html.index("async function switchConv")
+    end = html.index("function startEdit(")
+    assert "cancelEditMsg" in html[start:end]

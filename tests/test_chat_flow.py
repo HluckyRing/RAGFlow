@@ -187,3 +187,129 @@ def test_chat_without_api_key_gives_chinese_hint_and_persists_nothing(client, mo
 
     msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
     assert [m["role"] for m in msgs] == ["user"], "错误提示不该作为回答落盘"
+
+
+# ── 重新生成 / 编辑重发：truncate_to 截断历史 ──
+
+def test_truncate_to_rewrites_history_instead_of_appending(client, asked, monkeypatch):
+    """编辑重发：服务端要先把 messages 截到 truncate_to，再追加新提问。
+
+    不截断的话服务端会留下两份同一轮问答，刷新后前端出现重复问答，
+    模型上下文也被重复轮次污染。
+    """
+    seen, fake_stream = asked
+    monkeypatch.setattr(server, "stream_answer", fake_stream)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+
+    client.post("/api/chat", json={"question": "ROE 是什么", "session_id": sid, "conv_id": conv_id})
+    assert len(server.sessions[sid]["conversations"][conv_id]["messages"]) == 2
+
+    r = client.post("/api/chat", json={
+        "question": "改问 ROA", "session_id": sid, "conv_id": conv_id, "truncate_to": 0})
+    assert r.status_code == 200
+
+    msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"], "旧的那一轮必须被截掉"
+    assert msgs[0]["content"] == "改问 ROA"
+    assert seen[1]["history"] == [], "截断后的历史必须为空"
+
+    saved = json.loads(state.file_for(sid).read_text(encoding="utf-8"))
+    assert len(saved["conversations"][conv_id]["messages"]) == 2, "截断必须落盘"
+
+
+def test_regenerate_replaces_old_answer_and_keeps_one_turn(client, asked, monkeypatch):
+    """重新生成：truncate_to 指到这条提问处，只留一条提问 + 新回答。"""
+    seen, fake_stream = asked
+    monkeypatch.setattr(server, "stream_answer", fake_stream)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+
+    client.post("/api/chat", json={"question": "ROE 是什么", "session_id": sid, "conv_id": conv_id})
+    # messages 现在是 [user, assistant]；重新生成 = 截到 user 的下标 0 再用同一句话重发
+    r = client.post("/api/chat", json={
+        "question": "ROE 是什么", "session_id": sid, "conv_id": conv_id, "truncate_to": 0})
+    assert r.status_code == 200
+
+    msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert len([m for m in msgs if m["role"] == "user"]) == 1, "提问只能留一条"
+    assert seen[1]["question"] == "ROE 是什么"
+    assert seen[1]["history"] == [], "重新生成时不该把上一轮回答再喂回去"
+
+
+def test_truncate_to_out_of_range_is_rejected(client, asked, monkeypatch):
+    seen, fake_stream = asked
+    monkeypatch.setattr(server, "stream_answer", fake_stream)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+    client.post("/api/chat", json={"question": "问题", "session_id": sid, "conv_id": conv_id})
+
+    r = client.post("/api/chat", json={
+        "question": "问题", "session_id": sid, "conv_id": conv_id, "truncate_to": 99})
+    assert r.status_code == 400
+    assert "truncate_to" in r.json()["error"]
+    assert len(server.sessions[sid]["conversations"][conv_id]["messages"]) == 2, "拒绝时不能动历史"
+    assert len(seen) == 1, "参数非法就不该调用 LLM"
+
+
+def test_truncate_to_must_be_int(client, asked, monkeypatch):
+    seen, fake_stream = asked
+    monkeypatch.setattr(server, "stream_answer", fake_stream)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+
+    r = client.post("/api/chat", json={
+        "question": "问题", "session_id": sid, "conv_id": conv_id, "truncate_to": "0"})
+    assert r.status_code == 400
+    assert not seen
+
+
+# ── 停止生成：客户端断开也要把半截回答落盘 ──
+
+def test_stop_saves_partial_answer_and_marks_it_stopped(client, monkeypatch):
+    """点「停止生成」= 前端不再读，生成器被 close()。
+
+    半截回答必须落盘，否则用户看了半天的回答刷新后凭空消失；同时打 stopped
+    标记，免得下次加载把一段半截回答当成完整回答。
+    """
+    def slow_stream(question, context, history):
+        yield "第一段"
+        yield "第二段"
+
+    monkeypatch.setattr(server, "stream_answer", slow_stream)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+    server._append_message(sid, conv_id, {"role": "user", "content": "问题"})
+
+    gen = server._chat_stream(sid, conv_id, "问题", "背景", [])
+    first = next(gen)
+    # SSE 里中文被 json.dumps 转义成 \uXXXX，不能直接查字面量
+    assert json.loads(first[len("data: "):])["content"] == "第一段"
+    gen.close()                                   # 模拟前端 abort
+
+    msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[1]["content"] == "第一段"
+    assert msgs[1]["stopped"] is True
+
+    saved = json.loads(state.file_for(sid).read_text(encoding="utf-8"))
+    assert saved["conversations"][conv_id]["messages"][1]["stopped"] is True
+
+
+def test_messages_get_a_timestamp(client, asked, monkeypatch):
+    """消息时间戳要落盘：只存在前端内存里的话刷新就没了。"""
+    seen, fake_stream = asked
+    monkeypatch.setattr(server, "stream_answer", fake_stream)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+    client.post("/api/chat", json={"question": "问题", "session_id": sid, "conv_id": conv_id})
+
+    msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
+    assert all(isinstance(m.get("time"), (int, float)) for m in msgs), msgs

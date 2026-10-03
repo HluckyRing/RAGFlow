@@ -100,14 +100,25 @@ def _ensure_session(session_id, client_supplied=True):
     return session_id, sess
 
 
-def _append_message(sid, conv_id, message):
-    """追加一条消息并落盘。同步实现，调用方统一用线程池执行。"""
+def _append_message(sid, conv_id, message, truncate_to=None):
+    """追加一条消息并落盘。同步实现，调用方统一用线程池执行。
+
+    truncate_to 不为 None 时先把 messages 截到该长度：截断与追加在同一把会话锁内
+    完成，重新生成/编辑重发靠它覆盖旧轮次，而不是往历史里再叠一份。
+
+    没带 time 的消息在这里补服务器时间戳 —— 时间戳只活在前端内存里的话，
+    刷新一次就没了。
+    """
     with state.lock_for(sid):
         # 按 id 重新取一次：期间对话可能已被删除
         target = sessions.get(sid, {}).get("conversations", {}).get(conv_id)
         if target is None:
             return False
-        target.setdefault("messages", []).append(message)
+        msgs = target.setdefault("messages", [])
+        if truncate_to is not None:
+            del msgs[truncate_to:]
+        message.setdefault("time", time.time())
+        msgs.append(message)
         _save_state(sid)
         return True
 
@@ -399,14 +410,56 @@ async def upload_file(files: list[UploadFile] | None = File(None),
     return result
 
 
+def _sse_event(payload):
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _chat_stream(sid, conv_id, question, context, history):
+    """同步生成器：把 stream_answer 的 token 转成 SSE，并在结束时落盘。
+
+    Starlette 会用 iterate_in_threadpool 迭代它，因此 stream_answer 里等 LLM
+    出 token 的阻塞不会占住事件循环。（写成 async 生成器反而会走 AsyncIterable
+    分支、在事件循环上迭代，把整个服务卡住 —— 这正是改造前的问题。）
+
+    前端点「停止生成」时这个生成器会被 close()、抛 GeneratorExit：已经吐给前端
+    的半截回答必须落盘（否则刷新后凭空消失），并打上 stopped 标记，免得下次加载
+    把一段半截回答当成完整回答。错误文案仍然只推给前端、绝不进历史。
+    """
+    full_answer = ""
+    stopped = False
+    try:
+        try:
+            for token in stream_answer(question, context, history):
+                full_answer += token
+                yield _sse_event({"type": "token", "content": token})
+        except LLMStreamError as e:
+            logger.warning("流式回答中断，错误文案不写入历史: %s", e)
+            # 错误照样推给前端（前端不用改），但绝不写进 messages
+            yield _sse_event({"type": "token", "content": "\n\n" + str(e)})
+    except GeneratorExit:
+        stopped = True
+        raise
+    finally:
+        # 已生成的部分照常落盘，不丢用户已经看到的内容；空回答不落一条空的 assistant
+        if full_answer.strip():
+            entry = {"role": "assistant", "content": full_answer}
+            if stopped:
+                entry["stopped"] = True
+            _append_message(sid, conv_id, entry)
+    yield _sse_event({"type": "done"})
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     data = await request.json()
     question = data.get("question", "").strip()
     session_id = data.get("session_id", "")
     conv_id = data.get("conv_id", "")
+    truncate_to = data.get("truncate_to")
     if not question or not session_id:
         return JSONResponse({"error": "缺少参数"}, status_code=400)
+    if truncate_to is not None and (isinstance(truncate_to, bool) or not isinstance(truncate_to, int)):
+        return JSONResponse({"error": "truncate_to 必须是整数"}, status_code=400)
 
     sid, sess = await run_in_threadpool(_ensure_session, session_id)
     conv = sess.get("conversations", {}).get(conv_id)
@@ -415,8 +468,17 @@ async def chat(request: Request):
     if not conv.get("files"):
         return JSONResponse({"error": "请先上传文件"}, status_code=400)
 
-    # 取快照：此刻【不含】当前提问，所以 resolve_query 里的上一轮就是 [-1]
-    history = list(conv.get("messages", []))
+    stored = list(conv.get("messages", []))
+    if truncate_to is not None:
+        if truncate_to < 0 or truncate_to > len(stored):
+            return JSONResponse(
+                {"error": f"truncate_to 超出消息范围（0-{len(stored)}）"}, status_code=400)
+        stored = stored[:truncate_to]
+
+    # 取快照：此刻【不含】当前提问，所以 resolve_query 里的上一轮就是 [-1]。
+    # 重新生成/编辑重发走的就是这条路径：被截掉的那一轮既不在 history 里，
+    # 落盘时也不会再叠一份。
+    history = list(stored)
     search_query = resolve_query(question, history)
     file_count = len(conv.get("files", []))
     dynamic_top_k = max(10, file_count * 3)
@@ -428,33 +490,14 @@ async def chat(request: Request):
     if not context:
         return JSONResponse({"error": "未找到相关内容"}, status_code=400)
 
-    if not await run_in_threadpool(_append_message, sid, conv_id, {"role": "user", "content": question}):
+    # 检索成功才把提问写进历史（带 truncate_to 时同时覆盖旧轮次），
+    # 所以「没检索到内容」的提问依然不会入库。
+    if not await run_in_threadpool(
+            _append_message, sid, conv_id, {"role": "user", "content": question}, truncate_to):
         return JSONResponse({"error": "对话不存在"}, status_code=400)
 
-    def generate():
-        """同步生成器。Starlette 会用 iterate_in_threadpool 迭代它，
-        因此 stream_answer 里等 LLM 出 token 的阻塞不会占住事件循环。
-
-        （写成 async 生成器反而会走 AsyncIterable 分支、在事件循环上迭代，
-        把整个服务卡住 —— 这正是改造前的问题。）
-        """
-        full_answer = ""
-        try:
-            for token in stream_answer(question, context, history):
-                full_answer += token
-                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
-        except LLMStreamError as e:
-            logger.warning("流式回答中断，错误文案不写入历史: %s", e)
-            # 错误照样推给前端（前端不用改），但绝不写进 messages
-            message = "\n\n" + str(e)
-            yield f"data: {json.dumps({'type': 'token', 'content': message})}\n\n"
-
-        # 已生成的部分照常落盘，不丢用户已经看到的内容；错误文案不入历史
-        if full_answer.strip():
-            _append_message(sid, conv_id, {"role": "assistant", "content": full_answer})
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(_chat_stream(sid, conv_id, question, context, history),
+                             media_type="text/event-stream")
 
 
 if __name__ == "__main__":
