@@ -136,3 +136,43 @@ def test_legacy_state_with_full_text_still_loads(app_state):
     _, sess = server._ensure_session(sid)
     assert sess["conversations"]["c1"]["full_text"] == "旧文本"
     assert sess["conversations"]["c1"]["files"][0]["file_text"] == "旧文本"
+
+
+# ── 落盘前最后一道防线（第三层清洗） ──
+# 内存里万一残留脏字符（历史状态、客户端直接塞进 content 的 \ud800 转义），
+# 落盘时也不能失败 —— state 用 json.dump(ensure_ascii=False)，代理字符会让整个
+# 保存 UnicodeEncodeError，而且该异常被 state 内部吞掉，表现为「静默丢数据」。
+
+def test_serializable_strips_surrogates_so_payload_is_json_safe(app_state):
+    sess = {
+        "active_conv": "c1",
+        "conversations": {"c1": {
+            "name": "对话", "created_at": 1,
+            "files": [{"file_name": "坏.pdf", "file_text": "正常\ud800文本"}],
+            "messages": [{"role": "user", "content": "问\ud800题"}],
+            "collection": None, "use_vector": False, "_cname": "kb_c1",
+        }},
+    }
+
+    out = server._serializable(sess)
+
+    assert out["conversations"]["c1"]["files"][0]["file_text"] == "正常文本"
+    assert out["conversations"]["c1"]["messages"][0]["content"] == "问题"
+    # 不洗的话这一行就会抛 UnicodeEncodeError: surrogates not allowed
+    json.dumps(out, ensure_ascii=False).encode("utf-8")
+
+
+def test_save_state_survives_surrogates_in_memory(app_state):
+    """内存带脏字符时，真实落盘路径也必须成功。"""
+    sid, sess = server._ensure_session("d" * 16)
+    sess["conversations"]["c1"] = {
+        "id": "c1", "name": "对话", "created_at": 1,
+        "files": [{"file_name": "坏.pdf", "file_text": "正常\ud800文本"}],
+        "full_text": "正常\ud800文本",
+        "collection": None, "use_vector": False, "messages": [], "_cname": "kb_c1",
+    }
+
+    server._save_state(sid)
+
+    saved = json.loads(state.file_for(sid).read_text(encoding="utf-8"))
+    assert saved["conversations"]["c1"]["files"][0]["file_text"] == "正常文本"

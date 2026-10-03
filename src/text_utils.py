@@ -1,10 +1,20 @@
 # -*- coding: utf-8 -*-
-"""中文文本的轻量处理：剥离疑问词 + 抽取检索/指代用的实义词。
+"""中文文本的轻量处理：清掉脏字符、剥离疑问词、抽取检索/指代用的实义词。
 
 不引入分词依赖 —— 中文按 2/3-gram 切分。检索（retrieval）和指代消解（llm）
 都需要同一套「哪些词才算有意义」的判断，集中在这里，避免两处逻辑再次各自跑偏。
 """
 import re
+
+from src.config import logger
+
+# 孤立代理字符（U+D800–U+DFFF）。字体映射损坏的 PDF 经 pypdf 解析后会产出它们：
+# - 进 embedding：sentence-transformers 的 tokenizer 抛
+#   TypeError: TextEncodeInput must be Union[...]
+# - 进 state：json.dump(ensure_ascii=False) 抛 UnicodeEncodeError（surrogates not allowed）
+# 已实测：lxml 会直接拒绝代理字符（XMLSyntaxError），所以 docx/xlsx/pptx 带不进这种脏东西，
+# txt/csv/md 的解码回退链也产生不了；实际来源就是 pypdf。
+SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 # 剥离用的疑问/提问短语，按长度从长到短依次替换
 QUESTION_PHRASES = (
@@ -32,6 +42,20 @@ CONTENT_STOPWORDS = {
     "相关", "内容", "问题", "意思", "含义", "介绍", "说明", "解释", "简述",
     "列举", "请问", "举例",
 }
+
+
+def strip_surrogates(text):
+    """剥掉孤立代理字符，正常文本原样返回。
+
+    「文本进系统」的第一道清洗：pypdf 遇到字体映射损坏的 PDF 会产出代理字符，
+    它既能弄炸 embedding，也能弄炸 state 的 JSON 落盘（见上方注释）。
+    按仓库规矩不静默丢字符 —— 剥掉了几个会记一条 WARNING。
+    """
+    if not text or SURROGATE_RE.search(text) is None:
+        return text
+    cleaned, count = SURROGATE_RE.subn("", text)
+    logger.warning("文本含 %d 个孤立代理字符（常见于字体映射损坏的 PDF），已剥离", count)
+    return cleaned
 
 
 def strip_question_words(text):

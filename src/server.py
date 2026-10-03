@@ -12,6 +12,7 @@ import src.state as state
 from src.config import logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, HOST, PORT
 from src.loaders import load_file
 from src.pdf_ingestion import split_text
+from src.text_utils import strip_surrogates
 from src.retrieval import init_vector_store, sanitize_collection_name, drop_collection
 from src.llm import resolve_query, retrieve_and_build_context, stream_answer, LLMStreamError
 
@@ -37,16 +38,32 @@ def _conv_full_text(conv):
     return "\n\n".join(f.get("file_text", "") for f in (conv.get("files") or []))
 
 
+def _sanitize_messages(messages):
+    """落盘前洗一遍消息正文（客户端可以用 \\ud800 这类 JSON 转义直接塞进来）。"""
+    out = []
+    for m in messages:
+        if isinstance(m, dict) and isinstance(m.get("content"), str):
+            m = {**m, "content": strip_surrogates(m["content"])}
+        out.append(m)
+    return out
+
+
 def _serializable(sess):
-    """剥掉 collection / use_vector / _cname 这些不可序列化的运行时字段。"""
+    """剥掉 collection / use_vector / _cname 这些不可序列化的运行时字段。
+
+    顺带把正文洗干净：state 用 json.dump(ensure_ascii=False) 落盘，孤立代理字符会让
+    整个保存抛 UnicodeEncodeError，而且该异常被 state 内部吞掉 —— 表现为「接口成功、
+    状态没存」。这是落盘前的最后一道防线。
+    """
     convs_out = {}
     for cid, c in sess.get("conversations", {}).items():
         convs_out[cid] = {
             "name": c.get("name", "对话"),
             "created_at": c.get("created_at", 0),
-            "files": [{"file_name": f.get("file_name"), "file_text": f.get("file_text", "")}
+            "files": [{"file_name": f.get("file_name"),
+                       "file_text": strip_surrogates(f.get("file_text", ""))}
                       for f in c.get("files", [])],
-            "messages": c.get("messages", []),
+            "messages": _sanitize_messages(c.get("messages", [])),
             # 不落盘 full_text：它是 files 里各 file_text 的拼接，加载时由
             # _hydrate_collections 重新派生（见 P1-9）。
             "collection_name": c.get("_cname") or c.get("collection_name") or _conv_cname(cid),
@@ -162,6 +179,10 @@ def _commit_upload(sid, conv_id, uploads):
         names = []
         for file_name, file_text in uploads:
             names.append(file_name)
+            # 上传文本进入会话数据的唯一入口，脏字符必须在这里就洗掉：
+            # 只清洗 embedding 输入是不够的 —— state 用 json.dump(ensure_ascii=False)
+            # 落盘，代理字符会让写盘那一步直接 UnicodeEncodeError（2026-10-03 的 500）。
+            file_text = strip_surrogates(file_text)
             existing = next((f for f in conv.get("files", []) if f["file_name"] == file_name), None)
             if existing:
                 existing["file_text"] = file_text
@@ -208,21 +229,43 @@ def _remove_file(sid, conv_id, file_name):
 
 
 def _rebuild_collection(conv):
-    """Rebuild ChromaDB collection from all files in a conversation."""
+    """Rebuild ChromaDB collection from all files in a conversation.
+
+    顺序很讲究：**先把新 chunk 全部写成功，再删旧 id**。反过来的话，add 中途抛错
+    （embedding 收到脏字符、模型挂了、磁盘满……）会把一份原本可用的索引清空 ——
+    2026-10-03 那次 500 就真发生了：状态文件里正文还在，索引却空了。
+    新 id 带一代随机前缀避免和旧 id 撞车；旧 id 留到新内容写成功之后才清理。
+    """
     collection = conv.get("collection")
     if not collection:
         return
     try:
-        ids = collection.get()["ids"]
-        if ids:
-            collection.delete(ids=ids)
+        old_ids = list(collection.get()["ids"])
     except Exception as e:
-        logger.debug("清理 collection 数据失败: %s", e)
-    full_text = _conv_full_text(conv)
+        logger.debug("读取 collection 现有 id 失败: %s", e)
+        old_ids = []
+
+    # 第二道防线：历史状态或别处来的文本也可能带脏字符，这里是进 embedding 的最后一关
+    full_text = strip_surrogates(_conv_full_text(conv))
+    new_ids = []
     if full_text:
+        generation = uuid.uuid4().hex[:8]
         chunks = split_text(full_text)
         for i, chunk in enumerate(chunks):
-            collection.add(documents=[chunk], ids=[f"c{i}"])
+            cid = f"{generation}_c{i}"
+            collection.add(documents=[chunk], ids=[cid])
+            new_ids.append(cid)
+
+    # 全空时 stale 就是全部旧 id —— 也就是「删光文件必须把索引也清空」那条路径
+    new_set = set(new_ids)
+    stale = [i for i in old_ids if i not in new_set]
+    if stale:
+        try:
+            collection.delete(ids=stale)
+        except Exception as e:
+            # 删不掉只是新旧 chunk 并存（检索可能召回两份），总比把索引弄丢好
+            logger.warning("删除旧索引失败，新旧 chunk 会同时存在: %s", e)
+    logger.info("索引已重建: 新增 %d 个 chunk，清理 %d 个旧 chunk", len(new_ids), len(stale))
 
 
 # ── Routes ──
