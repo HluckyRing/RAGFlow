@@ -2,14 +2,18 @@
 import json
 import uuid
 import os
+import re
 import time
+import hashlib
+import shutil
 import threading
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, FileResponse
 
 import src.state as state
-from src.config import logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, HOST, PORT
+from src.config import (logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, HOST, PORT,
+                        UPLOAD_DIR)
 from src.loaders import load_file
 from src.pdf_ingestion import split_text
 from src.text_utils import strip_surrogates, strip_surrogates_counted
@@ -21,12 +25,104 @@ sessions = {}
 _sessions_lock = threading.Lock()
 
 _INDEX_PATH = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+_VENDOR_DIR = os.path.join(os.path.dirname(__file__), "templates", "vendor")
+# 只放行这几个本地 vendor 库（原文件预览用）；用白名单而不是静态目录挂载，
+# 目录里以后多放任何东西也不会被顺手暴露出去。
+_VENDOR_ASSETS = {"jszip.min.js", "docx-preview.min.js", "xlsx.core.min.js"}
 
 app = FastAPI(title="RAGFlow")
 
 
 def _conv_cname(conv_id):
     return sanitize_collection_name("conv_" + conv_id)
+
+
+# ── 上传原件（原文件预览用）────────────────────────────────────────────
+# 目录布局：UPLOAD_DIR/<sha1(session_id)>/<清洗后的 conv_id>/<随机名><扩展名>。
+# 原始文件名只作展示与扩展名来源，绝不参与磁盘路径，避免路径穿越。
+_SAFE_EXT = re.compile(r"^\.[a-z0-9]{1,16}$")
+_STORED_NAME = re.compile(r"^[0-9a-f]{8,64}(\.[a-z0-9]{1,16})?$")
+
+# 能在浏览器里安全内联的格式；其余一律 attachment，避免把上传内容当 HTML 执行。
+_INLINE_MEDIA = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+}
+_ATTACH_MEDIA = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+}
+
+
+def _safe_ext(file_name):
+    ext = os.path.splitext(file_name or "")[1].lower()
+    return ext if _SAFE_EXT.match(ext) else ""
+
+
+def _media_info(file_name):
+    """返回 (media_type, 是否内联)。未知格式按二进制附件下发。"""
+    ext = _safe_ext(file_name)
+    if ext in _INLINE_MEDIA:
+        return _INLINE_MEDIA[ext], True
+    if ext in _ATTACH_MEDIA:
+        return _ATTACH_MEDIA[ext], False
+    return "application/octet-stream", False
+
+
+def _conv_upload_dir(sid, conv_id):
+    safe_sid = hashlib.sha1((sid or "").encode("utf-8")).hexdigest()[:32]
+    safe_conv = re.sub(r"[^0-9A-Za-z_-]", "_", conv_id or "")[:64] or "conv"
+    return os.path.join(UPLOAD_DIR, safe_sid, safe_conv)
+
+
+def _store_original(sid, conv_id, file_name, data):
+    """把上传原字节落盘，返回写入状态文件的 stored_name。"""
+    stored_name = uuid.uuid4().hex + _safe_ext(file_name)
+    directory = _conv_upload_dir(sid, conv_id)
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, stored_name), "wb") as fh:
+        fh.write(data)
+    return stored_name
+
+
+def _original_path(sid, conv_id, stored_name):
+    """stored_name → 磁盘路径。名字非法直接 None（状态文件被篡改也不越出 UPLOAD_DIR）。"""
+    if not stored_name or os.path.basename(stored_name) != stored_name:
+        return None
+    if not _STORED_NAME.match(stored_name):
+        return None
+    return os.path.join(_conv_upload_dir(sid, conv_id), stored_name)
+
+
+def _delete_original(sid, conv_id, stored_name):
+    path = _original_path(sid, conv_id, stored_name)
+    if path and os.path.isfile(path):
+        try:
+            os.remove(path)
+        except OSError:
+            logger.warning("删除原件失败: %s", path)
+
+
+def _delete_conv_uploads(sid, conv_id):
+    """删对话时整目录清掉原件。ignore_errors：目录可能本来就不存在。"""
+    shutil.rmtree(_conv_upload_dir(sid, conv_id), ignore_errors=True)
+
+
+def _serializable_file(f):
+    out = {"file_name": f.get("file_name"),
+           "file_text": strip_surrogates(f.get("file_text", ""))}
+    # 旧数据没有 stored_name；保持原样不写 None，兼容既有状态文件形状。
+    if f.get("stored_name"):
+        out["stored_name"] = f["stored_name"]
+    return out
+
+
+def _file_summary(f):
+    return {"file_name": f["file_name"], "has_original": bool(f.get("stored_name"))}
 
 
 def _conv_full_text(conv):
@@ -60,9 +156,7 @@ def _serializable(sess):
         convs_out[cid] = {
             "name": c.get("name", "对话"),
             "created_at": c.get("created_at", 0),
-            "files": [{"file_name": f.get("file_name"),
-                       "file_text": strip_surrogates(f.get("file_text", ""))}
-                      for f in c.get("files", [])],
+            "files": [_serializable_file(f) for f in c.get("files", [])],
             "messages": _sanitize_messages(c.get("messages", [])),
             # 不落盘 full_text：它是 files 里各 file_text 的拼接，加载时由
             # _hydrate_collections 重新派生（见 P1-9）。
@@ -143,7 +237,8 @@ def _append_message(sid, conv_id, message, truncate_to=None):
 def _commit_upload(sid, conv_id, uploads):
     """把一批上传内容并入会话、重建向量库并落盘。整块同步执行，交给线程池跑。
 
-    uploads 是 [(file_name, file_text), ...]。**一次批量只重建一次索引** ——
+    uploads 是 [(file_name, file_text, original_bytes), ...]，original_bytes 为 None
+    表示不落原件（兼容不需要原件的调用）。**一次批量只重建一次索引** ——
     _rebuild_collection 是「清空 + 全量重写」，逐文件提交会让 N 个文件退化成
     O(N²) 次重复嵌入。
     embedding 推理和写盘都是阻塞操作，放在事件循环上会卡住所有请求。
@@ -178,29 +273,54 @@ def _commit_upload(sid, conv_id, uploads):
 
         names = []
         stripped_chars = []
-        for file_name, file_text in uploads:
-            names.append(file_name)
-            # 上传文本进入会话数据的唯一入口，脏字符必须在这里就洗掉：
-            # 只清洗 embedding 输入是不够的 —— state 用 json.dump(ensure_ascii=False)
-            # 落盘，代理字符会让写盘那一步直接 UnicodeEncodeError（2026-10-03 的 500）。
-            # 剥掉的数量要带回去给前端提示，否则「解析残缺」只躺在后端日志里，用户看不到。
-            file_text, stripped = strip_surrogates_counted(file_text)
-            if stripped:
-                stripped_chars.append({"file_name": file_name, "count": stripped})
-            existing = next((f for f in conv.get("files", []) if f["file_name"] == file_name), None)
-            if existing:
-                existing["file_text"] = file_text
-            else:
-                conv.setdefault("files", []).append({"file_name": file_name, "file_text": file_text})
+        created = []
+        replaced = []
+        try:
+            for file_name, file_text, original_bytes in uploads:
+                names.append(file_name)
+                # 上传文本进入会话数据的唯一入口，脏字符必须在这里就洗掉：
+                # 只清洗 embedding 输入是不够的 —— state 用 json.dump(ensure_ascii=False)
+                # 落盘，代理字符会让写盘那一步直接 UnicodeEncodeError（2026-10-03 的 500）。
+                # 剥掉的数量要带回去给前端提示，否则「解析残缺」只躺在后端日志里，用户看不到。
+                file_text, stripped = strip_surrogates_counted(file_text)
+                if stripped:
+                    stripped_chars.append({"file_name": file_name, "count": stripped})
 
-        conv["full_text"] = _conv_full_text(conv)
-        _rebuild_collection(conv)
-        _save_state(sid)
+                stored_name = None
+                if original_bytes is not None:
+                    stored_name = _store_original(sid, conv_id, file_name, original_bytes)
+                    created.append(stored_name)
+
+                existing = next((f for f in conv.get("files", []) if f["file_name"] == file_name), None)
+                if existing:
+                    old_stored = existing.get("stored_name")
+                    existing["file_text"] = file_text
+                    if stored_name:
+                        existing["stored_name"] = stored_name
+                        if old_stored and old_stored != stored_name:
+                            replaced.append(old_stored)
+                else:
+                    entry = {"file_name": file_name, "file_text": file_text}
+                    if stored_name:
+                        entry["stored_name"] = stored_name
+                    conv.setdefault("files", []).append(entry)
+
+            conv["full_text"] = _conv_full_text(conv)
+            _rebuild_collection(conv)
+            _save_state(sid)
+        except Exception:
+            # 这批新落的原件要清掉，别让失败请求留下孤儿文件；旧原件等成功落盘后才删，
+            # 避免「重建/写盘失败 + 旧原件已删」把一份可用原件弄丢。
+            for stored_name in created:
+                _delete_original(sid, conv_id, stored_name)
+            raise
+        for old_stored in replaced:
+            _delete_original(sid, conv_id, old_stored)
 
         return {
             "conv_id": conv_id, "file_names": names, "file_count": len(conv["files"]),
             "conv_name": conv["name"],
-            "files": [{"file_name": f["file_name"]} for f in conv["files"]],
+            "files": [_file_summary(f) for f in conv["files"]],
             "messages": conv.get("messages", []),
             "stripped_chars": stripped_chars,
         }
@@ -219,16 +339,21 @@ def _remove_file(sid, conv_id, file_name):
         if not conv:
             return None
         before = conv.get("files", [])
+        removed = [f for f in before if f.get("file_name") == file_name]
         after = [f for f in before if f.get("file_name") != file_name]
-        if len(after) == len(before):
+        if not removed:
             return False
         conv["files"] = after
         conv["full_text"] = _conv_full_text(conv)
         _rebuild_collection(conv)
         _save_state(sid)
+        # 落盘成功后再删原件；失败前面就抛了，原件还在，不会「文件没了原件也没了」。
+        for f in removed:
+            if f.get("stored_name"):
+                _delete_original(sid, conv_id, f["stored_name"])
         return {
             "file_count": len(after),
-            "files": [{"file_name": f["file_name"]} for f in after],
+            "files": [_file_summary(f) for f in after],
             "messages": conv.get("messages", []),
         }
 
@@ -285,6 +410,15 @@ async def index():
             return f.read()
 
     return await run_in_threadpool(_read)
+
+
+@app.get("/vendor/{name}")
+async def vendor_asset(name: str):
+    """本地 vendor 的前端渲染库；白名单之外一律 404。"""
+    if name not in _VENDOR_ASSETS:
+        return JSONResponse({"error": "资源不存在"}, status_code=404)
+    return FileResponse(os.path.join(_VENDOR_DIR, name),
+                        media_type="text/javascript; charset=utf-8")
 
 
 @app.get("/api/session")
@@ -369,6 +503,8 @@ async def delete_conversation(conv_id: str, session_id: str):
         _save_state(sid)
     # 集合也要删掉，否则 chroma_db 只增不减
     await run_in_threadpool(drop_collection, conv.get("_cname") or conv.get("collection_name"))
+    # 上传原件同样要清，否则 uploads/ 只增不减
+    await run_in_threadpool(_delete_conv_uploads, sid, conv_id)
     return {"ok": True}
 
 
@@ -381,7 +517,7 @@ async def get_conversation(conv_id: str, session_id: str):
     return {
         "id": conv_id, "name": conv["name"],
         "created_at": conv.get("created_at", 0),
-        "files": [{"file_name": f["file_name"]} for f in conv.get("files", [])],
+        "files": [_file_summary(f) for f in conv.get("files", [])],
         "messages": conv.get("messages", []),
     }
 
@@ -390,8 +526,8 @@ async def get_conversation(conv_id: str, session_id: str):
 async def get_file_content(conv_id: str, file_name: str, session_id: str):
     """读取单个文件的抽取正文，供前端「查看文件」预览。
 
-    服务端不保存上传原件，返回的就是 loaders 抽取、且进过索引的纯文本。
-    只读：不落盘、不重建索引，也不改动文件列表。
+    返回的 file_text 是 loaders 抽取、且进过索引的纯文本；has_original 表示是否
+    还存有上传原件（原文件预览用）。只读：不落盘、不重建索引，也不改动文件列表。
     """
     _sid, sess = await run_in_threadpool(_ensure_session, session_id)
     conv = sess.get("conversations", {}).get(conv_id)
@@ -400,8 +536,41 @@ async def get_file_content(conv_id: str, file_name: str, session_id: str):
     for f in conv.get("files", []):
         if f.get("file_name") == file_name:
             text = f.get("file_text") or ""
-            return {"file_name": file_name, "file_text": text, "char_count": len(text)}
+            return {"file_name": file_name, "file_text": text, "char_count": len(text),
+                    "has_original": bool(f.get("stored_name")),
+                    "ext": _safe_ext(file_name)}
     return JSONResponse({"error": "文件不存在"}, status_code=404)
+
+
+@app.get("/api/conversations/{conv_id}/files/{file_name}/raw")
+async def get_file_raw(conv_id: str, file_name: str, session_id: str):
+    """按原字节返回上传原件，供「原文件预览」/下载。
+
+    内联与否按扩展名白名单决定：只有 PDF 与纯文本类走 inline，Office 等一律
+    attachment，并带 nosniff —— 不把用户可控内容当网页执行。
+    """
+    sid, sess = await run_in_threadpool(_ensure_session, session_id)
+    conv = sess.get("conversations", {}).get(conv_id)
+    if not conv:
+        return JSONResponse({"error": "对话不存在"}, status_code=404)
+    f = next((x for x in conv.get("files", []) if x.get("file_name") == file_name), None)
+    if not f:
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    stored_name = f.get("stored_name")
+    if not stored_name:
+        return JSONResponse({"error": "原件未保存（该文件是升级前上传的），请重新上传后再预览"},
+                            status_code=404)
+    path = _original_path(sid, conv_id, stored_name)
+    if not path or not os.path.isfile(path):
+        return JSONResponse({"error": "原件不存在，请重新上传"}, status_code=404)
+    media_type, inline = _media_info(file_name)
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=file_name,
+        content_disposition_type="inline" if inline else "attachment",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.delete("/api/conversations/{conv_id}/files/{file_name}")
@@ -462,13 +631,16 @@ async def upload_file(files: list[UploadFile] | None = File(None),
     for uf in uploads:
         name = uf.filename or "未命名文件"
         try:
+            # 原文件预览要留原件：先把原始字节读出来，再解析。
+            # load_file 内部的 _unwrap 会 seek(0)，所以读完不影响后续解析。
+            original_bytes = await uf.read()
             # 解析 PDF/DOCX/XLSX 是纯阻塞 I/O + CPU，必须移出事件循环
             text = await run_in_threadpool(load_file, uf)
         except Exception as e:
             return JSONResponse({"error": f"{name}: {e}"}, status_code=400)
         if not text.strip():
             return JSONResponse({"error": f"文件内容为空：{name}"}, status_code=400)
-        parsed.append((name, text))
+        parsed.append((name, text, original_bytes))
 
     result = await run_in_threadpool(_commit_upload, sid, conv_id, parsed)
     if result is None:

@@ -241,3 +241,48 @@ def test_file_preview_truncates_huge_text_with_notice():
 def test_escape_closes_file_preview():
     src = _source_between("function onGlobalKey", "function onDrop")
     assert "closeFilePreview" in src, "Esc 要能关掉预览抽屉"
+
+
+# ── 原文件预览（本地 vendor 渲染库）守卫 ──
+# 用户要求「原文件原预览」：原件要持久化，PDF/文本直接看原件，DOCX/XLSX 用本地
+# 内置的渲染库（非 CDN），PPTX 只下载。动态数据仍然只走 textContent。
+
+VENDOR_LIBS = ('/vendor/jszip.min.js', '/vendor/docx-preview.min.js', '/vendor/xlsx.core.min.js')
+
+
+def test_vendor_renderers_are_local_not_cdn():
+    html = _html()
+    for lib in VENDOR_LIBS:
+        assert lib in html, f"缺少本地 vendor 库 {lib}"
+    assert not re.search(r'<script[^>]+src="https?://', html), "不能再引入外网 CDN 依赖"
+
+
+def test_preview_drawer_has_tabs_frame_and_doc_stage():
+    html = _html()
+    for marker in ('id="filePreviewTabs"', 'id="fpTabOriginal"', 'id="fpTabText"',
+                   'id="filePreviewFrame"', 'id="filePreviewDoc"'):
+        assert marker in html, f"缺少原件预览元素 {marker}"
+
+
+def test_original_preview_maps_formats_to_renderers():
+    src = _source_between("function previewKind", "function closeFilePreview")
+    assert "renderAsync" in src, "DOCX 要交给 docx-preview 渲染"
+    assert "XLSX.read" in src, "XLSX 要用 SheetJS 解析"
+    assert "sheet_to_json" in src, "XLSX 取出行数据后自己建表"
+    assert "sheet_to_html" not in src, "不能把库生成的 HTML 直接塞进 DOM"
+    assert "下载原件" in src, "PPTX/渲染失败要有下载兜底"
+    assert "filePreviewFrame" in src, "PDF 用 iframe 看原件"
+    assert "原件未保存" in src, "升级前的旧文件要标注没有原件"
+
+
+def test_xlsx_preview_builds_table_with_textcontent_only():
+    src = _source_between("function renderXlsx", "async function renderOriginal")
+    assert "createElement" in src, "要自己建 table"
+    assert "textContent" in src, "单元格文本必须用 textContent 写入"
+    assert "innerHTML" not in src, "单元格是用户文件内容，绝不能当 HTML 解析"
+
+
+def test_preview_open_reads_original_metadata():
+    src = _source_between("async function openFilePreview", "function closeFilePreview")
+    assert "has_original" in src, "抽屉要根据后端返回的 has_original 选视图"
+    assert "previewKind" in src, "按扩展名分派渲染器"

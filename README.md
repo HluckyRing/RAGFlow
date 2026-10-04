@@ -16,6 +16,7 @@
 - 🧱 **入口防护**：单次上传默认上限 20 MB（按整批总字节数判断，超限在入口直接拒绝、不进解析），大模型调用默认 60 秒超时；服务默认只监听 `127.0.0.1`，不对外暴露
 - 🗂 **多文件知识库**：一次可选或拖拽多个文件（一次请求提交，只重建一次索引），文件列表里可单独移除某个文件并自动重建索引
 - 🎛 **交互与主题**：深色模式（跟随系统，手动切换后记住）、移动端抽屉侧边栏、消息级操作（重新生成 / 编辑重发 / 停止生成 / 复制）、对话搜索（Ctrl/Cmd+K）、导出 Markdown、表格列表代码块渲染与消息时间戳
+- 👁 **原文件预览**：上传原件会持久化，右侧抽屉默认看原文件、可切换抽取文本；PDF 用浏览器原生渲染，DOCX/XLSX 用本地内置的渲染库，PPTX 等提供下载原件
 
 ## 📋 支持格式
 
@@ -34,7 +35,7 @@
 - **大模型**：DeepSeek API（兼容 OpenAI 格式）
 - **向量引擎**：ChromaDB + BAAI/bge-small-zh-v1.5（中文 Embedding）
 - **后端**：FastAPI + SSE 流式输出
-- **前端**：原生 HTML/CSS/JS（零依赖、无 CDN；CSS 变量主题，含深色模式与移动端响应式）
+- **前端**：原生 HTML/CSS/JS（无框架、无 CDN；Office 预览用本地 vendor 的 docx-preview/SheetJS，仍可离线；CSS 变量主题，含深色模式与移动端响应式）
 
 ## 🚀 快速开始
 
@@ -50,6 +51,8 @@ MODEL_NAME="deepseek-flash"
 # MAX_DISTANCE=0.55
 # 可选：单次上传大小上限（MB），默认 20
 # MAX_UPLOAD_MB=20
+# 可选：上传原件存放目录，默认项目根 uploads/（原文件预览用）
+# UPLOAD_DIR="uploads"
 # 可选：大模型调用超时（秒），默认 60
 # LLM_TIMEOUT=60
 # 可选：监听地址，默认只绑回环 127.0.0.1；要对外提供才改成 0.0.0.0
@@ -93,7 +96,7 @@ RAGFlow/
 │   ├── retrieval.py      # 向量检索 + 关键词回退 + HyDE
 │   ├── llm.py            # 指代消解 + 多轮对话 + 流式答案生成
 │   ├── prompts.py        # Prompt 模板
-│   └── templates/        # 前端界面
+│   └── templates/        # 前端界面（vendor/ 为本地内置的 Office 预览库）
 ├── tests/                # pytest 测试
 ├── scripts/
 │   └── cleanup_orphan_collections.py   # 孤儿向量集合清理（默认干跑）
@@ -101,6 +104,7 @@ RAGFlow/
 │   └── code-review-2026-10-01.md       # 2026-10-01 代码审查原始清单（P0/P1/P2 连续编号）
 ├── .github/workflows/    # CI（pytest）与 Release
 ├── state/                # 会话状态，每个会话一个 JSON 文件（gitignore）
+├── uploads/              # 上传原件，按会话/对话分目录存放（gitignore）
 ├── legacy/               # 历史版本归档
 ├── requirements.txt
 ├── requirements-dev.txt
@@ -119,3 +123,6 @@ python scripts/cleanup_orphan_collections.py --apply    # 确认计划后再执�
 
 脚本只删名字以 `kb_conv_` 开头、且不被任何状态文件引用的集合；如果它一个被引用的集合都没
 扫到（通常是路径指错了），会直接中止而不是把库删空。
+
+上传原件在删除单个文件/整个对话时会一并清理，不会只增不减；若手工删过 `state/`，`uploads/`
+也可能留下无人引用的孤儿目录，可按目录名与状态文件对照后清理。

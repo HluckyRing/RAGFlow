@@ -21,6 +21,7 @@ data/
 kb_state.json
 kb_state.json.migrated
 state/
+uploads/
 
 # 构建产物
 dist/

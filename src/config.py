@@ -50,6 +50,9 @@ MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "8000"))
 # 无关查询 min≈0.62，默认取分离带中点 0.55；换语料/换 embedding 模型时应重新标定。
 MAX_DISTANCE = float(os.getenv("MAX_DISTANCE", "0.55"))
 VECTOR_DB_PATH = resolve_path(os.getenv("VECTOR_DB_PATH"), "chroma_db")
+# 上传原件（不是抽取文本）的存放根目录。原文件预览要读它；同样锚定项目根，
+# 测试/冒烟用 UPLOAD_DIR 指向临时目录，避免落到真实用户数据上。
+UPLOAD_DIR = resolve_path(os.getenv("UPLOAD_DIR"), "uploads")
 
 # 单次上传大小上限（MB）。解析 PDF/DOCX 又慢又吃内存，超限直接挡在入口。
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))

@@ -193,6 +193,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .fp-close:hover{background:var(--hover-bg);color:var(--text-primary)}
 .fp-meta{padding:6px 16px;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);flex-shrink:0}
 .fp-body{flex:1;overflow:auto;margin:0;padding:14px 16px;font-family:"SF Mono","Fira Code",monospace;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:var(--text-primary)}
+.fp-tabs{display:flex;gap:6px;padding:8px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.fp-tab{padding:4px 12px;border-radius:999px;border:1px solid var(--border);background:var(--panel-bg);color:var(--text-secondary);font-size:12px;cursor:pointer;font-family:inherit;transition:all .2s}
+.fp-tab.active{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+.fp-doc{flex:1;overflow:auto;padding:14px 16px;color:var(--text-primary)}
+.fp-frame{flex:1;width:100%;border:none;background:#fff}
+.fp-note{font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6}
+.fp-download{padding:6px 14px;border-radius:8px;border:none;background:var(--brand);color:#fff;font-size:13px;cursor:pointer;font-family:inherit}
+.fp-sheet-name{font-size:13px;font-weight:600;margin:10px 0 6px}
+.fp-sheet{border-collapse:collapse;font-size:12px;margin-bottom:16px;max-width:100%}
+.fp-sheet td{border:1px solid var(--border);padding:3px 8px;white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis;vertical-align:top}
 
 .toast-wrap{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none}
 .toast{background:var(--toast-bg);color:var(--toast-fg);padding:12px 20px;border-radius:10px;font-size:13px;animation:slideIn .3s ease;max-width:min(360px,80vw);word-break:break-word;pointer-events:auto}
@@ -283,8 +293,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
         <div class="fp-title" id="filePreviewTitle"></div>
         <button class="fp-close" id="filePreviewClose" type="button" title="关闭预览">✕</button>
     </div>
+    <div class="fp-tabs hidden" id="filePreviewTabs">
+        <button class="fp-tab active" id="fpTabOriginal" type="button">原文件</button>
+        <button class="fp-tab" id="fpTabText" type="button">抽取文本</button>
+    </div>
     <div class="fp-meta" id="filePreviewMeta"></div>
     <pre class="fp-body" id="filePreviewBody"></pre>
+    <div class="fp-doc hidden" id="filePreviewDoc"></div>
+    <iframe class="fp-frame hidden" id="filePreviewFrame" title="原文件预览"></iframe>
 </aside>
 
 <input type="file" id="fileInput" style="display:none" multiple accept=".pdf,.txt,.md,.docx,.xlsx,.csv,.pptx,.pptm">
@@ -301,6 +317,7 @@ let S = {
     activeStream: null,
     editIndex: null,
     previewSeq: 0,
+    preview: null,
 };
 
 const $ = id => document.getElementById(id);
@@ -823,18 +840,182 @@ function renderFileList() {
     });
 }
 
-// ── 文件预览：右侧抽屉 ──
-// 服务端不保存上传原件，预览的是 loaders 抽取出的纯文本（也就是进索引的内容）。
-// 正文一律走 textContent，绝不 innerHTML —— 文件名和正文都是用户可控数据。
+// ── 文件预览：右侧抽屉（原文件 / 抽取文本）──
+// 原件由后端持久化；DOCX/XLSX 用本地内置的渲染库（/vendor/*，不走 CDN），
+// PPTX 等没有可靠浏览器端渲染器的格式只提供下载。用户可控文本一律走 textContent。
 const PREVIEW_MAX_CHARS = 200000;
 function filePreviewOpen() { return $('filePreview').classList.contains('open'); }
+function previewKind(ext) {
+    if (ext === '.pdf') return 'pdf';
+    if (ext === '.txt' || ext === '.md' || ext === '.csv') return 'text';
+    if (ext === '.docx') return 'docx';
+    if (ext === '.xlsx') return 'xlsx';
+    return 'download';   // .pptx/.pptm 等
+}
+function previewRawUrl(fileName) {
+    return `/api/conversations/${encodeURIComponent(S.activeCid)}/files/`
+        + `${encodeURIComponent(fileName)}/raw?session_id=${encodeURIComponent(S.sid)}`;
+}
+function previewMeta(text) { $('filePreviewMeta').textContent = text; }
+function clearNode(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+function previewStale(p) { return !p || S.preview !== p || p.token !== S.previewSeq; }
+function showPreviewStage(which) {
+    $('filePreviewBody').classList.toggle('hidden', which !== 'text');
+    $('filePreviewDoc').classList.toggle('hidden', which !== 'doc');
+    $('filePreviewFrame').classList.toggle('hidden', which !== 'frame');
+}
+function renderPreviewTabs() {
+    const p = S.preview;
+    $('filePreviewTabs').classList.toggle('hidden', !(p && p.hasOriginal));
+    $('fpTabOriginal').classList.toggle('active', !!p && p.mode === 'original');
+    $('fpTabText').classList.toggle('active', !!p && p.mode === 'text');
+}
+function setPreviewMode(mode) {
+    if (!S.preview) return;
+    S.preview.mode = mode;
+    renderPreview();
+}
+function renderExtractedText() {
+    const p = S.preview;
+    showPreviewStage('text');
+    const raw = String(p.text || '');
+    // 按码点切，别把 emoji 这类代理对从中间劈开
+    const chars = Array.from(raw);
+    const total = (typeof p.charCount === 'number') ? p.charCount : chars.length;
+    const prefix = p.hasOriginal ? '抽取文本' : '原件未保存（升级前上传）· 抽取文本';
+    if (chars.length > PREVIEW_MAX_CHARS) {
+        $('filePreviewBody').textContent = chars.slice(0, PREVIEW_MAX_CHARS).join('');
+        previewMeta(`${prefix} · 仅显示前 ${PREVIEW_MAX_CHARS.toLocaleString()} 字符 / 共 ${total.toLocaleString()} 字符`);
+    } else {
+        $('filePreviewBody').textContent = raw;
+        previewMeta(`${prefix} · ${total.toLocaleString()} 字符`);
+    }
+}
+function downloadOriginal(fileName) {
+    const a = document.createElement('a');
+    a.href = previewRawUrl(fileName);
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+function renderDownloadFallback(reason) {
+    const box = $('filePreviewDoc');
+    const note = document.createElement('p');
+    note.className = 'fp-note';
+    note.textContent = reason
+        ? `无法内联渲染（${reason}），请下载原件查看。`
+        : '该格式浏览器无法内联渲染，请下载原件查看。';
+    box.appendChild(note);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'fp-download';
+    btn.textContent = '下载原件';
+    btn.addEventListener('click', () => downloadOriginal(S.preview.fileName));
+    box.appendChild(btn);
+}
+function renderXlsx(buf, box) {
+    const book = window.XLSX.read(buf, { type: 'array' });
+    book.SheetNames.forEach(name => {
+        const title = document.createElement('div');
+        title.className = 'fp-sheet-name';
+        title.textContent = name;
+        box.appendChild(title);
+        const rows = window.XLSX.utils.sheet_to_json(book.Sheets[name],
+            { header: 1, raw: false, defval: '' });
+        const table = document.createElement('table');
+        table.className = 'fp-sheet';
+        (rows || []).forEach(row => {
+            const tr = document.createElement('tr');
+            (row || []).forEach(cell => {
+                const td = document.createElement('td');
+                td.textContent = cell == null ? '' : String(cell);
+                tr.appendChild(td);
+            });
+            table.appendChild(tr);
+        });
+        box.appendChild(table);
+    });
+}
+async function renderOriginal() {
+    const p = S.preview;
+    const box = $('filePreviewDoc');
+    if (p.kind === 'pdf') {
+        showPreviewStage('frame');
+        $('filePreviewFrame').src = p.rawUrl;
+        previewMeta('原文件 · PDF（浏览器原生渲染）');
+        return;
+    }
+    if (p.kind === 'text') {
+        const r = await fetch(p.rawUrl);
+        if (previewStale(p)) return;
+        if (!r.ok) throw new Error('原件读取失败');
+        const raw = await r.text();
+        if (previewStale(p)) return;
+        showPreviewStage('text');
+        const chars = Array.from(raw);
+        $('filePreviewBody').textContent = chars.length > PREVIEW_MAX_CHARS
+            ? chars.slice(0, PREVIEW_MAX_CHARS).join('') : raw;
+        previewMeta(chars.length > PREVIEW_MAX_CHARS
+            ? `原文件 · 仅显示前 ${PREVIEW_MAX_CHARS.toLocaleString()} 字符 / 共 ${chars.length.toLocaleString()} 字符`
+            : `原文件 · ${chars.length.toLocaleString()} 字符`);
+        return;
+    }
+    showPreviewStage('doc');
+    clearNode(box);
+    if (p.kind === 'docx') {
+        if (!window.docx || !window.docx.renderAsync) { renderDownloadFallback('渲染库未加载'); return; }
+        previewMeta('原文件 · DOCX（本地渲染）');
+        const r = await fetch(p.rawUrl);
+        if (previewStale(p)) return;
+        const buf = await r.arrayBuffer();
+        if (previewStale(p)) return;
+        await window.docx.renderAsync(buf, box, { inWrapper: false, ignoreWidth: true });
+        return;
+    }
+    if (p.kind === 'xlsx') {
+        if (!window.XLSX) { renderDownloadFallback('渲染库未加载'); return; }
+        previewMeta('原文件 · XLSX（本地渲染）');
+        const r = await fetch(p.rawUrl);
+        if (previewStale(p)) return;
+        const buf = await r.arrayBuffer();
+        if (previewStale(p)) return;
+        renderXlsx(buf, box);
+        return;
+    }
+    renderDownloadFallback('');
+}
+async function renderPreview() {
+    const p = S.preview;
+    if (!p) return;
+    renderPreviewTabs();
+    if (p.mode === 'text' || !p.hasOriginal) {
+        if (!p.hasOriginal) p.mode = 'text';
+        renderExtractedText();
+        return;
+    }
+    try {
+        await renderOriginal();
+    } catch (e) {
+        if (previewStale(p)) return;
+        showPreviewStage('text');
+        previewMeta('');
+        $('filePreviewBody').textContent = '❌ ' + (e.message || '原件读取失败');
+    }
+}
 async function openFilePreview(fileName) {
     const c = S.convs[S.activeCid];
     if (!c) return;
     const token = ++S.previewSeq;   // 防竞态：期间又点别的文件/关掉，旧结果作废
+    const p = { fileName, token, mode: 'text', kind: 'download', hasOriginal: false,
+                ext: '', text: '', charCount: 0, rawUrl: previewRawUrl(fileName) };
+    S.preview = p;
     $('filePreviewTitle').textContent = fileName;
-    $('filePreviewMeta').textContent = '加载中...';
-    $('filePreviewBody').textContent = '';
+    previewMeta('加载中...');
+    clearNode($('filePreviewBody'));
+    clearNode($('filePreviewDoc'));
+    $('filePreviewFrame').src = 'about:blank';
+    showPreviewStage('text');
     $('filePreviewMask').classList.remove('hidden');
     $('filePreview').classList.add('open');
     $('filePreviewClose').focus();
@@ -842,32 +1023,31 @@ async function openFilePreview(fileName) {
         const url = `/api/conversations/${encodeURIComponent(S.activeCid)}/files/`
             + `${encodeURIComponent(fileName)}?session_id=${encodeURIComponent(S.sid)}`;
         const d = await api(url);
-        if (token !== S.previewSeq) return;
-        const raw = String(d.file_text || '');
-        // 按码点切，别把 emoji 这类代理对从中间劈开
-        const chars = Array.from(raw);
-        const total = (typeof d.char_count === 'number') ? d.char_count : chars.length;
-        if (chars.length > PREVIEW_MAX_CHARS) {
-            $('filePreviewBody').textContent = chars.slice(0, PREVIEW_MAX_CHARS).join('');
-            $('filePreviewMeta').textContent =
-                `仅显示前 ${PREVIEW_MAX_CHARS.toLocaleString()} 字符 / 共 ${total.toLocaleString()} 字符`;
-        } else {
-            $('filePreviewBody').textContent = raw;
-            $('filePreviewMeta').textContent = `${total.toLocaleString()} 字符`;
-        }
+        if (previewStale(p)) return;
+        p.text = String(d.file_text || '');
+        p.charCount = (typeof d.char_count === 'number') ? d.char_count : p.text.length;
+        p.hasOriginal = !!d.has_original;
+        p.ext = d.ext || '';
+        p.kind = previewKind(p.ext);
+        p.mode = p.hasOriginal ? 'original' : 'text';
+        await renderPreview();
     } catch (e) {
-        if (token !== S.previewSeq) return;
-        $('filePreviewMeta').textContent = '';
+        if (previewStale(p)) return;
+        showPreviewStage('text');
+        previewMeta('');
         $('filePreviewBody').textContent = '❌ ' + (e.message || '读取失败');
     }
 }
 function closeFilePreview() {
     if (!filePreviewOpen()) return;
     S.previewSeq++;                 // 让在途请求的结果失效，避免关掉后又弹回内容
+    S.preview = null;
     $('filePreview').classList.remove('open');
     $('filePreviewMask').classList.add('hidden');
-    $('filePreviewBody').textContent = '';
-    $('filePreviewMeta').textContent = '';
+    clearNode($('filePreviewBody'));
+    clearNode($('filePreviewDoc'));
+    $('filePreviewFrame').src = 'about:blank';
+    previewMeta('');
 }
 
 function confirmDeleteFile(name) {
@@ -1132,6 +1312,8 @@ function bindEvents() {
     $('cancelEditBtn').addEventListener('click', () => cancelEditMsg());
     $('filePreviewClose').addEventListener('click', closeFilePreview);
     $('filePreviewMask').addEventListener('click', closeFilePreview);
+    $('fpTabOriginal').addEventListener('click', () => setPreviewMode('original'));
+    $('fpTabText').addEventListener('click', () => setPreviewMode('text'));
     $('convSearch').addEventListener('input', e => {
         S.search = (e.target.value || '').trim().toLowerCase();
         renderSidebar();
@@ -1155,5 +1337,10 @@ function bindEvents() {
 
 init();
 </script>
+<!-- 本地 vendor 渲染库（非 CDN）：JSZip → docx-preview → SheetJS，顺序不能反。
+     放在主脚本之后加载，不拖慢首屏；预览点击时若还没就绪会走「下载原件」兜底。 -->
+<script src="/vendor/jszip.min.js"></script>
+<script src="/vendor/docx-preview.min.js"></script>
+<script src="/vendor/xlsx.core.min.js"></script>
 </body>
 </html>
