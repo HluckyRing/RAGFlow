@@ -154,6 +154,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .file-list .fl-item .fl-name:before{content:'📄 '}
 .file-list .fl-item .fl-del{width:20px;height:20px;border:none;background:transparent;color:var(--text-muted);cursor:pointer;border-radius:4px;font-size:11px;line-height:1;flex-shrink:0}
 .file-list .fl-item .fl-del:hover{background:var(--danger-soft);color:var(--danger)}
+.file-list .fl-item .fl-prev{padding:1px 8px;border-radius:4px;border:1px solid var(--border);background:var(--panel-bg);color:var(--text-secondary);font-size:11px;cursor:pointer;font-family:inherit;flex-shrink:0;transition:all .2s}
+.file-list .fl-item .fl-prev:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-soft)}
 
 .input-area{padding:12px 24px 20px;flex-shrink:0}
 .edit-bar{max-width:var(--chat-max);margin:0 auto 8px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);background:var(--brand-soft);border:1px solid var(--brand);border-radius:8px;padding:6px 10px}
@@ -180,6 +182,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .btn-cancel{background:var(--hover-bg);color:var(--text-secondary)}
 .btn-ok{background:var(--brand);color:#fff}
 .btn-danger{background:var(--danger);color:#fff}
+
+.drawer-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:900}
+.file-preview{position:fixed;top:0;right:0;bottom:0;width:min(560px,92vw);background:var(--panel-bg);border-left:1px solid var(--border);box-shadow:-8px 0 30px rgba(0,0,0,.22);z-index:901;display:flex;flex-direction:column;transform:translateX(100%);pointer-events:none;transition:transform .22s ease}
+.file-preview.open{transform:translateX(0);pointer-events:auto}
+.fp-head{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.fp-title{flex:1;font-size:14px;font-weight:600;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fp-title:before{content:'📄 '}
+.fp-close{width:28px;height:28px;border:none;border-radius:6px;background:transparent;color:var(--text-secondary);font-size:14px;cursor:pointer;flex-shrink:0;font-family:inherit;transition:all .2s}
+.fp-close:hover{background:var(--hover-bg);color:var(--text-primary)}
+.fp-meta{padding:6px 16px;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);flex-shrink:0}
+.fp-body{flex:1;overflow:auto;margin:0;padding:14px 16px;font-family:"SF Mono","Fira Code",monospace;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:var(--text-primary)}
 
 .toast-wrap{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none}
 .toast{background:var(--toast-bg);color:var(--toast-fg);padding:12px 20px;border-radius:10px;font-size:13px;animation:slideIn .3s ease;max-width:min(360px,80vw);word-break:break-word;pointer-events:auto}
@@ -264,6 +277,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 </main>
 </div>
 
+<div class="drawer-mask hidden" id="filePreviewMask"></div>
+<aside class="file-preview" id="filePreview" role="dialog" aria-modal="true" aria-labelledby="filePreviewTitle">
+    <div class="fp-head">
+        <div class="fp-title" id="filePreviewTitle"></div>
+        <button class="fp-close" id="filePreviewClose" type="button" title="关闭预览">✕</button>
+    </div>
+    <div class="fp-meta" id="filePreviewMeta"></div>
+    <pre class="fp-body" id="filePreviewBody"></pre>
+</aside>
+
 <input type="file" id="fileInput" style="display:none" multiple accept=".pdf,.txt,.md,.docx,.xlsx,.csv,.pptx,.pptm">
 
 <script>
@@ -277,6 +300,7 @@ let S = {
     search: '',
     activeStream: null,
     editIndex: null,
+    previewSeq: 0,
 };
 
 const $ = id => document.getElementById(id);
@@ -643,6 +667,7 @@ function scrollDown() { const a = $('chatArea'); setTimeout(() => a.scrollTop = 
 
 // ── Actions ──
 function createNewConv() {
+    closeFilePreview();
     cancelEditMsg(true);
     S.activeCid = null;
     showWelcome('新对话');
@@ -651,6 +676,7 @@ function createNewConv() {
 }
 
 async function switchConv(id) {
+    closeFilePreview();   // 预览的是某一个知识库的文件，换库必须关掉
     await api(`/api/conversations/${id}/switch`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({session_id:S.sid}) });
     // 编辑态是绑在「某个对话的第 N 条」上的，换对话必须清掉，否则会把截断下标用到新对话
     cancelEditMsg(true);
@@ -707,6 +733,7 @@ function confirmDelete(id, name) {
                 const remaining = Object.keys(S.convs);
                 S.activeCid = remaining[0] || null;
             }
+            closeFilePreview();
             renderSidebar();
             refreshView();
             toast('已删除');
@@ -776,6 +803,14 @@ function renderFileList() {
         name.textContent = f.file_name;
         row.appendChild(name);
 
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'fl-prev';
+        prevBtn.type = 'button';
+        prevBtn.title = '预览抽取正文';
+        prevBtn.textContent = '预览';
+        prevBtn.addEventListener('click', () => openFilePreview(f.file_name));
+        row.appendChild(prevBtn);
+
         const delBtn = document.createElement('button');
         delBtn.className = 'fl-del';
         delBtn.title = '删除该文件';
@@ -786,6 +821,53 @@ function renderFileList() {
 
         el.appendChild(row);
     });
+}
+
+// ── 文件预览：右侧抽屉 ──
+// 服务端不保存上传原件，预览的是 loaders 抽取出的纯文本（也就是进索引的内容）。
+// 正文一律走 textContent，绝不 innerHTML —— 文件名和正文都是用户可控数据。
+const PREVIEW_MAX_CHARS = 200000;
+function filePreviewOpen() { return $('filePreview').classList.contains('open'); }
+async function openFilePreview(fileName) {
+    const c = S.convs[S.activeCid];
+    if (!c) return;
+    const token = ++S.previewSeq;   // 防竞态：期间又点别的文件/关掉，旧结果作废
+    $('filePreviewTitle').textContent = fileName;
+    $('filePreviewMeta').textContent = '加载中...';
+    $('filePreviewBody').textContent = '';
+    $('filePreviewMask').classList.remove('hidden');
+    $('filePreview').classList.add('open');
+    $('filePreviewClose').focus();
+    try {
+        const url = `/api/conversations/${encodeURIComponent(S.activeCid)}/files/`
+            + `${encodeURIComponent(fileName)}?session_id=${encodeURIComponent(S.sid)}`;
+        const d = await api(url);
+        if (token !== S.previewSeq) return;
+        const raw = String(d.file_text || '');
+        // 按码点切，别把 emoji 这类代理对从中间劈开
+        const chars = Array.from(raw);
+        const total = (typeof d.char_count === 'number') ? d.char_count : chars.length;
+        if (chars.length > PREVIEW_MAX_CHARS) {
+            $('filePreviewBody').textContent = chars.slice(0, PREVIEW_MAX_CHARS).join('');
+            $('filePreviewMeta').textContent =
+                `仅显示前 ${PREVIEW_MAX_CHARS.toLocaleString()} 字符 / 共 ${total.toLocaleString()} 字符`;
+        } else {
+            $('filePreviewBody').textContent = raw;
+            $('filePreviewMeta').textContent = `${total.toLocaleString()} 字符`;
+        }
+    } catch (e) {
+        if (token !== S.previewSeq) return;
+        $('filePreviewMeta').textContent = '';
+        $('filePreviewBody').textContent = '❌ ' + (e.message || '读取失败');
+    }
+}
+function closeFilePreview() {
+    if (!filePreviewOpen()) return;
+    S.previewSeq++;                 // 让在途请求的结果失效，避免关掉后又弹回内容
+    $('filePreview').classList.remove('open');
+    $('filePreviewMask').classList.add('hidden');
+    $('filePreviewBody').textContent = '';
+    $('filePreviewMeta').textContent = '';
 }
 
 function confirmDeleteFile(name) {
@@ -1020,6 +1102,7 @@ function onGlobalKey(e) {
         return;
     }
     if (e.key !== 'Escape') return;
+    if (filePreviewOpen()) { closeFilePreview(); return; }
     if (S.editIndex !== null) { cancelEditMsg(); return; }
     if (mqMobile.matches && sidebarOpen()) { setSidebar(false); return; }
     if (S.isStreaming) stopStream();
@@ -1047,6 +1130,8 @@ function bindEvents() {
     $('toggleFileBtn').addEventListener('click', toggleFileList);
     $('sidebarBackdrop').addEventListener('click', () => setSidebar(false));
     $('cancelEditBtn').addEventListener('click', () => cancelEditMsg());
+    $('filePreviewClose').addEventListener('click', closeFilePreview);
+    $('filePreviewMask').addEventListener('click', closeFilePreview);
     $('convSearch').addEventListener('input', e => {
         S.search = (e.target.value || '').trim().toLowerCase();
         renderSidebar();

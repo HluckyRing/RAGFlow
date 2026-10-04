@@ -386,6 +386,24 @@ async def get_conversation(conv_id: str, session_id: str):
     }
 
 
+@app.get("/api/conversations/{conv_id}/files/{file_name}")
+async def get_file_content(conv_id: str, file_name: str, session_id: str):
+    """读取单个文件的抽取正文，供前端「查看文件」预览。
+
+    服务端不保存上传原件，返回的就是 loaders 抽取、且进过索引的纯文本。
+    只读：不落盘、不重建索引，也不改动文件列表。
+    """
+    _sid, sess = await run_in_threadpool(_ensure_session, session_id)
+    conv = sess.get("conversations", {}).get(conv_id)
+    if not conv:
+        return JSONResponse({"error": "对话不存在"}, status_code=404)
+    for f in conv.get("files", []):
+        if f.get("file_name") == file_name:
+            text = f.get("file_text") or ""
+            return {"file_name": file_name, "file_text": text, "char_count": len(text)}
+    return JSONResponse({"error": "文件不存在"}, status_code=404)
+
+
 @app.delete("/api/conversations/{conv_id}/files/{file_name}")
 async def delete_file(conv_id: str, file_name: str, session_id: str):
     """删除对话里的单个文件，并重建该对话的索引。"""

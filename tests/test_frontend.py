@@ -202,3 +202,42 @@ def test_upload_success_and_conversation_switch_refresh_show_chat():
     assert "refreshView()" in upload, "上传成功要刷新视图"
     switch = _source_between("async function switchConv", "function startEdit(")
     assert "refreshView()" in switch, "切换对话要刷新视图"
+
+
+# ── 文件预览（右侧抽屉）守卫 ──
+# 预览读的是后端 files[].file_text（抽取正文，服务端不保存原件）。约定不变：
+# 动态数据只走 textContent，绝不 innerHTML；预览本身只读，不能碰索引。
+
+
+def test_file_list_rows_have_preview_button():
+    src = _source_between("function renderFileList", "const PREVIEW_MAX_CHARS")
+    assert "openFilePreview" in src, "文件行要绑定预览入口"
+    assert "预览" in src, "要有可见的「预览」按钮"
+
+
+def test_file_preview_drawer_markup_exists():
+    html = _html()
+    for marker in ('id="filePreview"', 'id="filePreviewBody"',
+                   'id="filePreviewClose"', 'id="filePreviewMask"'):
+        assert marker in html, f"缺少预览抽屉元素 {marker}"
+
+
+def test_file_preview_fetches_text_and_writes_with_textContent():
+    src = _source_between("const PREVIEW_MAX_CHARS", "function confirmDeleteFile")
+    assert "/files/" in src, "预览要调用单文件接口"
+    assert "file_text" in src, "要读取后端返回的正文"
+    assert "textContent" in src, "正文必须用 textContent 写入"
+    assert "innerHTML" not in src, "预览正文不得走 innerHTML，否则文件名/正文可注入"
+    assert "filePreviewBody" in src
+
+
+def test_file_preview_truncates_huge_text_with_notice():
+    src = _source_between("const PREVIEW_MAX_CHARS", "function confirmDeleteFile")
+    assert "PREVIEW_MAX_CHARS" in src
+    assert "200000" in src, "阈值写死 20 万字符，便于核对"
+    assert "仅显示" in src, "截断后要提示用户只看到一部分"
+
+
+def test_escape_closes_file_preview():
+    src = _source_between("function onGlobalKey", "function onDrop")
+    assert "closeFilePreview" in src, "Esc 要能关掉预览抽屉"
