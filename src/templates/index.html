@@ -318,6 +318,7 @@ let S = {
     editIndex: null,
     previewSeq: 0,
     preview: null,
+    pptxViewer: null,
 };
 
 const $ = id => document.getElementById(id);
@@ -841,16 +842,17 @@ function renderFileList() {
 }
 
 // ── 文件预览：右侧抽屉（原文件 / 抽取文本）──
-// 原件由后端持久化；DOCX/XLSX 用本地内置的渲染库（/vendor/*，不走 CDN），
-// PPTX 等没有可靠浏览器端渲染器的格式只提供下载。用户可控文本一律走 textContent。
-const PREVIEW_MAX_CHARS = 200000;
+// 原件由后端持久化；DOCX/XLSX/PPTX 用本地内置的渲染库（/vendor/*，不走 CDN），
+// PPTX 打不开时回退下载。用户可控文本一律走 textContent。
+const PREVIEW_MAX_CHARS = 1000000;   // 100 万字符后截断，避免超大文本拖垮渲染
 function filePreviewOpen() { return $('filePreview').classList.contains('open'); }
 function previewKind(ext) {
     if (ext === '.pdf') return 'pdf';
     if (ext === '.txt' || ext === '.md' || ext === '.csv') return 'text';
     if (ext === '.docx') return 'docx';
     if (ext === '.xlsx') return 'xlsx';
-    return 'download';   // .pptx/.pptm 等
+    if (ext === '.pptx' || ext === '.pptm') return 'pptx';
+    return 'download';
 }
 function previewRawUrl(fileName) {
     return `/api/conversations/${encodeURIComponent(S.activeCid)}/files/`
@@ -863,6 +865,21 @@ function showPreviewStage(which) {
     $('filePreviewBody').classList.toggle('hidden', which !== 'text');
     $('filePreviewDoc').classList.toggle('hidden', which !== 'doc');
     $('filePreviewFrame').classList.toggle('hidden', which !== 'frame');
+}
+let pptxModulePromise = null;
+function loadPptxModule() {
+    // 动态 import：不预览 PPTX 就不下这 1.8MB；失败要清掉缓存的 rejected promise。
+    if (!pptxModulePromise) {
+        pptxModulePromise = import('/vendor/aiden0z-pptx-renderer.browser.es.js')
+            .catch(e => { pptxModulePromise = null; throw e; });
+    }
+    return pptxModulePromise;
+}
+function destroyPptxViewer() {
+    if (S.pptxViewer) {
+        try { S.pptxViewer.destroy(); } catch (e) {}
+        S.pptxViewer = null;
+    }
 }
 function renderPreviewTabs() {
     const p = S.preview;
@@ -877,6 +894,7 @@ function setPreviewMode(mode) {
 }
 function renderExtractedText() {
     const p = S.preview;
+    destroyPptxViewer();   // 切回抽取文本时释放 PPTX 渲染器的观察器/图表实例
     showPreviewStage('text');
     const raw = String(p.text || '');
     // 按码点切，别把 emoji 这类代理对从中间劈开
@@ -940,6 +958,7 @@ function renderXlsx(buf, box) {
 async function renderOriginal() {
     const p = S.preview;
     const box = $('filePreviewDoc');
+    destroyPptxViewer();   // 任何一次原文件重绘都先释放上一个 PPTX 渲染器
     if (p.kind === 'pdf') {
         showPreviewStage('frame');
         $('filePreviewFrame').src = p.rawUrl;
@@ -970,7 +989,10 @@ async function renderOriginal() {
         if (previewStale(p)) return;
         const buf = await r.arrayBuffer();
         if (previewStale(p)) return;
-        await window.docx.renderAsync(buf, box, { inWrapper: false, ignoreWidth: true });
+        // docx-preview 签名是 (data, bodyContainer, styleContainer, options)：
+        // options 必须放第 4 个参数，第 3 个传 null 会兜底用 bodyContainer。
+        // 把 options 当第 3 个传会在真实浏览器里抛 appendChild is not a function。
+        await window.docx.renderAsync(buf, box, null, { inWrapper: false, ignoreWidth: true });
         return;
     }
     if (p.kind === 'xlsx') {
@@ -981,6 +1003,27 @@ async function renderOriginal() {
         const buf = await r.arrayBuffer();
         if (previewStale(p)) return;
         renderXlsx(buf, box);
+        return;
+    }
+    if (p.kind === 'pptx') {
+        previewMeta('原文件 · PPTX（本地渲染）');
+        const r = await fetch(p.rawUrl);
+        if (previewStale(p)) return;
+        const buf = await r.arrayBuffer();
+        if (previewStale(p)) return;
+        try {
+            const mod = await loadPptxModule();
+            if (previewStale(p)) return;
+            // fitMode:contain 按抽屉宽度自适应；pdfjs:false 关掉内嵌 PDF 的可选外部依赖。
+            const viewer = new mod.PptxViewer(box, { fitMode: 'contain', pdfjs: false });
+            S.pptxViewer = viewer;
+            await viewer.open(buf, { renderMode: 'list' });
+        } catch (e) {
+            if (previewStale(p)) return;
+            destroyPptxViewer();
+            clearNode(box);
+            renderDownloadFallback('PPTX 渲染失败');
+        }
         return;
     }
     renderDownloadFallback('');
@@ -1042,6 +1085,7 @@ function closeFilePreview() {
     if (!filePreviewOpen()) return;
     S.previewSeq++;                 // 让在途请求的结果失效，避免关掉后又弹回内容
     S.preview = null;
+    destroyPptxViewer();
     $('filePreview').classList.remove('open');
     $('filePreviewMask').classList.add('hidden');
     clearNode($('filePreviewBody'));

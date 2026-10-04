@@ -251,6 +251,11 @@ def test_vendor_route_whitelists_assets(client):
     assert len(r.content) > 1000
     assert "javascript" in r.headers["content-type"]
 
+    pptx = client.get("/vendor/aiden0z-pptx-renderer.browser.es.js")
+    assert pptx.status_code == 200, pptx.text
+    assert len(pptx.content) > 1000
+    assert "javascript" in pptx.headers["content-type"]
+
 
 def test_vendor_route_rejects_unknown_and_traversal(client):
     assert client.get("/vendor/not-a-lib.js").status_code == 404

@@ -234,7 +234,7 @@ def test_file_preview_fetches_text_and_writes_with_textContent():
 def test_file_preview_truncates_huge_text_with_notice():
     src = _source_between("const PREVIEW_MAX_CHARS", "function confirmDeleteFile")
     assert "PREVIEW_MAX_CHARS" in src
-    assert "200000" in src, "阈值写死 20 万字符，便于核对"
+    assert "1000000" in src, "阈值写死 100 万字符，便于核对"
     assert "仅显示" in src, "截断后要提示用户只看到一部分"
 
 
@@ -247,7 +247,8 @@ def test_escape_closes_file_preview():
 # 用户要求「原文件原预览」：原件要持久化，PDF/文本直接看原件，DOCX/XLSX 用本地
 # 内置的渲染库（非 CDN），PPTX 只下载。动态数据仍然只走 textContent。
 
-VENDOR_LIBS = ('/vendor/jszip.min.js', '/vendor/docx-preview.min.js', '/vendor/xlsx.core.min.js')
+VENDOR_LIBS = ('/vendor/jszip.min.js', '/vendor/docx-preview.min.js', '/vendor/xlsx.core.min.js',
+               '/vendor/aiden0z-pptx-renderer.browser.es.js')
 
 
 def test_vendor_renderers_are_local_not_cdn():
@@ -286,3 +287,36 @@ def test_preview_open_reads_original_metadata():
     src = _source_between("async function openFilePreview", "function closeFilePreview")
     assert "has_original" in src, "抽屉要根据后端返回的 has_original 选视图"
     assert "previewKind" in src, "按扩展名分派渲染器"
+
+
+def test_docx_render_keeps_style_container_before_options():
+    """docx-preview 的签名是 (data, bodyContainer, styleContainer, options)。
+
+    options 放第 3 个参数会被当成 styleContainer，真实浏览器里对普通对象调
+    appendChild 直接抛「appendChild is not a function」——2026-10-04 无头 Chrome
+    实测抓到过。第 3 个参数必须留成 null（库内部兜底为 bodyContainer）。
+    """
+    src = _source_between("async function renderOriginal", "async function renderPreview")
+    assert "renderAsync(buf, box, null," in src, "styleContainer 要传 null 占位，options 才能落到第 4 个参数"
+
+
+def test_pptx_preview_uses_vendored_renderer():
+    """PPTX 没有能直接 <script> 的内联库：用 Apache-2.0 的 @aiden0z/pptx-renderer
+    浏览器 ESM bundle，按需动态 import，不拖慢首屏。"""
+    html = _html()
+    assert "/vendor/aiden0z-pptx-renderer.browser.es.js" in html, "PPTX 渲染库要是本地 vendor"
+    kind = _source_between("function previewKind", "function previewRawUrl")
+    assert "'.pptx'" in kind and "return 'pptx'" in kind, ".pptx 要分派到 pptx 渲染器"
+    src = _source_between("async function renderOriginal", "async function renderPreview")
+    assert "PptxViewer" in src, "要用 PptxViewer 渲染"
+    assert "loadPptxModule" in src, "要动态 import 本地 ESM bundle"
+    assert "pdfjs: false" in src, "关掉内嵌 PDF 的可选外部依赖"
+    assert "renderDownloadFallback('PPTX 渲染失败')" in src, "渲染失败要回退下载"
+
+
+def test_pptx_viewer_is_destroyed_on_close_and_text_mode():
+    """PptxViewer 持有 IntersectionObserver / echarts 实例，不 destroy 会泄漏。"""
+    text_mode = _source_between("function renderExtractedText", "function downloadOriginal")
+    assert "destroyPptxViewer" in text_mode, "切回抽取文本要释放渲染器"
+    close = _source_between("function closeFilePreview", "function confirmDeleteFile")
+    assert "destroyPptxViewer" in close, "关闭抽屉要释放渲染器"

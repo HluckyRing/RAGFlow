@@ -28,7 +28,8 @@ _INDEX_PATH = os.path.join(os.path.dirname(__file__), "templates", "index.html")
 _VENDOR_DIR = os.path.join(os.path.dirname(__file__), "templates", "vendor")
 # 只放行这几个本地 vendor 库（原文件预览用）；用白名单而不是静态目录挂载，
 # 目录里以后多放任何东西也不会被顺手暴露出去。
-_VENDOR_ASSETS = {"jszip.min.js", "docx-preview.min.js", "xlsx.core.min.js"}
+_VENDOR_ASSETS = {"jszip.min.js", "docx-preview.min.js", "xlsx.core.min.js",
+                  "aiden0z-pptx-renderer.browser.es.js"}
 
 app = FastAPI(title="RAGFlow")
 
