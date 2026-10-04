@@ -25,6 +25,14 @@ def _sidebar_source():
     return html[start:end]
 
 
+def _source_between(start_marker, end_marker):
+    html = _html()
+    start = html.index(start_marker)
+    end = html.index(end_marker)
+    assert start < end, f"{start_marker} 应在 {end_marker} 之前"
+    return html[start:end]
+
+
 def test_esc_escapes_single_quote():
     """esc() 之前漏了单引号；只要还有任何地方把 esc() 的结果放进单引号里就再次可注入。"""
     line = re.search(r"function esc\(s\).*", _html()).group(0)
@@ -171,3 +179,26 @@ def test_toasts_stack_so_two_messages_do_not_overlap():
     html = _html()
     assert "toast-wrap" in html
     assert "flex-direction:column" in html.replace(" ", "")
+
+
+# ── 「查看文件」列表的刷新守卫 ──
+# 两个真实 bug：①上传解析期间点开「查看文件」，上传成功后列表停在旧内容（没有新
+# 上传的文件）；②在 A 知识库点开「查看文件」，切到 B 知识库后列表仍显示 A 的文件。
+# 共同根因：只有 toggleFileList 会 renderFileList，showChat（上传成功 / 切对话都会
+# 走它）只更新角标和 fileBar，不管已经展开的列表。
+
+
+def test_open_file_list_follows_active_conversation():
+    """已展开的文件列表必须用当前对话的文件重绘，且只重绘「展开」状态的列表。"""
+    src = _source_between("function showChat", "function renderSidebar")
+    assert "$('fileList')" in src, "showChat 要检查文件列表当前是否展开"
+    assert "hidden" in src, "只在列表展开时重绘，别把用户收起的列表又弹开"
+    assert "renderFileList()" in src, "展开的列表要用当前对话的文件重绘"
+
+
+def test_upload_success_and_conversation_switch_refresh_show_chat():
+    """两条触发路径都必须经过 refreshView→showChat，才能让上面那条重绘生效。"""
+    upload = _source_between("async function uploadFiles", "function renderFileList")
+    assert "refreshView()" in upload, "上传成功要刷新视图"
+    switch = _source_between("async function switchConv", "function startEdit(")
+    assert "refreshView()" in switch, "切换对话要刷新视图"

@@ -478,6 +478,9 @@ function showChat() {
     $('fileBadge').classList.toggle('hidden', !fc);
     $('fileBar').classList.toggle('hidden', !fc);
     if (fc) $('fileBadge').textContent = fc + ' 个文件';
+    // 文件列表若正展开，必须用当前对话的文件重绘：上传成功前点开列表会停在旧内容，
+    // 切换对话时则会残留上一个知识库的文件。只重绘展开的列表，不替用户把它重新弹开。
+    if (!$('fileList').classList.contains('hidden')) renderFileList();
     renderChat();
 }
 
