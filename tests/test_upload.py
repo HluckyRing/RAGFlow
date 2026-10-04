@@ -222,16 +222,29 @@ def test_rebuild_collection_strips_surrogates_before_embedding():
 
 def test_upload_strips_surrogates_before_persisting(client, monkeypatch):
     """落盘那一步也会炸：ensure_ascii=False 遇到代理字符直接 UnicodeEncodeError，
-    所以必须在写进 files[] 之前就洗干净。"""
+    所以必须在写进 files[] 之前就洗干净；同时要把「剥掉了几个」告诉前端。"""
     monkeypatch.setattr(server, "load_file", lambda f: "正常\ud800文本")
 
     sid = client.get("/api/session").json()["session_id"]
     r = _post(client, sid, [("坏.pdf", b"x")])
 
     assert r.status_code == 200, r.text
-    conv = server.sessions[sid]["conversations"][r.json()["conv_id"]]
+    body = r.json()
+    assert body["stripped_chars"] == [{"file_name": "坏.pdf", "count": 1}], body.get("stripped_chars")
+    conv = server.sessions[sid]["conversations"][body["conv_id"]]
     assert conv["files"][0]["file_text"] == "正常文本"
     assert conv["full_text"] == "正常文本"
+
+
+def test_upload_reports_empty_stripped_chars_for_clean_batch(client, monkeypatch):
+    """干净文件不该冒出警告内容 —— 前端就是靠这个字段决定要不要提示。"""
+    monkeypatch.setattr(server, "load_file", lambda f: "干净内容")
+
+    sid = client.get("/api/session").json()["session_id"]
+    r = _post(client, sid, [("a.txt", b"a"), ("b.txt", b"b")])
+
+    assert r.status_code == 200, r.text
+    assert r.json()["stripped_chars"] == []
 
 
 # ── 重建失败不得毁掉在用的索引 ──

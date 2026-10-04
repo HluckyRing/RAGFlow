@@ -30,7 +30,7 @@
 --bubble-ai:#F9FAFB;--code-bg:#1E293B;--code-fg:#E2E8F0;--inline-code-bg:rgba(0,0,0,.06);
 --text-primary:#1F2937;--text-secondary:#6B7280;--text-muted:#9CA3AF;
 --border:#E5E7EB;--border-strong:#D1D5DB;
---danger:#EF4444;--danger-soft:rgba(239,68,68,.18);
+--danger:#EF4444;--danger-soft:rgba(239,68,68,.18);--warn:#B45309;
 --toast-bg:#1F2937;--toast-fg:#FFFFFF;
 --shadow-modal:0 20px 60px rgba(0,0,0,.15);--scroll-thumb:#D1D5DB;
 --chat-max:860px;--radius:14px
@@ -181,8 +181,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .btn-ok{background:var(--brand);color:#fff}
 .btn-danger{background:var(--danger);color:#fff}
 
-.toast{position:fixed;top:20px;right:20px;background:var(--toast-bg);color:var(--toast-fg);padding:12px 20px;border-radius:10px;font-size:13px;z-index:9999;animation:slideIn .3s ease;max-width:min(360px,80vw);word-break:break-word}
+.toast-wrap{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none}
+.toast{background:var(--toast-bg);color:var(--toast-fg);padding:12px 20px;border-radius:10px;font-size:13px;animation:slideIn .3s ease;max-width:min(360px,80vw);word-break:break-word;pointer-events:auto}
 .toast.error{background:var(--danger)}
+.toast.warn{background:var(--warn)}
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
 .hidden{display:none!important}
 
@@ -279,13 +281,21 @@ let S = {
 
 const $ = id => document.getElementById(id);
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-function toast(m, err, dur) {
+// kind: 不传 = 普通，'warn' = 警告（琥珀），其它真值 = 错误（红）
+function toast(m, kind, dur) {
+    let wrap = $('toastWrap');
+    if (!wrap) {
+        wrap = document.createElement('div');
+        wrap.id = 'toastWrap';
+        wrap.className = 'toast-wrap';
+        document.body.appendChild(wrap);
+    }
     const t = document.createElement('div');
-    t.className = 'toast' + (err ? ' error' : '');
+    t.className = 'toast' + (kind === 'warn' ? ' warn' : kind ? ' error' : '');
     t.textContent = m;
     const id = 'toast_' + Date.now();
     t.id = id;
-    document.body.appendChild(t);
+    wrap.appendChild(t);
     if (dur !== 0) setTimeout(() => t.remove(), dur || 3000);
     return id;
 }
@@ -734,6 +744,15 @@ async function uploadFiles(files) {
         refreshView();
         const names = d.file_names || [];
         toast(names.length > 1 ? `✅ 已添加 ${names.length} 个文件` : `✅ 已添加 "${names[0] || ''}"`);
+
+        // 后端会把「剥掉了几个无法解析的字符」放在 stripped_chars 里带回来。
+        // 不提示的话，解析残缺只躺在后端日志里，用户完全不知道检索为什么少了一块。
+        const stripped = d.stripped_chars || [];
+        if (stripped.length) {
+            const total = stripped.reduce((sum, x) => sum + (x.count || 0), 0);
+            const detail = stripped.map(x => `${x.file_name}（${x.count} 个）`).join('、');
+            toast(`⚠️ ${detail}：共 ${total} 个字符无法解析，已跳过，这部分内容可能检索不到`, 'warn', 10000);
+        }
     } catch(e) {
         clearTimeout(timer);
         document.getElementById(tid)?.remove();

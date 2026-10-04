@@ -8,7 +8,7 @@
 - state 的 json.dump(ensure_ascii=False)：
   UnicodeEncodeError: 'utf-8' codec can't encode character '\\ud800': surrogates not allowed
 """
-from src.text_utils import strip_surrogates
+from src.text_utils import strip_surrogates, strip_surrogates_counted
 
 
 def test_strip_surrogates_removes_lone_surrogates():
@@ -34,3 +34,17 @@ def test_strip_surrogates_logs_a_warning_when_it_removes_something(caplog):
     with caplog.at_level("WARNING", logger="ai_rag"):
         strip_surrogates("坏\ud800字")
     assert "代理" in caplog.text
+
+
+def test_strip_surrogates_counted_reports_how_many_were_removed():
+    """上传要能告诉用户「这份文件有几个字符没解析出来」，所以带计数的版本。"""
+    cleaned, count = strip_surrogates_counted("正常\ud800\udc00文本")
+    assert cleaned == "正常文本"
+    assert count == 2
+
+
+def test_strip_surrogates_counted_returns_same_object_and_zero_when_clean():
+    text = "很长的正常文本" * 100
+    cleaned, count = strip_surrogates_counted(text)
+    assert cleaned is text, "干净文本不该被复制一遍"
+    assert count == 0

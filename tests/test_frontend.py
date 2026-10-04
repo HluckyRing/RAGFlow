@@ -156,3 +156,18 @@ def test_file_input_accepts_pptx():
     tag = re.search(r'<input[^>]*id="fileInput"[^>]*>', _html()).group(0)
     assert ".pptx" in tag, "file input 要接受 .pptx"
     assert ".pptm" in tag, "file input 要接受 .pptm"
+
+
+def test_upload_surfaces_stripped_chars_to_user():
+    """后端把「剥离了几个脏字符」放在 stripped_chars 里，前端必须读它并提示用户，
+    否则「解析残缺」只写在后端日志里，用户完全无从得知。"""
+    html = _html()
+    assert "stripped_chars" in html, "前端要读后端返回的 stripped_chars"
+    assert "无法解析" in html, "要用人话告诉用户发生了什么"
+
+
+def test_toasts_stack_so_two_messages_do_not_overlap():
+    """上传成功与「字符无法解析」会同时弹出，必须有容器让它们纵向排开。"""
+    html = _html()
+    assert "toast-wrap" in html
+    assert "flex-direction:column" in html.replace(" ", "")

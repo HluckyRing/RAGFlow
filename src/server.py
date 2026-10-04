@@ -12,7 +12,7 @@ import src.state as state
 from src.config import logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, HOST, PORT
 from src.loaders import load_file
 from src.pdf_ingestion import split_text
-from src.text_utils import strip_surrogates
+from src.text_utils import strip_surrogates, strip_surrogates_counted
 from src.retrieval import init_vector_store, sanitize_collection_name, drop_collection
 from src.llm import resolve_query, retrieve_and_build_context, stream_answer, LLMStreamError
 
@@ -177,12 +177,16 @@ def _commit_upload(sid, conv_id, uploads):
             conv["_cname"] = cname
 
         names = []
+        stripped_chars = []
         for file_name, file_text in uploads:
             names.append(file_name)
             # 上传文本进入会话数据的唯一入口，脏字符必须在这里就洗掉：
             # 只清洗 embedding 输入是不够的 —— state 用 json.dump(ensure_ascii=False)
             # 落盘，代理字符会让写盘那一步直接 UnicodeEncodeError（2026-10-03 的 500）。
-            file_text = strip_surrogates(file_text)
+            # 剥掉的数量要带回去给前端提示，否则「解析残缺」只躺在后端日志里，用户看不到。
+            file_text, stripped = strip_surrogates_counted(file_text)
+            if stripped:
+                stripped_chars.append({"file_name": file_name, "count": stripped})
             existing = next((f for f in conv.get("files", []) if f["file_name"] == file_name), None)
             if existing:
                 existing["file_text"] = file_text
@@ -198,6 +202,7 @@ def _commit_upload(sid, conv_id, uploads):
             "conv_name": conv["name"],
             "files": [{"file_name": f["file_name"]} for f in conv["files"]],
             "messages": conv.get("messages", []),
+            "stripped_chars": stripped_chars,
         }
 
 

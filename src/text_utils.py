@@ -44,18 +44,25 @@ CONTENT_STOPWORDS = {
 }
 
 
-def strip_surrogates(text):
-    """剥掉孤立代理字符，正常文本原样返回。
+def strip_surrogates_counted(text):
+    """剥掉孤立代理字符，返回 (清洗后的文本, 剥掉的个数)。
 
     「文本进系统」的第一道清洗：pypdf 遇到字体映射损坏的 PDF 会产出代理字符，
     它既能弄炸 embedding，也能弄炸 state 的 JSON 落盘（见上方注释）。
-    按仓库规矩不静默丢字符 —— 剥掉了几个会记一条 WARNING。
+    按仓库规矩不静默丢字符 —— 剥掉了几个会记一条 WARNING；调用方拿这个计数
+    去告诉用户「这份文件有几个字符没解析出来」。
+    没有脏字符时原样返回同一个对象，不给大文本白复制一遍。
     """
     if not text or SURROGATE_RE.search(text) is None:
-        return text
+        return text, 0
     cleaned, count = SURROGATE_RE.subn("", text)
     logger.warning("文本含 %d 个孤立代理字符（常见于字体映射损坏的 PDF），已剥离", count)
-    return cleaned
+    return cleaned, count
+
+
+def strip_surrogates(text):
+    """只关心清洗后文本的调用方用这个（要计数的用 strip_surrogates_counted）。"""
+    return strip_surrogates_counted(text)[0]
 
 
 def strip_question_words(text):
