@@ -80,6 +80,7 @@ python -m src.server            # 等价写法
 - **归档脚本不关 TLS 校验**: `legacy/` 里曾用 `ssl._create_default_https_context = ssl._create_unverified_context` 全局关掉证书校验，已移除；`tests/test_security.py` 有静态守卫防止被写回来
 - **孤儿 collection 清理**: `scripts/cleanup_orphan_collections.py` —— 默认干跑，要 `--apply` 才真删；只删名字以 `kb_conv_` 开头且不被任何状态文件引用的集合；如果一个被引用的集合都没扫到（通常是路径指错）就中止，只有 `--force` 能越过。状态来源含 `state/*.json` 与旧版 `kb_state.json(.migrated)`
 - **审查清单与 CI**: 2026-10-01 那次代码审查的原始条目归档在 `docs/code-review-2026-10-01.md`（**编号连续**：P0 1–7 / P1 8–17 / P2 18–21；**不存在 P1-1~7 与 P1-18**），整改状态随代码更新；`.github/workflows/ci.yml` 在 push/PR 上跑 `pytest -q`
+- **发版用标签触发 Release**: 流程 = 改 `pyproject.toml` 的 `version`（必须与新标签一致；新功能升次版本、修复升补丁）→ 本地 `python -m build --wheel` 确认 wheel 内容 + `pytest` 全绿 → 提交并推 `main` → `git tag -a vX.Y.Z -m "vX.Y.Z"` + `git push origin vX.Y.Z`。`.github/workflows/publish.yml` 收到 `v*` 标签会构建 wheel 并 `gh release create <tag> dist/*.whl --title "<tag>" --generate-notes`（用仓库自带的 `GITHUB_TOKEN`，本机 `gh` 未登录也能发）。**不要先在网页 UI 手动新建同名 Release**，否则工作流的 `gh release create` 会因同名已存在而失败。**`package-data` 必须覆盖 `templates/vendor/*` 与 `templates/vendor/aiden0z-pptx-renderer-licenses/*`**：漏了 wheel 里就只有 `index.html`、vendor 0 个文件，从 release 附件安装后原文件预览会缺 JSZip/docx-preview/SheetJS/PPTX bundle（2026-10-05 v1.1.0 发版实测踩到并修复）。发布后回读 `git ls-remote --tags origin` 与 GitHub releases API，确认标签/Release/wheel 附件都在，并抽查 wheel 内含 vendor 文件。
 
 ## 配置
 
