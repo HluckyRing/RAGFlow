@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ragflow"
-version = "1.0.0"
+version = "1.1.0"
 description = "RAGFlow — 多格式知识库问答系统"
 requires-python = ">=3.10"
 dependencies = [
@@ -31,4 +31,6 @@ where = ["."]
 include = ["src*"]
 
 [tool.setuptools.package-data]
-src = ["templates/*"]
+# templates/* 覆盖 index.html；vendor 下的渲染库（含嵌套许可证目录）必须一起进 wheel，
+# 否则从 release 附件安装后，「原文件预览」会缺 JSZip/docx-preview/SheetJS/PPTX bundle。
+src = ["templates/*", "templates/vendor/*", "templates/vendor/aiden0z-pptx-renderer-licenses/*"]
