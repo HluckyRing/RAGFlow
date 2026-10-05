@@ -203,6 +203,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .fp-sheet-name{font-size:13px;font-weight:600;margin:10px 0 6px}
 .fp-sheet{border-collapse:collapse;font-size:12px;margin-bottom:16px;max-width:100%}
 .fp-sheet td{border:1px solid var(--border);padding:3px 8px;white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis;vertical-align:top}
+.fp-md{font-size:14px;line-height:1.7;word-break:break-word}
+.fp-md>*:first-child{margin-top:0}
+.fp-md>*:last-child{margin-bottom:0}
+.fp-md p{margin:6px 0}
+.fp-md h1,.fp-md h2,.fp-md h3,.fp-md h4,.fp-md h5,.fp-md h6{margin:14px 0 6px;font-weight:700;line-height:1.4;color:var(--text-primary)}
+.fp-md h1{font-size:19px}
+.fp-md h2{font-size:17px}
+.fp-md h3{font-size:15px}
+.fp-md h4,.fp-md h5,.fp-md h6{font-size:14px}
+.fp-md ul,.fp-md ol{margin:6px 0;padding-left:22px}
+.fp-md li{margin:2px 0}
+.fp-md blockquote{margin:8px 0;padding:4px 12px;border-left:3px solid var(--border-strong);color:var(--text-secondary)}
+.fp-md hr{border:none;border-top:1px solid var(--border);margin:12px 0}
+.fp-md a{color:var(--brand)}
+.fp-md code{font-family:"SF Mono","Fira Code",monospace;font-size:13px;background:var(--inline-code-bg);padding:2px 5px;border-radius:4px}
+.fp-md pre{position:relative;background:var(--code-bg);border-radius:8px;padding:12px 16px;overflow-x:auto;margin:8px 0}
+.fp-md pre code{background:transparent;padding:0;color:var(--code-fg)}
+.fp-md table{border-collapse:collapse;margin:8px 0;font-size:13px;display:block;overflow-x:auto;max-width:100%}
+.fp-md th,.fp-md td{border:1px solid var(--border);padding:5px 10px;text-align:left;white-space:nowrap}
+.fp-md th{background:var(--hover-bg);font-weight:600}
 
 .toast-wrap{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none}
 .toast{background:var(--toast-bg);color:var(--toast-fg);padding:12px 20px;border-radius:10px;font-size:13px;animation:slideIn .3s ease;max-width:min(360px,80vw);word-break:break-word;pointer-events:auto}
@@ -848,7 +868,8 @@ const PREVIEW_MAX_CHARS = 1000000;   // 100 万字符后截断，避免超大文
 function filePreviewOpen() { return $('filePreview').classList.contains('open'); }
 function previewKind(ext) {
     if (ext === '.pdf') return 'pdf';
-    if (ext === '.txt' || ext === '.md' || ext === '.csv') return 'text';
+    if (ext === '.md') return 'markdown';
+    if (ext === '.txt' || ext === '.csv') return 'text';
     if (ext === '.docx') return 'docx';
     if (ext === '.xlsx') return 'xlsx';
     if (ext === '.pptx' || ext === '.pptm') return 'pptx';
@@ -908,6 +929,18 @@ function renderExtractedText() {
         $('filePreviewBody').textContent = raw;
         previewMeta(`${prefix} · ${total.toLocaleString()} 字符`);
     }
+}
+function renderMarkdown(raw) {
+    // Markdown 原文件按样式渲染：复用 toMd（它先转义 HTML 再拼结构，所以正文里的
+    // 标签不会被当代码执行），容器单独挂 .fp-md 让标题/加粗/引用/表格有样式。
+    const box = $('filePreviewDoc');
+    showPreviewStage('doc');
+    clearNode(box);
+    const md = document.createElement('div');
+    md.className = 'fp-md';
+    md.innerHTML = toMd(raw || '');
+    enhanceCodeBlocks(md);
+    box.appendChild(md);
 }
 function downloadOriginal(fileName) {
     const a = document.createElement('a');
@@ -978,6 +1011,20 @@ async function renderOriginal() {
         previewMeta(chars.length > PREVIEW_MAX_CHARS
             ? `原文件 · 仅显示前 ${PREVIEW_MAX_CHARS.toLocaleString()} 字符 / 共 ${chars.length.toLocaleString()} 字符`
             : `原文件 · ${chars.length.toLocaleString()} 字符`);
+        return;
+    }
+    if (p.kind === 'markdown') {
+        const r = await fetch(p.rawUrl);
+        if (previewStale(p)) return;
+        if (!r.ok) throw new Error('原件读取失败');
+        const raw = await r.text();
+        if (previewStale(p)) return;
+        const chars = Array.from(raw);
+        const cut = chars.length > PREVIEW_MAX_CHARS;
+        renderMarkdown(cut ? chars.slice(0, PREVIEW_MAX_CHARS).join('') : raw);
+        previewMeta(cut
+            ? `原文件 · Markdown 渲染 · 仅显示前 ${PREVIEW_MAX_CHARS.toLocaleString()} 字符 / 共 ${chars.length.toLocaleString()} 字符`
+            : `原文件 · Markdown 渲染 · ${chars.length.toLocaleString()} 字符`);
         return;
     }
     showPreviewStage('doc');

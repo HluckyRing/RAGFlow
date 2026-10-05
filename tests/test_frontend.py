@@ -227,7 +227,9 @@ def test_file_preview_fetches_text_and_writes_with_textContent():
     assert "/files/" in src, "预览要调用单文件接口"
     assert "file_text" in src, "要读取后端返回的正文"
     assert "textContent" in src, "正文必须用 textContent 写入"
-    assert "innerHTML" not in src, "预览正文不得走 innerHTML，否则文件名/正文可注入"
+    # 唯一的例外是 Markdown 渲染：它必须走 toMd（先转义 HTML 再拼结构）。
+    leftover = re.sub(r"\.innerHTML\s*=\s*toMd\([^;]*\);", "", src)
+    assert "innerHTML" not in leftover, "除 toMd 渲染外，预览正文不得走 innerHTML"
     assert "filePreviewBody" in src
 
 
@@ -274,6 +276,20 @@ def test_original_preview_maps_formats_to_renderers():
     assert "下载原件" in src, "PPTX/渲染失败要有下载兜底"
     assert "filePreviewFrame" in src, "PDF 用 iframe 看原件"
     assert "原件未保存" in src, "升级前的旧文件要标注没有原件"
+
+
+def test_markdown_original_preview_renders_with_toMd():
+    """Markdown 原文件不能当纯文本塞进 <pre>。
+
+    用户实测：.md 原文件里 `#`、`**加粗**`、`>` 引用全按字面显示。要用项目里已有的
+    toMd 渲染（它先转义 HTML 再拼结构，所以正文里的标签不会被当代码执行）。
+    """
+    kind = _source_between("function previewKind", "function previewRawUrl")
+    assert "'.md'" in kind and "return 'markdown'" in kind, ".md 要分派到 markdown 渲染"
+    src = _source_between("function renderMarkdown", "function downloadOriginal")
+    assert "toMd(" in src, "Markdown 原文件必须复用 toMd 这个安全渲染器"
+    assert "enhanceCodeBlocks" in src, "代码块要有复制按钮"
+    assert "fp-md" in src, "渲染结果要有独立样式容器"
 
 
 def test_xlsx_preview_builds_table_with_textcontent_only():
