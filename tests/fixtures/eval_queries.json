@@ -1,0 +1,282 @@
+[
+  {
+    "id": "q01",
+    "question": "市盈率怎么算",
+    "kind": "positive",
+    "expect_files": ["01-财务指标.md"],
+    "gold_phrases": ["市盈率（PE）等于股价除以每股收益"],
+    "note": "公式型提问，词面与原文高度重叠"
+  },
+  {
+    "id": "q02",
+    "question": "净资产收益率是什么意思",
+    "kind": "positive",
+    "expect_files": ["01-财务指标.md"],
+    "gold_phrases": ["净资产收益率（ROE）是净利润与平均股东权益的百分比"],
+    "note": "短问句 + 疑问词，考察向量与 2/3-gram 两条路"
+  },
+  {
+    "id": "q03",
+    "question": "ROE 可以怎么拆解",
+    "kind": "positive",
+    "expect_files": ["01-财务指标.md"],
+    "gold_phrases": ["杜邦分析把 ROE 拆解为销售净利率、总资产周转率和权益乘数三个部分"],
+    "note": "提问用词（拆解）与原文一致，英文缩写混排"
+  },
+  {
+    "id": "q04",
+    "question": "毛利率的定义是什么",
+    "kind": "positive",
+    "expect_files": ["01-财务指标.md"],
+    "gold_phrases": ["毛利率等于营业收入减去营业成本后除以营业收入"],
+    "note": "兄弟指标并存，考察是否召回正确的那一个"
+  },
+  {
+    "id": "q05",
+    "question": "亏损公司的市盈率还有意义吗",
+    "kind": "positive",
+    "expect_files": ["01-财务指标.md"],
+    "gold_phrases": ["亏损公司的市盈率为负"],
+    "note": "答案在段落第二句，考察不只看段落开头"
+  },
+  {
+    "id": "q06",
+    "question": "上班迟到怎么算",
+    "kind": "positive",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "gold_phrases": ["上班打卡时间晚于 09:30 视为迟到"],
+    "note": "含时间字面量，考察数字匹配"
+  },
+  {
+    "id": "q07",
+    "question": "每月可以补卡几次",
+    "kind": "positive",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "gold_phrases": ["每月补卡不超过三次"],
+    "note": "问句省略主语，考察语义检索而非字面"
+  },
+  {
+    "id": "q08",
+    "question": "司龄 4 年的员工每年有几天年假",
+    "kind": "positive",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "gold_phrases": ["3 至 5 年每年 7 天"],
+    "note": "需要落在正确区间的档位上"
+  },
+  {
+    "id": "q09",
+    "question": "年假没休完能结转到什么时候",
+    "kind": "positive",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "gold_phrases": ["当年未休完的部分最多结转 5 天到次年 3 月 31 日"],
+    "note": "长句答案，考察整块召回"
+  },
+  {
+    "id": "q10",
+    "question": "调休要在多久之内用完",
+    "kind": "positive",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "gold_phrases": ["调休需要在加班之日起 6 个月内使用"],
+    "note": "答案落在段落中部"
+  },
+  {
+    "id": "q11",
+    "question": "法定节假日加班怎么算工资",
+    "kind": "positive",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "gold_phrases": ["法定节假日加班的，按三倍工资支付"],
+    "note": "同一段里有工作日加班与节假日加班，考察区分"
+  },
+  {
+    "id": "q12",
+    "question": "请病假需要提供什么材料",
+    "kind": "positive",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "gold_phrases": ["病假需提供二级以上医院开具的证明"],
+    "note": "「材料」与原文「证明」不同词，考察语义"
+  },
+  {
+    "id": "q13",
+    "question": "A 级客户怎么界定",
+    "kind": "positive",
+    "expect_files": ["03-客户分级与响应时效.md"],
+    "gold_phrases": ["A 级客户年度合同金额在 100 万元以上"],
+    "note": "三级并列，考察是否召回正确级别"
+  },
+  {
+    "id": "q14",
+    "question": "A 级客户的工单响应时效是多久",
+    "kind": "positive",
+    "expect_files": ["03-客户分级与响应时效.md"],
+    "gold_phrases": ["A 级客户 30 分钟内响应、4 小时内给出解决方案"],
+    "note": "同段含三个级别的时效，考察区分"
+  },
+  {
+    "id": "q15",
+    "question": "B 级客户多久要响应",
+    "kind": "positive",
+    "expect_files": ["03-客户分级与响应时效.md"],
+    "gold_phrases": ["B 级客户 2 小时内响应"],
+    "note": "与 q14 是兄弟问题，容易互相干扰"
+  },
+  {
+    "id": "q16",
+    "question": "工单超时没人处理会怎样",
+    "kind": "positive",
+    "expect_files": ["03-客户分级与响应时效.md"],
+    "gold_phrases": ["工单超过约定响应时效未响应的，系统自动升级到客户成功经理"],
+    "note": "提问与原文用词差异大（超时/没人处理），考察语义"
+  },
+  {
+    "id": "q17",
+    "question": "客户满意度回访多久做一次",
+    "kind": "positive",
+    "expect_files": ["03-客户分级与响应时效.md"],
+    "gold_phrases": ["每季度对 A 级和 B 级客户做一次满意度回访"],
+    "note": "答案落在文档最后一节"
+  },
+  {
+    "id": "q18",
+    "question": "哪些数据需要纳入备份",
+    "kind": "positive",
+    "expect_files": ["04-数据备份与恢复.md"],
+    "gold_phrases": ["密钥类数据额外做一次离线归档"],
+    "note": "答案在 04 的第一节"
+  },
+  {
+    "id": "q19",
+    "question": "数据库多久备份一次",
+    "kind": "positive",
+    "expect_files": ["04-数据备份与恢复.md"],
+    "gold_phrases": ["业务数据库每个小时做一次增量备份，每天凌晨 2 点做一次全量备份"],
+    "note": "长答案含两段时间信息"
+  },
+  {
+    "id": "q20",
+    "question": "备份数据保留多久",
+    "kind": "positive",
+    "expect_files": ["04-数据备份与恢复.md"],
+    "gold_phrases": ["全量备份保留 30 天，增量备份保留 7 天，月度归档保留 1 年"],
+    "note": "三类备份的保留期并列"
+  },
+  {
+    "id": "q21",
+    "question": "恢复演练多久做一次",
+    "kind": "positive",
+    "expect_files": ["04-数据备份与恢复.md"],
+    "gold_phrases": ["每半年至少组织一次恢复演练"],
+    "note": "答案落在 04 的靠后位置"
+  },
+  {
+    "id": "q22",
+    "question": "核心系统的 RPO 和 RTO 是多少",
+    "kind": "positive",
+    "expect_files": ["04-数据备份与恢复.md"],
+    "gold_phrases": ["核心业务系统的恢复点目标（RPO）为 15 分钟，恢复时间目标（RTO）为 2 小时"],
+    "note": "04 的最后一节：落在文档尾部，是切窗截断的重点观察对象"
+  },
+  {
+    "id": "q23",
+    "question": "出差住宿费能报多少",
+    "kind": "positive",
+    "expect_files": ["05-费用报销流程.md"],
+    "gold_phrases": ["一线城市每晚不超过 600 元"],
+    "note": "同段有三个城市的限额，考察区分"
+  },
+  {
+    "id": "q24",
+    "question": "餐补标准是多少",
+    "kind": "positive",
+    "expect_files": ["05-费用报销流程.md"],
+    "gold_phrases": ["餐补按每人每天 100 元包干"],
+    "note": "答案在段落末尾"
+  },
+  {
+    "id": "q25",
+    "question": "大额发票需要附加什么材料",
+    "kind": "positive",
+    "expect_files": ["05-费用报销流程.md"],
+    "gold_phrases": ["发票金额超过 1000 元的，需附合同或采购申请单"],
+    "note": "「大额」需要映射到具体的 1000 元阈值"
+  },
+  {
+    "id": "q26",
+    "question": "多少钱以内的报销主管就能批",
+    "kind": "positive",
+    "expect_files": ["05-费用报销流程.md"],
+    "gold_phrases": ["单笔金额 2000 元以内的报销由直属主管审批"],
+    "note": "审批链第一级"
+  },
+  {
+    "id": "q27",
+    "question": "多大的报销要总经理审批",
+    "kind": "positive",
+    "expect_files": ["05-费用报销流程.md"],
+    "gold_phrases": ["超过 10000 元的报销，还需提交总经理审批"],
+    "note": "审批链最高级，与 q26 数字接近，考察区分"
+  },
+  {
+    "id": "q28",
+    "question": "报销最晚什么时候提交",
+    "kind": "positive",
+    "expect_files": ["05-费用报销流程.md"],
+    "gold_phrases": ["跨年费用最迟在次年 1 月 15 日前提交"],
+    "note": "同时有 30 天/次年 1 月 15 日两个时限，考察取对"
+  },
+  {
+    "id": "q29",
+    "question": "窑温是怎么升上去的",
+    "kind": "positive",
+    "expect_files": ["06-长段落与窗口压测.md"],
+    "gold_phrases": ["窑温通常分三段缓慢抬升"],
+    "note": "超长无标点段落被硬切后，段落中部的短语是否仍能被检索到"
+  },
+  {
+    "id": "q30",
+    "question": "冷却太快会有什么后果",
+    "kind": "positive",
+    "expect_files": ["06-长段落与窗口压测.md"],
+    "gold_phrases": ["降温过快会让器物内部产生应力"],
+    "note": "同一段落里靠后的短语，考察硬切内容是否完整入索引"
+  },
+  {
+    "id": "n01",
+    "question": "量子纠缠退相干",
+    "kind": "negative",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "语料完全不涉及，用于测误召回"
+  },
+  {
+    "id": "n02",
+    "question": "火星探测器发射",
+    "kind": "negative",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "同上；刻意避开语料中出现过的 2-gram"
+  },
+  {
+    "id": "n03",
+    "question": "莫扎特奏鸣曲的调性布局",
+    "kind": "negative",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "同上"
+  },
+  {
+    "id": "n04",
+    "question": "光合作用的光反应阶段",
+    "kind": "negative",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "同上"
+  },
+  {
+    "id": "n05",
+    "question": "板块构造学说与地震成因",
+    "kind": "negative",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "同上"
+  }
+]
