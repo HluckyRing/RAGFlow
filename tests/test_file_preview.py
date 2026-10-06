@@ -18,6 +18,7 @@ class FakeCollection:
 
     def __init__(self):
         self.docs = {}
+        self.metas = {}
         self.get_calls = 0
 
     def get(self):
@@ -28,9 +29,11 @@ class FakeCollection:
         for i in ids:
             self.docs.pop(i, None)
 
-    def add(self, documents, ids):
+    def add(self, documents, ids, metadatas=None):
         for i, doc in zip(ids, documents):
             self.docs[i] = doc
+        for i, meta in zip(ids, metadatas or []):
+            self.metas[i] = meta
 
 
 @pytest.fixture

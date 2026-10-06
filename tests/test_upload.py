@@ -21,6 +21,7 @@ class FakeCollection:
 
     def __init__(self):
         self.docs = {}
+        self.metas = {}
         self.get_calls = 0
 
     @property
@@ -35,9 +36,11 @@ class FakeCollection:
         for i in ids:
             self.docs.pop(i, None)
 
-    def add(self, documents, ids):
+    def add(self, documents, ids, metadatas=None):
         for i, doc in zip(ids, documents):
             self.docs[i] = doc
+        for i, meta in zip(ids, metadatas or []):
+            self.metas[i] = meta
 
 
 @pytest.fixture
@@ -262,7 +265,7 @@ def test_rebuild_keeps_working_index_when_add_fails():
     before = list(coll.added)
     assert before, "先建立一份可用索引"
 
-    def exploding_add(documents, ids):
+    def exploding_add(documents, ids, metadatas=None):
         raise RuntimeError("embedding 挂了")
 
     coll.add = exploding_add

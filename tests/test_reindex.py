@@ -23,6 +23,7 @@ class FakeCollection:
 
     def __init__(self, docs=None):
         self.docs = dict(docs or {})
+        self.metas = {}
         self.events = []
 
     def count(self):
@@ -31,10 +32,12 @@ class FakeCollection:
     def get(self):
         return {"ids": list(self.docs.keys())}
 
-    def add(self, documents, ids):
+    def add(self, documents, ids, metadatas=None):
         self.events.append(("add", list(ids)))
         for i, doc in zip(ids, documents):
             self.docs[i] = doc
+        for i, meta in zip(ids, metadatas or []):
+            self.metas[i] = meta
 
     def delete(self, ids):
         self.events.append(("delete", list(ids)))
@@ -180,3 +183,26 @@ def test_no_conversation_with_files_is_a_noop(tmp_path, monkeypatch, capsys):
 
     assert rc == 0
     assert "没有需要重建的对话" in capsys.readouterr().out
+
+
+def test_apply_writes_source_metadata(tmp_path, monkeypatch):
+    """重建时要把来源写进 metadatas（P2）—— 引用可核验的数据基础。"""
+    state_dir = tmp_path / "state"
+    _write_state(state_dir, "sid-meta", {
+        "c1": {"files": [{"file_name": "a.md", "file_text": "第一段。\n\n第二段。"}],
+               "collection_name": "kb_conv_meta"},
+    })
+    opened = {}
+    monkeypatch.setattr(reindex_all, "open_collection",
+                        lambda name: opened.setdefault(name, FakeCollection()))
+    monkeypatch.setattr(state, "LEGACY_STATE_FILE", tmp_path / "no-legacy.json")
+
+    rc = reindex_all.main(["--state-dir", str(state_dir), "--apply"])
+
+    assert rc == 0
+    metas = list(opened["kb_conv_meta"].metas.values())
+    assert metas and all(m["file_name"] == "a.md" for m in metas)
+    assert [m["chunk_index"] for m in metas] == list(range(len(metas)))
+    # Chroma 收不了 None，所以 chroma_meta 会把「没有页码」的 section 字段整个去掉；
+    # 读的那一侧必须用 .get()，不能假设这个键一定存在。
+    assert all(m.get("section") is None for m in metas), "md 没有结构标记，不该编造页码"

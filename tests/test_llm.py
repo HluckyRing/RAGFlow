@@ -125,32 +125,41 @@ def test_stream_answer_without_api_key_raises_chinese_hint(monkeypatch):
     assert "API_KEY" in str(ei.value)
 
 
-# ── 参考背景装配（P1）──
+# ── 参考背景装配（P1：块边界；P2：来源标签）──
+
+def _block(text, label="未标注"):
+    """context 里一块的样式：`【来源：…】` + 换行 + 正文。"""
+    return f"【来源：{label}】\n{text}"
+
+
+def _hits(chunks, meta=None):
+    return [(chunk, meta) for chunk in chunks]
+
 
 def test_context_is_assembled_at_chunk_boundaries(monkeypatch):
     """预算只够两块时，结果正好是整块的两块，且不超过预算。"""
     chunks = ["甲" * 40, "乙" * 40, "丙" * 40]
-    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: chunks)
-    monkeypatch.setattr(llm, "MAX_CONTEXT_LENGTH", 100)
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: _hits(chunks))
+    monkeypatch.setattr(llm, "MAX_CONTEXT_LENGTH", 120)
 
     context, used = llm.retrieve_and_build_context("q", "".join(chunks), None, False)
 
     assert used == chunks[:2]
-    assert context == chunks[0] + "\n\n" + chunks[1]
-    assert len(context) <= 100
+    assert context == _block(chunks[0]) + "\n\n" + _block(chunks[1])
+    assert len(context) <= 120
 
 
 def test_context_never_contains_half_a_chunk(monkeypatch):
     """装不下的块整块丢掉 —— 旧实现是从中间硬切，会留下半截话。"""
     first = "甲" * 90
     second = "乙" * 90
-    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [first, second])
-    monkeypatch.setattr(llm, "MAX_CONTEXT_LENGTH", 100)
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: _hits([first, second]))
+    monkeypatch.setattr(llm, "MAX_CONTEXT_LENGTH", 150)
 
     context, used = llm.retrieve_and_build_context("q", first + "\n\n" + second, None, False)
 
     assert used == [first]
-    assert context == first, "宁可比预算短，也不能切出半截块"
+    assert context == _block(first), "宁可比预算短，也不能切出半截块"
 
 
 def test_context_selects_by_relevance_but_orders_by_document_position(monkeypatch):
@@ -158,7 +167,8 @@ def test_context_selects_by_relevance_but_orders_by_document_position(monkeypatc
     first = "前面的内容" * 5
     second = "后面的内容" * 5
     full_text = first + "\n\n" + second
-    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [second, first])  # 相关度序是反的
+    # 相关度序是反的
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: _hits([second, first]))
 
     context, used = llm.retrieve_and_build_context("q", full_text, None, False)
 
@@ -170,7 +180,7 @@ def test_context_keeps_unknown_position_chunks_at_the_end(monkeypatch):
     """索引与当前全文不一致（切片改过但没重建）时，找不到位置的块不许丢。"""
     known = "在原文里的块"
     stale = "索引里遗留的块，当前全文里没有"
-    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [stale, known])
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: _hits([stale, known]))
 
     context, used = llm.retrieve_and_build_context("q", known, None, False)
 
@@ -181,19 +191,71 @@ def test_context_keeps_unknown_position_chunks_at_the_end(monkeypatch):
 def test_context_truncates_single_chunk_when_budget_is_contradictory(monkeypatch, caplog):
     """MAX_CONTEXT_LENGTH 比单块还小时：只能截断这一块，但必须告警且不能返回空。"""
     chunk = "甲" * 200
-    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [chunk])
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: _hits([chunk]))
     monkeypatch.setattr(llm, "MAX_CONTEXT_LENGTH", 50)
 
     with caplog.at_level(logging.WARNING, logger="ai_rag"):
         context, used = llm.retrieve_and_build_context("q", chunk, None, False)
 
-    assert context.startswith("甲" * 50)
-    assert "(截断)" in context
+    assert context.startswith("【来源：未标注】")
+    assert context.endswith("...(截断)")
     assert used == [chunk]
     assert any("MAX_CONTEXT_LENGTH" in r.getMessage() for r in caplog.records)
 
 
 def test_context_is_empty_when_nothing_retrieved(monkeypatch):
-    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [])
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: [])
 
     assert llm.retrieve_and_build_context("q", "全文", None, False) == ("", [])
+
+
+# ── 来源标签（P2）──
+
+def test_context_labels_each_block_with_its_source(monkeypatch):
+    """每块前面要有【来源：…】，引用才可核验（文件名 + 页码/工作表名）。"""
+    meta = {"file_name": "01-财务指标.md", "section": "第 2 页"}
+    text = "净资产收益率是净利润与平均股东权益的百分比"
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: [(text, meta)])
+
+    context, used = llm.retrieve_and_build_context(
+        "q", text, None, False, files=[("01-财务指标.md", text)])
+
+    assert context == "【来源：01-财务指标.md · 第 2 页】\n" + text
+    assert used == [text]
+
+
+def test_context_omits_section_when_there_is_none(monkeypatch):
+    """没有页/工作表信息的格式（md/csv/docx）只写文件名，不要硬凑一个「第 None 页」。"""
+    meta = {"file_name": "05-费用报销流程.md", "section": None}
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: [("正文", meta)])
+
+    context, _ = llm.retrieve_and_build_context("q", "正文", None, False)
+
+    assert context.startswith("【来源：05-费用报销流程.md】")
+    assert "None" not in context
+
+
+def test_context_marks_unknown_source_without_inventing_one(monkeypatch):
+    """老索引没有元数据时标「未标注」，绝不编造来源 —— 上次引用功能就栽在不准确上。"""
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: [("某段正文", None)])
+
+    context, _ = llm.retrieve_and_build_context("q", "某段正文", None, False)
+
+    assert context.startswith("【来源：未标注】")
+    assert "某段正文" in context
+
+
+def test_context_passes_files_through_to_retrieval(monkeypatch):
+    """server 传来的 files 必须透传给检索层，否则来源永远是「未标注」。"""
+    seen = {}
+
+    def fake_hits(question, collection, full_text, use_vector, top_k=None, files=None):
+        seen["files"] = files
+        return [("正文", {"file_name": "a.md", "section": None})]
+
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", fake_hits)
+    files = [("a.md", "正文")]
+
+    llm.retrieve_and_build_context("q", "正文", None, False, files=files)
+
+    assert seen["files"] == files

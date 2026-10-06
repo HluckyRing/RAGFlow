@@ -267,3 +267,54 @@ def test_main_returns_2_on_bad_input_without_loading_torch(tmp_path, capsys):
     assert rc == 2
     assert "输入不合法" in capsys.readouterr().out
     assert "torch" not in sys.modules, "输入校验必须发生在加载模型之前"
+
+
+# ── 文件归属（P2）──
+
+def test_rank_and_file_reports_matching_file():
+    hits = [("无关内容", {"file_name": "b.md"}), ("净资产收益率", {"file_name": "a.md"})]
+
+    assert ev.rank_and_file(hits, ["净资产收益率"], ["a.md"]) == (2, True)
+
+
+def test_rank_and_file_reports_mismatching_file():
+    hits = [("净资产收益率", {"file_name": "b.md"})]
+
+    assert ev.rank_and_file(hits, ["净资产收益率"], ["a.md"]) == (1, False)
+
+
+def test_rank_and_file_returns_none_without_metadata():
+    """老索引没有元数据：归属是「不知道」，不能算成「归属错误」。"""
+    hits = [("净资产收益率", None)]
+
+    assert ev.rank_and_file(hits, ["净资产收益率"], ["a.md"]) == (1, None)
+
+
+def test_rank_and_file_returns_none_when_nothing_hit():
+    hits = [("无关内容", {"file_name": "a.md"})]
+
+    assert ev.rank_and_file(hits, ["净资产收益率"], ["a.md"]) == (None, None)
+
+
+def test_summarize_reports_file_attribution_rate():
+    results = [
+        {"kind": "positive", "rank": 1, "returned": 1, "file_ok": True},
+        {"kind": "positive", "rank": 1, "returned": 1, "file_ok": False},
+        {"kind": "positive", "rank": 1, "returned": 1, "file_ok": None},   # 没元数据，跳过
+    ]
+
+    got = ev.summarize(results, 5)
+
+    assert got["file_attribution_total"] == 2, "分母只算带了元数据的样本"
+    assert got["file_attribution_hits"] == 1
+    assert got["file_attribution_rate"] == pytest.approx(0.5)
+
+
+def test_summarize_file_attribution_is_none_without_metadata():
+    """拿不到来源就别给一个会骗人的数字。"""
+    results = [{"kind": "positive", "rank": 1, "returned": 1, "file_ok": None}]
+
+    got = ev.summarize(results, 5)
+
+    assert got["file_attribution_rate"] is None
+    assert got["file_attribution_total"] == 0

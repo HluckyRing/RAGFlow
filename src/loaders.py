@@ -24,14 +24,26 @@ except ImportError:
     HAS_PPTX = False
 
 
+def _join_pdf_pages(page_texts):
+    """把各页抽取文本拼成一份正文，页与页之间加 `=== 第 N 页 ===` 分隔。
+
+    为什么要加分隔，而不是像以前那样直接首尾相连：
+    - 有页码，检索命中时才能给出「来源：某.pdf · 第 N 页」这种**可核验**的引用；
+    - 跨页的句子不再被直接粘成一句，页面边界天然成为段落边界（split_text 按空行切段）。
+    整页没有文字的（纯图片页）不输出页头，与 pptx 的处理保持一致；页码仍按真实页序走，
+    所以中间有空页时后面的页码不会错位。
+    """
+    pages = []
+    for index, page_text in enumerate(page_texts, start=1):
+        text = (page_text or "").strip()
+        if text:
+            pages.append(f"=== 第 {index} 页 ===\n{text}")
+    return "\n\n".join(pages)
+
+
 def load_pdf(uploaded_file):
     reader = PdfReader(uploaded_file)
-    text = ""
-    for page in reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text += page_text
-    return text
+    return _join_pdf_pages([page.extract_text() for page in reader.pages])
 
 
 # 依次尝试的编码：utf-8-sig 处理 Excel 导出的带 BOM 文件；latin-1 永不抛错，作兜底。

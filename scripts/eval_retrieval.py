@@ -130,6 +130,25 @@ def load_queries(path):
     return queries
 
 
+def rank_and_file(hits, gold_phrases, expect_files):
+    """同时返回首个命中位次、以及该命中是否来自预期文件。
+
+    文件归属只在命中块真的带了来源元数据时才有意义；没有元数据（老索引）时返回 None，
+    由上层跳过统计，而不是把「不知道」算成「归属错误」。
+    """
+    needles = [n for n in (normalize(g) for g in gold_phrases) if n]
+    if not needles:
+        return None, None
+    for rank, (text, meta) in enumerate(hits, 1):
+        haystack = normalize(text)
+        if any(needle in haystack for needle in needles):
+            name = (meta or {}).get("file_name")
+            if not name or not expect_files:
+                return rank, None
+            return rank, name in expect_files
+    return None, None
+
+
 def rank_of_first_hit(chunks, gold_phrases):
     """第一个命中任一 gold_phrase 的 chunk 位次（1 起）；都没命中返回 None。"""
     needles = [n for n in (normalize(g) for g in gold_phrases) if n]
@@ -157,6 +176,10 @@ def summarize(results, k):
     reciprocal = [(1.0 / r["rank"]) if (r["rank"] is not None and r["rank"] <= k) else 0.0
                   for r in positives]
     false_positives = [r for r in negatives if r.get("returned")]
+    # 文件归属只在命中块真的带了元数据时才统计：老索引没有 metadatas 时 file_ok 是 None，
+    # 不能把「不知道」算成「错了」，否则这个指标会骗人。
+    attributed = [r for r in positives if r.get("file_ok") is not None]
+    attributed_ok = [r for r in attributed if r["file_ok"]]
 
     return {
         "positives": len(positives),
@@ -164,6 +187,9 @@ def summarize(results, k):
         "hits_at_k": sum(hit_flags),
         "recall_at_k": (sum(hit_flags) / len(positives)) if positives else 0.0,
         "mrr": (sum(reciprocal) / len(reciprocal)) if reciprocal else 0.0,
+        "file_attribution_hits": len(attributed_ok),
+        "file_attribution_total": len(attributed),
+        "file_attribution_rate": (len(attributed_ok) / len(attributed)) if attributed else None,
         "negative_false_positives": len(false_positives),
         "negative_false_positive_rate":
             (len(false_positives) / len(negatives)) if negatives else 0.0,
@@ -234,7 +260,7 @@ def main(argv=None):
 
     from src.config import CHUNK_OVERLAP, CHUNK_SIZE, EMBEDDING_MODEL, MAX_DISTANCE
     import src.pdf_ingestion as pdf_ingestion
-    from src.pdf_ingestion import split_text
+    from src.pdf_ingestion import split_files, split_text
     import src.retrieval as retrieval
 
     chunk_size = CHUNK_SIZE if args.chunk_size is None else args.chunk_size
@@ -260,9 +286,12 @@ def main(argv=None):
     else:
         print("检索模式：HyDE（真实调用大模型，会花 API 额度）")
 
-    texts = [corpus[name] for name in sorted(corpus)]
-    full_text = "\n\n".join(texts)
-    chunks = split_text(full_text, chunk_size=chunk_size, overlap=chunk_overlap)
+    files = [(name, corpus[name]) for name in sorted(corpus)]
+    full_text = "\n\n".join(text for _, text in files)
+    # P2：按文件、按节切片（与生产一致），并把来源写进 metadatas —— 评测要能量到
+    # 「命中的块是不是来自预期文件」，否则引用准不准只能靠肉眼读回答。
+    pairs = split_files(files, chunk_size=chunk_size, overlap=chunk_overlap)
+    chunks = [chunk for chunk, _ in pairs]
     if not chunks:
         print("输入不合法：语料切片后没有任何 chunk（文件内容为空？）")
         return 2
@@ -270,7 +299,8 @@ def main(argv=None):
     embedding_fn = retrieval._get_embedding_fn()
     client = chromadb.EphemeralClient()
     collection = client.get_or_create_collection(name="eval_kb", embedding_function=embedding_fn)
-    collection.add(documents=chunks, ids=[f"eval_c{i}" for i in range(len(chunks))])
+    collection.add(documents=chunks, ids=[f"eval_c{i}" for i in range(len(chunks))],
+                   metadatas=[retrieval.chroma_meta(meta) for _, meta in pairs])
 
     positive_count = sum(1 for q in queries if q["kind"] == "positive")
     negative_count = len(queries) - positive_count
@@ -283,16 +313,16 @@ def main(argv=None):
     started = time.perf_counter()
     for query in queries:
         question = query["question"]
-        returned = retrieval.hyde_retrieve(
-            question, collection, full_text, use_vector=True, top_k=args.top_k)
+        hits = retrieval.hyde_retrieve_hits(
+            question, collection, full_text, use_vector=True, top_k=args.top_k, files=files)
 
         if query["kind"] == "positive":
-            rank = rank_of_first_hit(returned, query["gold_phrases"])
-            results.append({"id": query["id"], "kind": "positive",
-                            "rank": rank, "returned": len(returned)})
+            rank, file_ok = rank_and_file(hits, query["gold_phrases"], query["expect_files"])
+            results.append({"id": query["id"], "kind": "positive", "rank": rank,
+                            "returned": len(hits), "file_ok": file_ok})
         else:
             results.append({"id": query["id"], "kind": "negative",
-                            "rank": None, "returned": len(returned)})
+                            "rank": None, "returned": len(hits)})
 
         if args.calibrate:
             # 原始查询：不经阈值过滤，用来看真实距离分布
@@ -329,6 +359,11 @@ def main(argv=None):
     print(f"recall@{args.top_k} = {summary['recall_at_k']:.3f}"
           f"（{summary['hits_at_k']}/{summary['positives']}）")
     print(f"MRR       = {summary['mrr']:.3f}")
+    attr = summary["file_attribution_rate"]
+    attr_text = ("无数据（命中的块没带来源元数据）" if attr is None else
+                 f"{attr:.3f}（{summary['file_attribution_hits']}/"
+                 f"{summary['file_attribution_total']}）")
+    print(f"文件归属正确率 = {attr_text}")
     print(f"负样本误召回率 = {summary['negative_false_positive_rate']:.3f}"
           f"（{summary['negative_false_positives']}/{summary['negatives']}）")
     print(f"耗时 = {elapsed:.1f}s（{len(queries)} 条样本）")

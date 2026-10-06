@@ -211,7 +211,7 @@ def test_upload_builds_collection_for_api_created_conversation(app_env, monkeypa
         def get(self):
             return {"ids": []}
 
-        def add(self, documents, ids):
+        def add(self, documents, ids, metadatas=None):
             self.added.extend(documents)
 
         def delete(self, ids):

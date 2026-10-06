@@ -15,9 +15,10 @@ import src.state as state
 from src.config import (logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, HOST, PORT,
                         UPLOAD_DIR)
 from src.loaders import load_file
-from src.pdf_ingestion import split_text
+from src.pdf_ingestion import split_files
 from src.text_utils import strip_surrogates, strip_surrogates_counted
-from src.retrieval import init_vector_store, sanitize_collection_name, drop_collection
+from src.retrieval import (init_vector_store, sanitize_collection_name, drop_collection,
+                           chroma_meta)
 from src.llm import resolve_query, retrieve_and_build_context, stream_answer, LLMStreamError
 
 # session_id -> 状态 dict。与 state 模块的缓存共用同一个对象，改动会被 _save_state 落盘。
@@ -376,15 +377,18 @@ def _rebuild_collection(conv):
         logger.debug("读取 collection 现有 id 失败: %s", e)
         old_ids = []
 
-    # 第二道防线：历史状态或别处来的文本也可能带脏字符，这里是进 embedding 的最后一关
-    full_text = strip_surrogates(_conv_full_text(conv))
+    # 第二道防线：历史状态或别处来的文本也可能带脏字符，这里是进 embedding 的最后一关。
+    # P2：按文件分别切片，并把来源（文件名 / 块序号 / 页码或工作表名）写进 metadatas ——
+    # 引用要可核验，前提是每个块只有唯一来源；多文件拼接之后再切，这层对应关系就丢了。
+    files = [(f.get("file_name", ""), strip_surrogates(f.get("file_text", "")))
+             for f in (conv.get("files") or [])]
+    pairs = split_files(files)
     new_ids = []
-    if full_text:
+    if pairs:
         generation = uuid.uuid4().hex[:8]
-        chunks = split_text(full_text)
-        for i, chunk in enumerate(chunks):
+        for i, (chunk, meta) in enumerate(pairs):
             cid = f"{generation}_c{i}"
-            collection.add(documents=[chunk], ids=[cid])
+            collection.add(documents=[chunk], ids=[cid], metadatas=[chroma_meta(meta)])
             new_ids.append(cid)
 
     # 全空时 stale 就是全部旧 id —— 也就是「删光文件必须把索引也清空」那条路径
@@ -721,10 +725,13 @@ async def chat(request: Request):
     search_query = resolve_query(question, history)
     file_count = len(conv.get("files", []))
     dynamic_top_k = max(10, file_count * 3)
+    # 带上每个文件的正文：检索层要按文件切片，才知道命中的块来自哪个文件（P2）
+    files = [(f.get("file_name", ""), f.get("file_text", ""))
+             for f in (conv.get("files") or [])]
     # HyDE 的 LLM 调用 + Chroma 查询 + embedding 推理全是阻塞的
     context, _ = await run_in_threadpool(
         retrieve_and_build_context, search_query, _conv_full_text(conv),
-        conv["collection"], conv["use_vector"], dynamic_top_k,
+        conv["collection"], conv["use_vector"], dynamic_top_k, files,
     )
     if not context:
         return JSONResponse({"error": "未找到相关内容"}, status_code=400)

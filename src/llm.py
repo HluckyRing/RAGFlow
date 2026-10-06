@@ -1,6 +1,6 @@
 from src.config import logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH
 from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE
-from src.retrieval import hyde_retrieve
+from src.retrieval import hyde_retrieve_hits
 from src.text_utils import content_phrases
 
 # 指代词。刻意不收裸「这」「那」：它们太常见（「这是什么」并不需要指代消解），
@@ -44,63 +44,90 @@ def resolve_query(question, history):
     return question
 
 
-def _order_by_position(chunks, full_text):
-    """把选中的块按它们在原文里的先后排序。
+def _order_pairs_by_position(hits, full_text):
+    """把 (块, 来源) 按它们在原文里的先后排序。
 
     检索返回的是相关度序。跨相邻两块的答案如果按相关度序摆进 prompt，读起来是断的；
     按原文序更接近人阅读的顺序。
 
-    位置取自 full_text.find(chunk)。索引是历史遗留（例如切片尺寸改过但还没重建）
-    时可能找不到某个块，这种块排到最后并保持原有相对顺序 —— 只影响顺序，不丢内容。
+    位置取自 full_text.find(块文本)。索引是历史遗留（切片尺寸改过还没重建、或 P2 之前
+    建的老索引）时可能找不到某个块，这种块排到最后并保持原有相对顺序 —— 只影响顺序，
+    不丢内容。
     """
-    if len(chunks) < 2 or not full_text:
-        return list(chunks)
+    if len(hits) < 2 or not full_text:
+        return list(hits)
     positioned = []
-    for i, chunk in enumerate(chunks):
-        pos = full_text.find(chunk)
-        positioned.append((pos, i, chunk))
+    for i, (text, meta) in enumerate(hits):
+        pos = full_text.find(text)
+        positioned.append((pos, i, text, meta))
     # 找不到位置的（pos < 0）排最后，并按原有顺序保持稳定
     positioned.sort(key=lambda item: (item[0] < 0, item[0] if item[0] >= 0 else item[1]))
-    return [chunk for _, _, chunk in positioned]
+    return [(text, meta) for _, _, text, meta in positioned]
 
 
-def retrieve_and_build_context(question, full_text, collection, use_vector, top_k=None):
-    """检索，并按「块边界」装配参考背景。
+def _order_by_position(chunks, full_text):
+    """（保持既有签名）只关心块文本顺序时用这个。"""
+    return [text for text, _ in _order_pairs_by_position([(c, None) for c in chunks], full_text)]
 
-    旧实现是 context[:MAX_CONTEXT_LENGTH] 硬切，会把某个 chunk 拦腰截断：答案正好
-    落在被切掉的那半截时，模型看到的是一句断话。现在两步走：先按相关度决定要哪些块
-    （预算优先给更相关的），再把选中的块按原文顺序拼起来 —— 宁可比预算短，也不给半截块。
 
-    返回 (context, used_chunks)。used_chunks 就是 context 里真正用到的那些块、且与
-    context 同序；旧实现返回 chunks[:3]，那是一段没有任何调用方使用的残留代码。
+def _source_label(meta):
+    """把块的来源渲染成给模型看的标签。
 
-    唯一例外：单块本身就超过 MAX_CONTEXT_LENGTH（说明配置互相矛盾，例如把
+    没有来源（老索引没有 metadatas、或调用方没给 files）就如实写「未标注」，
+    绝不编造 —— 2026-07-24 那次引用功能被删，根因就是引用不准。
+    """
+    if not meta:
+        return "未标注"
+    name = meta.get("file_name") or "未知文件"
+    section = meta.get("section")
+    return f"{name} · {section}" if section else name
+
+
+def _format_source_block(text, meta):
+    return f"【来源：{_source_label(meta)}】\n{text}"
+
+
+def retrieve_and_build_context(question, full_text, collection, use_vector, top_k=None, files=None):
+    """检索，并按「块边界」装配参考背景，每块带上来源。
+
+    两件事叠在一起：
+    1. 按块边界装配（P1）：先按相关度决定要哪些块（预算优先给更相关的），再把选中的块
+       按原文顺序拼起来；不再 `context[:MAX]` 从中间硬切，宁可比预算短也不给半截块。
+    2. 带上来源（P2）：每块前面加 `【来源：文件名 · 第 N 页】`，引用才可核验。
+
+    返回 (context, used_chunks)。used_chunks 是 context 里真正用到的块文本、与 context 同序。
+
+    唯一例外：单块（含来源标签）本身就超过 MAX_CONTEXT_LENGTH（配置互相矛盾，例如把
     MAX_CONTEXT_LENGTH 调得比一个 chunk 还小）。此时只能截断这一块 —— 总比返回空好 ——
     并记一条 WARNING。
     """
-    chunks = hyde_retrieve(question, collection, full_text, use_vector, top_k=top_k)
-    if not chunks:
+    hits = hyde_retrieve_hits(question, collection, full_text, use_vector,
+                              top_k=top_k, files=files)
+    if not hits:
         return "", []
 
-    used, total = [], 0
-    for chunk in chunks:                              # 相关度序：预算先给更相关的块
-        addition = len(chunk) + (2 if used else 0)    # 块之间是 "\n\n"
+    used, total = [], 0                             # used: [(块文本, meta, 带标签的块)]
+    for text, meta in hits:                         # 相关度序：预算先给更相关的块
+        block = _format_source_block(text, meta)
+        addition = len(block) + (2 if used else 0)  # 块之间是 "\n\n"
         if used and total + addition > MAX_CONTEXT_LENGTH:
             break
-        used.append(chunk)
+        used.append((text, meta, block))
         total += addition
 
-    if total > MAX_CONTEXT_LENGTH:                    # 只有「第一块自己就超预算」会走到这
-        logger.warning("单块长度已超过 MAX_CONTEXT_LENGTH=%d，只能截断第一块；"
+    if total > MAX_CONTEXT_LENGTH:                  # 只有「第一块自己就超预算」会走到这
+        logger.warning("单块长度（含来源标签）已超过 MAX_CONTEXT_LENGTH=%d，只能截断第一块；"
                        "请调大 MAX_CONTEXT_LENGTH 或调小 CHUNK_SIZE", MAX_CONTEXT_LENGTH)
-        return used[0][:MAX_CONTEXT_LENGTH] + "\n...(截断)", used
+        text, _meta, block = used[0]
+        return block[:MAX_CONTEXT_LENGTH] + "\n...(截断)", [text]
 
-    if len(used) < len(chunks):
+    if len(used) < len(hits):
         logger.info("context 按块边界装配：保留 %d/%d 块（%d 字符，预算 %d）",
-                    len(used), len(chunks), total, MAX_CONTEXT_LENGTH)
+                    len(used), len(hits), total, MAX_CONTEXT_LENGTH)
 
-    ordered = _order_by_position(used, full_text)
-    return "\n\n".join(ordered), ordered
+    ordered = _order_pairs_by_position([(text, meta) for text, meta, _ in used], full_text)
+    context = "\n\n".join(_format_source_block(text, meta) for text, meta in ordered)
+    return context, [text for text, _ in ordered]
 
 
 

@@ -131,4 +131,54 @@ def test_hyde_skips_with_clear_hint_when_client_is_none(monkeypatch, caplog):
         out = retrieval._generate_hyde("什么是净资产收益率")
 
     assert out == "什么是净资产收益率"
-    assert any("API_KEY" in r.getMessage() for r in caplog.records), "应提示缺少 API_KEY"
+    assert any("API_KEY" in r.getMessage() for r in caplog.records)
+
+
+# ── 来源元数据（P2）──
+
+class _MetaCollection:
+    """返回带 metadatas 的候选块，用来验证来源能一路带到上层。"""
+
+    def __init__(self, docs, distances, metas):
+        self._docs, self._distances, self._metas = docs, distances, metas
+
+    def count(self):
+        return len(self._docs)
+
+    def query(self, query_texts, n_results):
+        return {"documents": [self._docs], "distances": [self._distances],
+                "metadatas": [self._metas]}
+
+
+def test_hits_carry_source_metadata(monkeypatch):
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    meta = {"file_name": "a.md", "chunk_index": 0, "section": "第 1 页"}
+    coll = _MetaCollection(["相关的块"], [0.30], [meta])
+
+    hits = retrieval.hyde_retrieve_hits("问题", coll, "全文", use_vector=True)
+
+    assert hits == [("相关的块", meta)]
+
+
+def test_hits_without_metadata_give_none_not_a_fake_source(monkeypatch):
+    """老索引没有 metadatas：来源必须是 None，由上层标「未标注」，不能编。"""
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _MetaCollection(["相关的块"], [0.30], [None])
+
+    hits = retrieval.hyde_retrieve_hits("问题", coll, "全文", use_vector=True)
+
+    assert hits == [("相关的块", None)]
+
+
+def test_chroma_meta_drops_none_fields():
+    """Chroma 的 metadata 不收 None，所以建索引前要把值为 None 的字段删掉。"""
+    assert retrieval.chroma_meta({"file_name": "a.md", "section": None}) == {"file_name": "a.md"}
+    assert retrieval.chroma_meta(None) == {"file_name": "未知文件"}
+
+
+def test_hyde_retrieve_still_returns_plain_texts(monkeypatch):
+    """旧签名保持兼容：只给文本，老调用方不用改。"""
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _MetaCollection(["块A"], [0.30], [{"file_name": "a.md"}])
+
+    assert retrieval.hyde_retrieve("问题", coll, "全文", use_vector=True) == ["块A"], "应提示缺少 API_KEY"

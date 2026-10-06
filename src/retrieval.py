@@ -4,7 +4,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 from src.config import (logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME,
                         VECTOR_DB_PATH, TOP_K, MAX_DISTANCE)
-from src.pdf_ingestion import split_text
+from src.pdf_ingestion import split_files, split_text
 from src.prompts import HYDE_SYSTEM_PROMPT
 from src.text_utils import extract_terms
 
@@ -72,26 +72,31 @@ def drop_collection(collection_name):
         return False
 
 
+def _keyword_scores(question, chunks):
+    """关键词打分：中文 2/3-gram + 英文单词。返回 [(分数, 下标)]，按分数降序。
+
+    除以 sqrt(长度) 归一化，避免长段落仅因为字多就排到前面。
+    """
+    terms = extract_terms(question)
+    if not terms or not chunks:
+        return []
+    scored = []
+    for index, chunk in enumerate(chunks):
+        low = chunk.lower()
+        score = sum(low.count(t) * len(t) for t in terms)
+        if score > 0:
+            scored.append((score / (len(chunk) ** 0.5), index))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
 def retrieve_keyword(question, chunks, top_n=3):
     """关键词降级检索：中文 2/3-gram + 英文单词打分。
 
     返回按相关度排序的 chunk；一条都没沾上时返回空列表，由上层提示
     「未找到相关内容」，而不是拿不相关的段落去喂模型。
     """
-    terms = extract_terms(question)
-    if not terms or not chunks:
-        return []
-    scored = []
-    for chunk in chunks:
-        low = chunk.lower()
-        score = sum(low.count(t) * len(t) for t in terms)
-        if score > 0:
-            # 除以 sqrt(长度) 归一化，避免长段落仅因为字多就排到前面
-            scored.append((score / (len(chunk) ** 0.5), chunk))
-    if not scored:
-        return []
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [chunk for _, chunk in scored[:top_n]]
+    return [chunks[index] for _, index in _keyword_scores(question, chunks)[:top_n]]
 
 
 def _generate_hyde(question):
@@ -115,22 +120,18 @@ def _generate_hyde(question):
         return question
 
 
-def _filter_by_distance(docs, distances, max_distance=None):
-    """丢掉距离过大（与问题不相关）的块，避免噪音进 prompt。
+def _kept_indices(distances, max_distance):
+    """距离阈值过滤：返回保留下来的下标；拿不到距离时返回 None（调用方按全保留处理）。
 
     这些 collection 建的时候没指定 hnsw:space，Chroma 用的是默认度量 l2（平方欧氏）；
     BGE 输出是归一化向量，所以距离 = 2 - 2*cos，取值范围 [0, 4]。
-    阈值默认 0.55，可用环境变量 MAX_DISTANCE 覆盖。
     """
-    if max_distance is None:
-        max_distance = MAX_DISTANCE
     if not distances:
-        return list(docs)          # 拿不到距离就不敢乱丢
-
+        return None
     kept, dropped = [], 0
-    for doc, dist in zip(docs, distances):
+    for index, dist in enumerate(distances):
         if dist <= max_distance:
-            kept.append(doc)
+            kept.append(index)
         else:
             dropped += 1
 
@@ -145,20 +146,71 @@ def _filter_by_distance(docs, distances, max_distance=None):
     return kept
 
 
-def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
+def _filter_by_distance(docs, distances, max_distance=None):
+    """丢掉距离过大（与问题不相关）的块，避免噪音进 prompt。
+
+    阈值默认 0.55，可用环境变量 MAX_DISTANCE 覆盖。
+    """
+    if max_distance is None:
+        max_distance = MAX_DISTANCE
+    kept = _kept_indices(distances, max_distance)
+    if kept is None:
+        return list(docs)          # 拿不到距离就不敢乱丢
+    return [docs[i] for i in kept if i < len(docs)]
+
+
+def chroma_meta(meta):
+    """Chroma 的 metadata 只收非 None 的基本类型，所以把值为 None 的字段删掉。"""
+    cleaned = {k: v for k, v in (meta or {}).items() if v is not None}
+    cleaned.setdefault("file_name", "未知文件")
+    return cleaned
+
+
+def _pairs_with_meta(files, full_text):
+    """要检索的 [(块, 来源), ...]。
+
+    给了 files 就按文件分别切片（块不跨文件，来源才唯一）；没给就退回旧的整篇切片、
+    来源标成 None —— 老调用方、老测试与老索引都能继续工作。
+    """
+    if files:
+        return split_files(files)
+    return [(chunk, None) for chunk in split_text(full_text)]
+
+
+def _kept_hits(docs, distances, metadatas, max_distance):
+    """按距离过滤，连来源一起返回 [(文本, meta), ...]。"""
+    kept = _kept_indices(distances, max_distance)
+    if kept is None:
+        kept = range(len(docs))
+    hits = []
+    for index in kept:
+        if index >= len(docs):
+            break
+        meta = metadatas[index] if index < len(metadatas) else None
+        hits.append((docs[index], meta if isinstance(meta, dict) else None))
+    return hits
+
+
+def hyde_retrieve_hits(question, collection, full_text, use_vector, top_k=None, files=None):
+    """检索并带上来源：返回 [(chunk_text, meta), ...]，meta 可能是 None。
+
+    meta 来自建索引时写进 Chroma 的 metadatas；老索引（P2 之前建的）没有 metadatas，
+    这时 meta 是 None，上层会标注成「未标注」，绝不编造来源。
+    """
     if top_k is None:
         top_k = TOP_K
 
-    context_chunks = []
+    hits = []
     if use_vector and collection is not None:
         # 只有真要查向量库时才值得花一次 API 调用来生成 HyDE
         search_query = _generate_hyde(question)
         try:
             count = collection.count()
             if count == 0:
-                chunks = split_text(full_text)
-                for i, chunk in enumerate(chunks):
-                    collection.add(documents=[chunk], ids=[f"chunk_{i}"])
+                pairs = _pairs_with_meta(files, full_text)
+                for i, (chunk, meta) in enumerate(pairs):
+                    collection.add(documents=[chunk], ids=[f"chunk_{i}"],
+                                   metadatas=[chroma_meta(meta)])
                 count = collection.count()
                 logger.info("已为新文档建立向量索引，共 %d 块", count)
             if count > 0:
@@ -166,17 +218,26 @@ def hyde_retrieve(question, collection, full_text, use_vector, top_k=None):
                     query_texts=[search_query],
                     n_results=min(top_k, count)
                 )
-                docs = results["documents"][0] if results["documents"] else []
+                docs = results["documents"][0] if results.get("documents") else []
                 dists = results["distances"][0] if results.get("distances") else []
+                metas = results["metadatas"][0] if results.get("metadatas") else []
                 if docs:
-                    context_chunks = _filter_by_distance(docs, dists)
+                    hits = _kept_hits(docs, dists, metas, MAX_DISTANCE)
         except Exception as e:
             logger.warning("向量检索失败，降级为关键词检索: %s", str(e)[:80])
 
-    if not context_chunks:
+    if not hits:
         logger.info("使用关键词检索作为备用方案")
-        chunks = split_text(full_text)
         # 关键词检索用原始问题：search_query 是 HyDE 生成的长段落，不适合做词频匹配
-        context_chunks = retrieve_keyword(question, chunks)
+        pairs = _pairs_with_meta(files, full_text)
+        texts = [text for text, _ in pairs]
+        tops = _keyword_scores(question, texts)[:3]
+        hits = [pairs[index] for _, index in tops]
 
-    return context_chunks
+    return hits
+
+
+def hyde_retrieve(question, collection, full_text, use_vector, top_k=None, files=None):
+    """兼容旧签名：只返回文本列表（老调用方与老测试不用改）。"""
+    return [text for text, _ in hyde_retrieve_hits(
+        question, collection, full_text, use_vector, top_k=top_k, files=files)]

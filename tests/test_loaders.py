@@ -148,3 +148,20 @@ def test_legacy_ppt_gets_actionable_message():
     """旧版二进制 .ppt 读不了，提示要可执行（另存为 .pptx），而不是笼统的「不支持」。"""
     with pytest.raises(ValueError, match="另存为"):
         loaders.load_file(FakeUpload(b"x", "旧稿.ppt"))
+
+
+# ── PDF 页分隔符（P2）──
+
+def test_pdf_pages_get_markers_and_empty_pages_are_skipped():
+    """每页都带页头、页码按真实页序；纯图片页不出页头，也不打乱后面页码。"""
+    text = loaders._join_pdf_pages(["第一页内容", "", "  ", "第三页内容"])
+
+    assert text == "=== 第 1 页 ===\n第一页内容\n\n=== 第 4 页 ===\n第三页内容"
+
+
+def test_pdf_pages_are_separated_so_sentences_do_not_glue():
+    """以前是 text += page_text 直接首尾相连，跨页的两个句子会粘成一句。"""
+    text = loaders._join_pdf_pages(["结尾没有标点", "下一页开头"])
+
+    assert "结尾没有标点下一页开头" not in text
+    assert "=== 第 2 页 ===" in text

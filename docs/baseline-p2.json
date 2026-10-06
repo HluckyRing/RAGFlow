@@ -1,0 +1,274 @@
+{
+  "corpus_files": [
+    "01-财务指标.md",
+    "02-考勤与假期制度.md",
+    "03-客户分级与响应时效.md",
+    "04-数据备份与恢复.md",
+    "05-费用报销流程.md",
+    "06-长段落与窗口压测.md"
+  ],
+  "chunks": 9,
+  "chunk_size": 480,
+  "chunk_overlap": 100,
+  "top_k": 5,
+  "hyde": false,
+  "model": "BAAI/bge-small-zh-v1.5",
+  "summary": {
+    "positives": 30,
+    "negatives": 5,
+    "hits_at_k": 30,
+    "recall_at_k": 1.0,
+    "mrr": 1.0,
+    "file_attribution_hits": 30,
+    "file_attribution_total": 30,
+    "file_attribution_rate": 1.0,
+    "negative_false_positives": 0,
+    "negative_false_positive_rate": 0.0
+  },
+  "max_seq_length": 512,
+  "over_window_chunks": 0,
+  "current_max_distance": 0.55,
+  "suggested_max_distance": null,
+  "results": [
+    {
+      "id": "q01",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q02",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q03",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true
+    },
+    {
+      "id": "q04",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q05",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q06",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true
+    },
+    {
+      "id": "q07",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 4,
+      "file_ok": true
+    },
+    {
+      "id": "q08",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q09",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true
+    },
+    {
+      "id": "q10",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true
+    },
+    {
+      "id": "q11",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true
+    },
+    {
+      "id": "q12",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q13",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true
+    },
+    {
+      "id": "q14",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 4,
+      "file_ok": true
+    },
+    {
+      "id": "q15",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 4,
+      "file_ok": true
+    },
+    {
+      "id": "q16",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true
+    },
+    {
+      "id": "q17",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 4,
+      "file_ok": true
+    },
+    {
+      "id": "q18",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q19",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q20",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q21",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q22",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q23",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q24",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true
+    },
+    {
+      "id": "q25",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true
+    },
+    {
+      "id": "q26",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 4,
+      "file_ok": true
+    },
+    {
+      "id": "q27",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 4,
+      "file_ok": true
+    },
+    {
+      "id": "q28",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true
+    },
+    {
+      "id": "q29",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true
+    },
+    {
+      "id": "q30",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true
+    },
+    {
+      "id": "n01",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0
+    },
+    {
+      "id": "n02",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0
+    },
+    {
+      "id": "n03",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0
+    },
+    {
+      "id": "n04",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0
+    },
+    {
+      "id": "n05",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0
+    }
+  ]
+}

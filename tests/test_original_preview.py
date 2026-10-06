@@ -17,6 +17,7 @@ import src.state as state
 class FakeCollection:
     def __init__(self):
         self.docs = {}
+        self.metas = {}
 
     def get(self):
         return {"ids": list(self.docs.keys())}
@@ -25,9 +26,11 @@ class FakeCollection:
         for i in ids:
             self.docs.pop(i, None)
 
-    def add(self, documents, ids):
+    def add(self, documents, ids, metadatas=None):
         for i, d in zip(ids, documents):
             self.docs[i] = d
+        for i, meta in zip(ids, metadatas or []):
+            self.metas[i] = meta
 
     def count(self):
         return len(self.docs)
