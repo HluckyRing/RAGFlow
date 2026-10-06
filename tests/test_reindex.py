@@ -206,3 +206,109 @@ def test_apply_writes_source_metadata(tmp_path, monkeypatch):
     # Chroma 收不了 None，所以 chroma_meta 会把「没有页码」的 section 字段整个去掉；
     # 读的那一侧必须用 .get()，不能假设这个键一定存在。
     assert all(m.get("section") is None for m in metas), "md 没有结构标记，不该编造页码"
+
+
+def _write_legacy(path, conversations):
+    """旧版全局状态文件：没有 session_id（靠文件名兜底），只有 conversations。"""
+    path.write_text(json.dumps({"active_conv": None, "conversations": conversations},
+                               ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.fixture
+def dup_env(tmp_path, monkeypatch):
+    """同一个对话同时存在于 `state/` 会话文件与 legacy `.json.migrated`，内容不同。
+
+    这是真实数据的形态：迁移前的旧快照与线上会话**同 conv_id、同 collection_name**，
+    但文件列表和对话轮次都是旧的。不处理的话，后扫到的旧快照会覆盖线上索引。
+    """
+    state_dir = tmp_path / "state"
+    _write_state(state_dir, "sid-live", {
+        "live1": {
+            "files": [{"file_name": "live.md", "file_text": "线上内容：第一段。\n\n第二段。"}],
+            "collection_name": "kb_conv_live1",
+        },
+    })
+    legacy = tmp_path / "kb_state.json"
+    _write_legacy(legacy.with_suffix(".json.migrated"), {
+        "live1": {
+            "files": [{"file_name": "old.md", "file_text": "旧快照：迁移前的内容。"}],
+            "collection_name": "kb_conv_live1",
+        },
+        "only-legacy": {
+            "files": [{"file_name": "only.md", "file_text": "只存在于旧文件里的对话。"}],
+            "collection_name": "kb_conv_only_legacy",
+        },
+    })
+    opened = {}
+    monkeypatch.setattr(reindex_all, "open_collection",
+                        lambda name: opened.setdefault(name, FakeCollection()))
+    monkeypatch.setattr(state, "LEGACY_STATE_FILE", legacy)
+    return state_dir, opened
+
+
+def test_duplicated_conv_id_is_rebuilt_once_from_the_live_state(dup_env):
+    """state/ 与 legacy 撞同一个 conv_id 时只认 state/ 那份，并且只重建一次。
+
+    两份的 collection_name 是同一个（由 conv_id 派生），所以「两份都重建」= 后跑的
+    legacy 旧快照覆盖线上索引 —— 这是静默毁数据，必须由测试钉死。
+    """
+    state_dir, opened = dup_env
+
+    rc = reindex_all.main(["--state-dir", str(state_dir), "--apply"])
+
+    assert rc == 0
+    coll = opened["kb_conv_live1"]
+    kinds = [event[0] for event in coll.events]
+    assert kinds.count("add") == 1, "同一个对话只许重建一次，否则后一份会覆盖前一份"
+    assert any("线上内容" in doc for doc in coll.docs.values()), "必须用 state/ 里的内容"
+    assert all("旧快照" not in doc for doc in coll.docs.values()), "旧快照不许进线上索引"
+
+
+def test_legacy_only_conversation_is_still_rebuilt(dup_env):
+    """去重只针对重复项：只在 legacy 里出现的对话照常重建，不整个丢掉 legacy。"""
+    state_dir, opened = dup_env
+
+    rc = reindex_all.main(["--state-dir", str(state_dir), "--apply"])
+
+    assert rc == 0
+    assert "kb_conv_only_legacy" in opened
+
+
+def test_dry_run_lists_duplicates_separately(dup_env, capsys):
+    """干跑要说清「跳过了谁」，否则用户看不懂计划里为什么少了对话。"""
+    state_dir, opened = dup_env
+
+    rc = reindex_all.main(["--state-dir", str(state_dir)])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out.count("[待重建] live1") == 1, "重复的对话在计划里只该出现一次"
+    assert "[待重建] only-legacy" in out, "legacy 独有的对话仍要出现在计划里"
+    assert "[跳过] live1" in out, "被跳过的重复项要明确列出来"
+    assert opened == {}, "干跑不许打开 collection"
+
+
+def test_same_conv_id_across_sessions_rebuilds_once_and_warns(tmp_path, monkeypatch,
+                                                              capsys, caplog):
+    """跨会话撞 conv_id（理论上不该发生）也只重建一次，并留下告警。"""
+    state_dir = tmp_path / "state"
+    _write_state(state_dir, "sid-a", {
+        "dup": {"files": [{"file_name": "a.md", "file_text": "会话 A 的内容。"}],
+                "collection_name": "kb_conv_dup"},
+    })
+    _write_state(state_dir, "sid-b", {
+        "dup": {"files": [{"file_name": "b.md", "file_text": "会话 B 的内容。"}],
+                "collection_name": "kb_conv_dup"},
+    })
+    opened = {}
+    monkeypatch.setattr(reindex_all, "open_collection",
+                        lambda name: opened.setdefault(name, FakeCollection()))
+    monkeypatch.setattr(state, "LEGACY_STATE_FILE", tmp_path / "no-legacy.json")
+
+    rc = reindex_all.main(["--state-dir", str(state_dir), "--apply"])
+
+    assert rc == 0
+    kinds = [event[0] for event in opened["kb_conv_dup"].events]
+    assert kinds.count("add") == 1, "共用同一个 collection 的对话只能重建一次"
+    assert "[跳过] dup" in capsys.readouterr().out
+    assert "跳过重复对话 dup" in caplog.text, "跳过了什么要有告警，不能静默"

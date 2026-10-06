@@ -20,6 +20,8 @@ collection，**复用 `src.server._rebuild_collection` 的「先加新、再删�
 - 默认**干跑**，只打印计划；`--apply` 才真的重建
 - 一个状态文件都没扫到就中止（通常是 `--state-dir` 指错），`--force` 才越过
 - 坏状态文件跳过并告警，不因为一个坏文件去动别人的数据
+- 同一个 conv_id 只重建一次：`state/` 会话文件先扫、优先保留，legacy 只补 `state/`
+  里没有的对话（两份副本的 collection 名相同，都重建会让后跑的覆盖前一份）
 
 想先在副本上验证，用环境变量把向量库指到临时目录即可（config 已支持覆盖）：
 
@@ -47,15 +49,28 @@ def _legacy_candidates(legacy_file):
 
 
 def collect_conversations(state_dir, legacy_file):
-    """扫所有状态文件，返回 [(来源文件, session_id, conv_id, conv), ...]。
+    """扫所有状态文件，返回 `(要重建的对话, 被跳过的重复对话)`。
 
-    坏文件只告警跳过 —— 重建脚本绝不能因为一个坏文件就漏掉（或误动）别的对话。
+    两个列表的元素都是 `(来源文件, session_id, conv_id, conv)`。坏文件只告警跳过
+    —— 重建脚本绝不能因为一个坏文件就漏掉（或误动）别的对话。
+
+    **同一个 conv_id 只保留首次遇到的那一份**，后到的重复项进第二个列表、只告警。
+    为什么必须去重：集合名由 conv_id 派生（`server._conv_cname` / 状态里存下的
+    `kb_conv_<conv_id>_<hash>`），同一个 conv_id 的两份副本指向**同一个 collection**，
+    两份都重建就是「后跑的覆盖前一份」—— 静默毁数据。
+
+    扫描顺序刻意是 `state/` 会话文件优先、legacy（`kb_state.json` / `.json.migrated`）
+    追加在后：legacy 是**迁移前的旧快照**，内容可能更旧。真实数据里就有两个对话同时
+    出现在 `.migrated` 与 `state/` 会话文件里（内容不同、collection_name 相同），
+    所以 state/ 必须先扫、优先保留；legacy 只补 state/ 里没有的对话。
     """
     state_dir = Path(state_dir)
     paths = sorted(state_dir.glob("*.json")) if state_dir.exists() else []
     paths += [p for p in _legacy_candidates(legacy_file) if p.exists()]
 
     found = []
+    duplicated = []
+    seen = {}
     for path in paths:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -70,9 +85,19 @@ def collect_conversations(state_dir, legacy_file):
             continue
         session_id = data.get("session_id") or path.stem
         for conv_id, conv in convs.items():
-            if isinstance(conv, dict):
-                found.append((path, session_id, conv_id, conv))
-    return found
+            if not isinstance(conv, dict):
+                continue
+            first = seen.get(conv_id)
+            if first is not None:
+                duplicated.append((path, session_id, conv_id, conv))
+                logger.warning(
+                    "跳过重复对话 %s（%s）：同一个 conv_id 已由 %s 负责；集合名由 conv_id "
+                    "派生，两份都重建会让后跑的覆盖前一份。.json.migrated 是迁移前的旧"
+                    "快照，确认不再需要可以归档该文件", conv_id, path, first)
+                continue
+            seen[conv_id] = path
+            found.append((path, session_id, conv_id, conv))
+    return found, duplicated
 
 
 def _chunk_count(collection):
@@ -112,7 +137,7 @@ def main(argv=None):
     # 延迟导入：只有真要重建时才需要 FastAPI / Chroma 那一整套
     import src.server as server
 
-    conversations = collect_conversations(state_dir, legacy_file)
+    conversations, duplicated = collect_conversations(state_dir, legacy_file)
     if not conversations and not args.force:
         print(f"没有扫到任何状态文件：{state_dir}")
         print("   这通常说明 --state-dir 指错了；确认无误可加 --force。")
@@ -120,12 +145,17 @@ def main(argv=None):
 
     targets = [(path, sid, cid, conv) for path, sid, cid, conv in conversations
                if conv.get("files")]
-    skipped = len(conversations) - len(targets)
+    no_files = len(conversations) - len(targets)
 
     print(f"状态目录：{state_dir}")
     print(f"目标切片：CHUNK_SIZE={CHUNK_SIZE}（overlap={CHUNK_OVERLAP}）")
     print(f"对话 {len(conversations)} 个，其中有文件的 {len(targets)} 个，"
-          f"无文件跳过 {skipped} 个")
+          f"无文件跳过 {no_files} 个")
+    if duplicated:
+        print(f"重复对话 {len(duplicated)} 个"
+              f"（同一 conv_id 已由更早扫到的状态文件负责，跳过不重建）：")
+        for dup_path, _dup_sid, dup_conv_id, _dup_conv in duplicated:
+            print(f"  [跳过] {dup_conv_id}（{dup_path}）")
 
     if not targets:
         print("没有需要重建的对话。")
