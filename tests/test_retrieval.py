@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """关键词降级检索回归：必须按相关性排序，而不是永远返回文档前两块。"""
 import logging
+from types import SimpleNamespace
 
 import src.retrieval as retrieval
 from src.text_utils import extract_terms, strip_question_words
@@ -191,6 +192,61 @@ def test_hyde_skips_with_clear_hint_when_client_is_none(monkeypatch, caplog):
 
     assert out == "什么是净资产收益率"
     assert any("API_KEY" in r.getMessage() for r in caplog.records)
+
+
+# ── HyDE 必须真的生成内容（2026-10-06：推理模型吃光预算导致静默退化）──
+
+def _use_fake_client(monkeypatch, content=None, finish_reason="stop", boom=False):
+    """装上假 client，返回记录调用参数的 completions 替身。"""
+    completions = SimpleNamespace(calls=[], )
+
+    def create(**kwargs):
+        completions.calls.append(kwargs)
+        if boom:
+            raise RuntimeError("网关 500")
+        return SimpleNamespace(choices=[SimpleNamespace(
+            finish_reason=finish_reason,
+            message=SimpleNamespace(content=content))])
+
+    completions.create = create
+    monkeypatch.setattr(retrieval, "client", SimpleNamespace(
+        chat=SimpleNamespace(completions=completions)))
+    return completions
+
+
+def test_hyde_disables_thinking_so_reasoning_does_not_eat_the_budget(monkeypatch):
+    """deepseek-flash 是推理模型：不关思考的话，200 的 cap 会被 reasoning 吃光、
+    content 返回空串，HyDE 就变成「原问题直查」而且一声不响（2026-10-06 实测：
+    finish_reason=length、reasoning_tokens=200、content 长度 0）。"""
+    completions = _use_fake_client(monkeypatch, content="假设性文档片段")
+
+    out = retrieval._generate_hyde("漏损率怎么算")
+
+    assert out == "假设性文档片段"
+    sent = completions.calls[0]
+    assert sent["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert sent["max_tokens"] == 200, "cap 留着当防跑飞闸，靠关思考而不是放宽它"
+
+
+def test_hyde_warns_and_falls_back_when_content_is_empty(monkeypatch, caplog):
+    """空内容必须出声：静默退回原问题会让所有「HyDE 口径」的结论变成假的。"""
+    _use_fake_client(monkeypatch, content="", finish_reason="length")
+
+    with caplog.at_level(logging.WARNING, logger="ai_rag"):
+        out = retrieval._generate_hyde("漏损率怎么算")
+
+    assert out == "漏损率怎么算"
+    assert any("空内容" in r.getMessage() for r in caplog.records)
+
+
+def test_hyde_falls_back_on_api_error(monkeypatch, caplog):
+    _use_fake_client(monkeypatch, boom=True)
+
+    with caplog.at_level(logging.WARNING, logger="ai_rag"):
+        out = retrieval._generate_hyde("漏损率怎么算")
+
+    assert out == "漏损率怎么算"
+    assert any("HyDE 生成失败" in r.getMessage() for r in caplog.records)
 
 
 # ── 来源元数据（P2）──

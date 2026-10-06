@@ -112,9 +112,20 @@ def _generate_hyde(question):
                 {"role": "user", "content": f"问题：{question}\n请生成一段假设性答案："}
             ],
             temperature=0.5,
-            max_tokens=200
+            max_tokens=200,
+            # deepseek-flash 是推理模型：它先把预算花在 reasoning_content 上。200 的 cap
+            # 会被推理吃光、content 返回空串（2026-10-06 实测：finish_reason=length、
+            # reasoning_tokens=200、content 长度 0），于是下面的兜底把 HyDE 悄悄变成了
+            # 「原问题直查」，线上一直如此而没有任何告警。HyDE 只要一段像文档的片段、
+            # 不需要推理链，所以这一次调用明确关掉思考（成本与延迟反而更低）。
+            extra_body={"thinking": {"type": "disabled"}},
         )
-        return (hyde_response.choices[0].message.content or "").strip() or question
+        content = (hyde_response.choices[0].message.content or "").strip()
+        if not content:
+            logger.warning("HyDE 返回空内容（finish_reason=%s），降级为原问题做向量检索",
+                           getattr(hyde_response.choices[0], "finish_reason", "?"))
+            return question
+        return content
     except Exception as e:
         logger.warning("HyDE 生成失败，降级为原问题: %s", str(e)[:80])
         return question

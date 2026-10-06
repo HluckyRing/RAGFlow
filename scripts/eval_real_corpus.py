@@ -130,6 +130,30 @@ def best_distance(collection, query_text, top_k, count):
     return min(dists) if dists else None
 
 
+def hyde_query_text(question, cache, generate):
+    """取这次查询要用的文本：同一句话只生成一次 HyDE。
+
+    `cache` 由调用方持有、跨对话复用 —— 5 条无关代理要在多个语料上各跑一遍，不缓存既白花
+    额度，又会让同一个问题在不同语料上拿到不同的假设文本（大模型有随机性），距离带就不再
+    可比。no-hyde 模式下 `generate` 是恒等函数，缓存等于没缓存。
+    """
+    if question not in cache:
+        cache[question] = generate(question)
+    return cache[question]
+
+
+def hyde_self_check(question, generate):
+    """`--hyde` 自检：返回 `(是否真的生成了不一样的文本, 生成的文本)`。
+
+    `_generate_hyde` 在失败或空内容时会**静默**退回原问题（2026-10-06 实测：推理模型把
+    `max_tokens` 吃光，content 是空的）。跑之前不自检的话，拿到的「线上口径」其实就是
+    no-hyde —— 那次两个口径的距离一模一样，差点被当成真实重标写进基线。
+    """
+    text = str(generate(question) or "").strip()
+    # 空文本也算没生效：`_generate_hyde` 正是用它来表示「降级了」
+    return bool(text) and text != str(question).strip(), text
+
+
 def _num(value):
     return "无数据" if value is None else f"{value:.4f}"
 
@@ -174,6 +198,7 @@ def main(argv=None):
 
     negatives = negative_questions(args.queries)
     embedding_fn = retrieval._get_embedding_fn()
+    hyde_cache = {}          # 跨对话复用：同一句话只生成一次假设文本
 
     # 切窗诊断要 tokenizer；拿不到就跳过这一项，不让整次统计失败
     encode_len, max_seq_length = None, None
@@ -190,6 +215,24 @@ def main(argv=None):
     print(f"切片：CHUNK_SIZE={CHUNK_SIZE}（overlap={CHUNK_OVERLAP}）"
           f"；阈值 MAX_DISTANCE={MAX_DISTANCE}")
     print()
+
+    if args.hyde:
+        # 先花一次调用确认 HyDE 真的生效再往下跑：失败时它会静默退回原问题，那样整轮
+        # 「线上口径」其实都是 no-hyde 的数字（2026-10-06 实测踩过）。
+        probe = next((q for c in conversations for q in c["questions"]), None)
+        if probe is None and negatives:
+            probe = negatives[0]
+        if probe is not None:
+            ok, text = hyde_self_check(probe, retrieval._generate_hyde)  # noqa: SLF001
+            if not ok:
+                print("错误：HyDE 没有真正生效 —— 生成的文本与原问题相同，"
+                      "这一轮的距离不是线上口径，已中止。")
+                print("   排查：上面有没有「HyDE 返回空内容 / 生成失败」告警？"
+                      "推理模型的 max_tokens 被 reasoning 吃光就会这样。")
+                return 2
+            hyde_cache[probe] = text
+            print(f"HyDE 自检通过：首次生成 {len(text)} 字，与问题不同")
+            print()
 
     real_distances, proxy_distances, over_lengths = [], [], []
     total_chunks = total_over = 0
@@ -214,7 +257,7 @@ def main(argv=None):
 
         # 真实提问与无关代理走同一条查询路径（--hyde 时都用 HyDE 文本查）
         def _ask(question):
-            text = retrieval._generate_hyde(question)  # noqa: SLF001
+            text = hyde_query_text(question, hyde_cache, retrieval._generate_hyde)  # noqa: SLF001
             return best_distance(collection, text, args.top_k, len(chunks))
 
         conv_real = [d for d in (_ask(q) for q in conv["questions"]) if d is not None]
@@ -244,7 +287,10 @@ def main(argv=None):
         _print_band("无关提问代理距离", band_stats(proxy_distances, MAX_DISTANCE), MAX_DISTANCE)
         print(f"  （代理 = 评测标注里的 {len(negatives)} 条负样本，套到真实语料上；"
               f"真实语料没有 gold，这不是它的真实负样本）")
-    if not args.hyde:
+    if args.hyde:
+        print(f"HyDE 调用：{len(hyde_cache)} 次（同一问题只生成一次；"
+              f"{len(real_distances) + len(proxy_distances)} 条查询复用它）")
+    else:
         print("提示：这版是 no-hyde 口径，而线上走 HyDE —— 两者距离不可直接互换，"
               "要重标 MAX_DISTANCE 得用 --hyde 重跑。")
     return 0
