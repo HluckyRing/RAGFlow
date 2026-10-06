@@ -338,6 +338,45 @@ def exceeds_model_window(chunks, max_seq_length, encode_len):
     return over
 
 
+def cached_generate(generate, cache=None):
+    """把假设文本生成函数包一层「按问题缓存」，返回可直接替换 `retrieval._generate_hyde` 的函数。
+
+    两个作用：
+    - 同一问题只调一次大模型（评测里一个问题会在检索路径与 `--calibrate` 原始查询里各用一次，
+      跨语料还会重复用）；
+    - 保证检索路径与 `--calibrate` 量的是**同一个 query 文本**，距离带才可比。
+    """
+    cache = {} if cache is None else cache
+
+    def cached(question):
+        if question not in cache:
+            cache[question] = generate(question)
+        return cache[question]
+
+    return cached
+
+
+def hyde_self_check(question, generate):
+    """`--hyde` 自检：返回 `(是否真的生成了不一样的文本, 生成的文本)`。
+
+    `_generate_hyde` 在失败或空内容时会**静默**退回原问题（2026-10-06 实测：`deepseek-flash`
+    是推理模型，写死的 `max_tokens` 被 reasoning 吃光、`content` 是空串）。不自检的话，跑出来的
+    「HyDE 口径」其实就是 no-hyde，而且两种口径的数字会逐位相同。
+    """
+    text = str(generate(question) or "").strip()
+    # 空文本也算没生效：`_generate_hyde` 正是用它表示「降级了」
+    return bool(text) and text != str(question).strip(), text
+
+
+def calibrate_query_text(question, use_hyde, generate):
+    """`--calibrate` 的原始查询要用与检索路径**同一个** query 文本。
+
+    `--hyde` 下必须是那句假设文本：拿原问题直查得到的是 no-hyde 的距离带，据此给出的
+    「建议 MAX_DISTANCE」在线上口径下不可用（2026-10-06 实测两轮数字逐位相同才发现）。
+    """
+    return generate(question) if use_hyde else question
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="检索质量离线评测（默认不花 API 额度、不碰真实向量库）")
@@ -396,7 +435,18 @@ def main(argv=None):
         retrieval._generate_hyde = lambda question: question  # noqa: SLF001
         print("检索模式：no-hyde（query = 原问题，不调大模型）")
     else:
-        print("检索模式：HyDE（真实调用大模型，会花 API 额度）")
+        # 每个问题只生成一次假设文本：检索路径与 --calibrate 共用同一份，既不多花一倍调用，
+        # 也让两条路量的是同一个 query。
+        retrieval._generate_hyde = cached_generate(retrieval._generate_hyde)  # noqa: SLF001
+        # 先自检再跑：HyDE 失效时会静默退回原问题，那样整轮「HyDE 口径」其实是 no-hyde。
+        ok, hyde_text = hyde_self_check(queries[0]["question"], retrieval._generate_hyde)
+        if not ok:
+            print("错误：HyDE 没有真正生效 —— 生成的文本与原问题相同，这一轮不是线上口径，已中止。")
+            print("   排查：上面有没有「HyDE 返回空内容 / 生成失败」告警？"
+                  "推理模型的 max_tokens 被 reasoning 吃光就会这样。")
+            return 2
+        print(f"检索模式：HyDE（真实调用大模型，会花 API 额度）；"
+              f"自检通过（首句生成 {len(hyde_text)} 字）")
 
     files = [(name, corpus[name]) for name in sorted(corpus)]
     full_text = "\n\n".join(text for _, text in files)
@@ -439,9 +489,12 @@ def main(argv=None):
                             "rank": None, "returned": len(hits), "path": path})
 
         if args.calibrate:
-            # 原始查询：不经阈值过滤，用来看真实距离分布
+            # 原始查询：不经阈值过滤，用来看真实距离分布。
+            # 必须与检索路径用同一个 query 文本（--hyde 下就是那句假设文本，且已在缓存里，
+            # 不会多花一次调用）—— 否则打出来的是 no-hyde 的距离带。
             raw = collection.query(
-                query_texts=[question], n_results=min(args.top_k, len(chunks)))
+                query_texts=[calibrate_query_text(question, args.hyde, retrieval._generate_hyde)],
+                n_results=min(args.top_k, len(chunks)))
             docs = (raw.get("documents") or [[]])[0]
             dists = (raw.get("distances") or [[]])[0]
             if query["kind"] == "positive":

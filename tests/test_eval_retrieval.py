@@ -506,3 +506,59 @@ def test_summarize_keyword_count_survives_missing_path():
     got = ev.summarize([{"kind": "positive", "rank": 1, "returned": 1}], 5)
 
     assert got["keyword_fallback_samples"] == 0
+
+
+# ── HyDE：调用缓存、自检、calibrate 口径（2026-10-06 实测过静默退化）──
+
+def test_cached_generate_calls_once_per_question():
+    """同一句话只生成一次假设文本。
+
+    两个理由：同一问题要在多个语料上各跑一遍；评测里 calibrate 与检索也要用同一份文本 ——
+    不缓存既白花调用，又让同一个问题拿到不同假设文本（大模型有随机性），距离带就不可比。
+    """
+    calls = []
+
+    def generate(question):
+        calls.append(question)
+        return f"假设：{question}"
+
+    cached = ev.cached_generate(generate)
+
+    assert cached("问题A") == "假设：问题A"
+    assert cached("问题A") == "假设：问题A"
+    assert cached("问题B") == "假设：问题B"
+    assert calls == ["问题A", "问题B"]
+
+
+def test_cached_generate_can_share_an_external_cache():
+    """外部传入 cache 时能读到里面存了几个问题（脚本要靠它打印真实调用次数）。"""
+    cache = {}
+    cached = ev.cached_generate(lambda q: "假设", cache)
+
+    cached("A")
+
+    assert list(cache) == ["A"]
+
+
+def test_hyde_self_check_detects_silent_fallback():
+    """`_generate_hyde` 失败/空内容时会**静默**退回原问题。
+
+    --hyde 必须先自检：不自检的话，跑出来的「线上口径」其实就是 no-hyde
+    （2026-10-06 实测踩过一次，两种口径的距离逐位相同）。
+    """
+    assert ev.hyde_self_check("漏损率怎么算", lambda q: "假设性文档片段") == (
+        True, "假设性文档片段")
+    assert ev.hyde_self_check("漏损率怎么算", lambda q: q)[0] is False
+    assert ev.hyde_self_check("漏损率怎么算", lambda q: f"  {q}  ")[0] is False, "只有空白差异也算没生效"
+    assert ev.hyde_self_check("漏损率怎么算", lambda q: "")[0] is False
+    assert ev.hyde_self_check("漏损率怎么算", lambda q: None)[0] is False
+
+
+def test_calibrate_query_text_follows_the_retrieval_path():
+    """--calibrate 的原始查询必须与检索路径用同一个 query 文本。
+
+    `--hyde` 下若仍拿原问题直查，打出来的就是 no-hyde 的距离带，据此给的
+    「建议 MAX_DISTANCE」在线上口径下不可用 —— 2026-10-06 实测两轮数字逐位相同才发现的。
+    """
+    assert ev.calibrate_query_text("原问题", use_hyde=False, generate=lambda q: "假设") == "原问题"
+    assert ev.calibrate_query_text("原问题", use_hyde=True, generate=lambda q: "假设") == "假设"

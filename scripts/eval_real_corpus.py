@@ -41,7 +41,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.eval_retrieval import DEFAULT_QUERIES, exceeds_model_window  # noqa: E402
+from scripts.eval_retrieval import (  # noqa: E402
+    DEFAULT_QUERIES, cached_generate, exceeds_model_window, hyde_self_check)
 from src.config import logger  # noqa: E402
 
 
@@ -130,30 +131,6 @@ def best_distance(collection, query_text, top_k, count):
     return min(dists) if dists else None
 
 
-def hyde_query_text(question, cache, generate):
-    """取这次查询要用的文本：同一句话只生成一次 HyDE。
-
-    `cache` 由调用方持有、跨对话复用 —— 5 条无关代理要在多个语料上各跑一遍，不缓存既白花
-    额度，又会让同一个问题在不同语料上拿到不同的假设文本（大模型有随机性），距离带就不再
-    可比。no-hyde 模式下 `generate` 是恒等函数，缓存等于没缓存。
-    """
-    if question not in cache:
-        cache[question] = generate(question)
-    return cache[question]
-
-
-def hyde_self_check(question, generate):
-    """`--hyde` 自检：返回 `(是否真的生成了不一样的文本, 生成的文本)`。
-
-    `_generate_hyde` 在失败或空内容时会**静默**退回原问题（2026-10-06 实测：推理模型把
-    `max_tokens` 吃光，content 是空的）。跑之前不自检的话，拿到的「线上口径」其实就是
-    no-hyde —— 那次两个口径的距离一模一样，差点被当成真实重标写进基线。
-    """
-    text = str(generate(question) or "").strip()
-    # 空文本也算没生效：`_generate_hyde` 正是用它来表示「降级了」
-    return bool(text) and text != str(question).strip(), text
-
-
 def _num(value):
     return "无数据" if value is None else f"{value:.4f}"
 
@@ -198,7 +175,9 @@ def main(argv=None):
 
     negatives = negative_questions(args.queries)
     embedding_fn = retrieval._get_embedding_fn()
-    hyde_cache = {}          # 跨对话复用：同一句话只生成一次假设文本
+    # 同一句话只生成一次假设文本、且跨对话复用（助手函数住在 eval_retrieval，别处也用它）
+    hyde_cache = {}
+    generate = cached_generate(retrieval._generate_hyde, hyde_cache)  # noqa: SLF001
 
     # 切窗诊断要 tokenizer；拿不到就跳过这一项，不让整次统计失败
     encode_len, max_seq_length = None, None
@@ -223,14 +202,13 @@ def main(argv=None):
         if probe is None and negatives:
             probe = negatives[0]
         if probe is not None:
-            ok, text = hyde_self_check(probe, retrieval._generate_hyde)  # noqa: SLF001
+            ok, text = hyde_self_check(probe, generate)
             if not ok:
                 print("错误：HyDE 没有真正生效 —— 生成的文本与原问题相同，"
                       "这一轮的距离不是线上口径，已中止。")
                 print("   排查：上面有没有「HyDE 返回空内容 / 生成失败」告警？"
                       "推理模型的 max_tokens 被 reasoning 吃光就会这样。")
                 return 2
-            hyde_cache[probe] = text
             print(f"HyDE 自检通过：首次生成 {len(text)} 字，与问题不同")
             print()
 
@@ -257,8 +235,7 @@ def main(argv=None):
 
         # 真实提问与无关代理走同一条查询路径（--hyde 时都用 HyDE 文本查）
         def _ask(question):
-            text = hyde_query_text(question, hyde_cache, retrieval._generate_hyde)  # noqa: SLF001
-            return best_distance(collection, text, args.top_k, len(chunks))
+            return best_distance(collection, generate(question), args.top_k, len(chunks))
 
         conv_real = [d for d in (_ask(q) for q in conv["questions"]) if d is not None]
         conv_proxy = [d for d in (_ask(q) for q in negatives) if d is not None]

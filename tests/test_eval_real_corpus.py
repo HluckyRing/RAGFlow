@@ -162,37 +162,5 @@ def test_best_distance_is_none_when_nothing_came_back():
     assert erc.best_distance(_FakeCollection([]), "问题", top_k=3, count=3) is None
 
 
-# ── HyDE 调用缓存（只有 --hyde 会花额度）──
-
-def test_hyde_query_text_caches_per_question():
-    """5 条无关代理要在 4 个语料上各跑一遍。
-
-    不缓存的话既白花 15 次调用，又让同一个问题在 4 个语料上拿到 4 份**不同**的假设文本
-    （大模型有随机性），距离带就不再可比 —— 缓存同时省了额度和变量。
-    """
-    calls = []
-    cache = {}
-
-    def generate(question):
-        calls.append(question)
-        return f"假设：{question}"
-
-    assert erc.hyde_query_text("问题A", cache, generate) == "假设：问题A"
-    assert erc.hyde_query_text("问题A", cache, generate) == "假设：问题A"
-    assert erc.hyde_query_text("问题B", cache, generate) == "假设：问题B"
-
-    assert calls == ["问题A", "问题B"], "同一句话只生成一次"
-
-
-def test_hyde_self_check_detects_silent_fallback():
-    """`_generate_hyde` 失败/空内容时会**静默**退回原问题。
-
-    --hyde 必须先自检：不自检的话，跑出来的「线上口径」其实就是 no-hyde
-    （2026-10-06 实测踩过一次，距离与 no-hyde 一模一样）。
-    """
-    assert erc.hyde_self_check("漏损率怎么算", lambda q: "假设性文档片段") == (
-        True, "假设性文档片段")
-    assert erc.hyde_self_check("漏损率怎么算", lambda q: q)[0] is False
-    assert erc.hyde_self_check("漏损率怎么算", lambda q: f"  {q}  ")[0] is False, "只有空白差异也算没生效"
-    assert erc.hyde_self_check("漏损率怎么算", lambda q: "")[0] is False
-    assert erc.hyde_self_check("漏损率怎么算", lambda q: None)[0] is False
+# ── HyDE 调用缓存与自检的用例已随助手函数搬到 tests/test_eval_retrieval.py ──
+# （助手函数现在住在 scripts/eval_retrieval.py，本脚本只是复用）
