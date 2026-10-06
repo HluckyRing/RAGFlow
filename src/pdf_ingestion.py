@@ -53,6 +53,10 @@ def split_text(text, chunk_size=None, overlap=None):
             if current_chunk:
                 chunks.append(current_chunk.strip())
             overlap_text = current_chunk[-overlap:] if len(current_chunk) > overlap else ""
+            # 保证「重叠 + 新段」不超 chunk_size：否则整块会超出 embedding 的 token 窗口
+            # （硬切出来的整长句最容易撞上这条）。宁可不重合这一段，也不能让块超窗。
+            if len(overlap_text) + len(piece) > chunk_size:
+                overlap_text = ""
             current_chunk = overlap_text + piece + "\n\n"
     if current_chunk:
         chunks.append(current_chunk.strip())

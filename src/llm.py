@@ -44,14 +44,63 @@ def resolve_query(question, history):
     return question
 
 
+def _order_by_position(chunks, full_text):
+    """把选中的块按它们在原文里的先后排序。
+
+    检索返回的是相关度序。跨相邻两块的答案如果按相关度序摆进 prompt，读起来是断的；
+    按原文序更接近人阅读的顺序。
+
+    位置取自 full_text.find(chunk)。索引是历史遗留（例如切片尺寸改过但还没重建）
+    时可能找不到某个块，这种块排到最后并保持原有相对顺序 —— 只影响顺序，不丢内容。
+    """
+    if len(chunks) < 2 or not full_text:
+        return list(chunks)
+    positioned = []
+    for i, chunk in enumerate(chunks):
+        pos = full_text.find(chunk)
+        positioned.append((pos, i, chunk))
+    # 找不到位置的（pos < 0）排最后，并按原有顺序保持稳定
+    positioned.sort(key=lambda item: (item[0] < 0, item[0] if item[0] >= 0 else item[1]))
+    return [chunk for _, _, chunk in positioned]
+
+
 def retrieve_and_build_context(question, full_text, collection, use_vector, top_k=None):
+    """检索，并按「块边界」装配参考背景。
+
+    旧实现是 context[:MAX_CONTEXT_LENGTH] 硬切，会把某个 chunk 拦腰截断：答案正好
+    落在被切掉的那半截时，模型看到的是一句断话。现在两步走：先按相关度决定要哪些块
+    （预算优先给更相关的），再把选中的块按原文顺序拼起来 —— 宁可比预算短，也不给半截块。
+
+    返回 (context, used_chunks)。used_chunks 就是 context 里真正用到的那些块、且与
+    context 同序；旧实现返回 chunks[:3]，那是一段没有任何调用方使用的残留代码。
+
+    唯一例外：单块本身就超过 MAX_CONTEXT_LENGTH（说明配置互相矛盾，例如把
+    MAX_CONTEXT_LENGTH 调得比一个 chunk 还小）。此时只能截断这一块 —— 总比返回空好 ——
+    并记一条 WARNING。
+    """
     chunks = hyde_retrieve(question, collection, full_text, use_vector, top_k=top_k)
     if not chunks:
         return "", []
-    context = "\n\n".join(chunks)
-    if len(context) > MAX_CONTEXT_LENGTH:
-        context = context[:MAX_CONTEXT_LENGTH] + "\n...(截断)"
-    return context, chunks[:3]
+
+    used, total = [], 0
+    for chunk in chunks:                              # 相关度序：预算先给更相关的块
+        addition = len(chunk) + (2 if used else 0)    # 块之间是 "\n\n"
+        if used and total + addition > MAX_CONTEXT_LENGTH:
+            break
+        used.append(chunk)
+        total += addition
+
+    if total > MAX_CONTEXT_LENGTH:                    # 只有「第一块自己就超预算」会走到这
+        logger.warning("单块长度已超过 MAX_CONTEXT_LENGTH=%d，只能截断第一块；"
+                       "请调大 MAX_CONTEXT_LENGTH 或调小 CHUNK_SIZE", MAX_CONTEXT_LENGTH)
+        return used[0][:MAX_CONTEXT_LENGTH] + "\n...(截断)", used
+
+    if len(used) < len(chunks):
+        logger.info("context 按块边界装配：保留 %d/%d 块（%d 字符，预算 %d）",
+                    len(used), len(chunks), total, MAX_CONTEXT_LENGTH)
+
+    ordered = _order_by_position(used, full_text)
+    return "\n\n".join(ordered), ordered
 
 
 

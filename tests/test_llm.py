@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""指代消解回归：既要取对轮次，也不能被「这/那/其他」这类词误触发。"""
+"""指代消解回归：既要取对轮次，也不能被「这/那/其他」这类词误触发。
+
+后半部分守参考背景装配（P1）：按块边界、按原文序、不给半截块。
+"""
+import logging
+
 import pytest
 
 import src.llm as llm
@@ -118,3 +123,77 @@ def test_stream_answer_without_api_key_raises_chinese_hint(monkeypatch):
         list(llm.stream_answer("q", "ctx", []))
 
     assert "API_KEY" in str(ei.value)
+
+
+# ── 参考背景装配（P1）──
+
+def test_context_is_assembled_at_chunk_boundaries(monkeypatch):
+    """预算只够两块时，结果正好是整块的两块，且不超过预算。"""
+    chunks = ["甲" * 40, "乙" * 40, "丙" * 40]
+    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: chunks)
+    monkeypatch.setattr(llm, "MAX_CONTEXT_LENGTH", 100)
+
+    context, used = llm.retrieve_and_build_context("q", "".join(chunks), None, False)
+
+    assert used == chunks[:2]
+    assert context == chunks[0] + "\n\n" + chunks[1]
+    assert len(context) <= 100
+
+
+def test_context_never_contains_half_a_chunk(monkeypatch):
+    """装不下的块整块丢掉 —— 旧实现是从中间硬切，会留下半截话。"""
+    first = "甲" * 90
+    second = "乙" * 90
+    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [first, second])
+    monkeypatch.setattr(llm, "MAX_CONTEXT_LENGTH", 100)
+
+    context, used = llm.retrieve_and_build_context("q", first + "\n\n" + second, None, False)
+
+    assert used == [first]
+    assert context == first, "宁可比预算短，也不能切出半截块"
+
+
+def test_context_selects_by_relevance_but_orders_by_document_position(monkeypatch):
+    """选中集合按相关度决定；摆进 prompt 时改成原文顺序，跨块的答案才连得上。"""
+    first = "前面的内容" * 5
+    second = "后面的内容" * 5
+    full_text = first + "\n\n" + second
+    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [second, first])  # 相关度序是反的
+
+    context, used = llm.retrieve_and_build_context("q", full_text, None, False)
+
+    assert used == [first, second], "返回的块要与 context 同序"
+    assert context.index(first) < context.index(second)
+
+
+def test_context_keeps_unknown_position_chunks_at_the_end(monkeypatch):
+    """索引与当前全文不一致（切片改过但没重建）时，找不到位置的块不许丢。"""
+    known = "在原文里的块"
+    stale = "索引里遗留的块，当前全文里没有"
+    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [stale, known])
+
+    context, used = llm.retrieve_and_build_context("q", known, None, False)
+
+    assert used == [known, stale]
+    assert stale in context and known in context
+
+
+def test_context_truncates_single_chunk_when_budget_is_contradictory(monkeypatch, caplog):
+    """MAX_CONTEXT_LENGTH 比单块还小时：只能截断这一块，但必须告警且不能返回空。"""
+    chunk = "甲" * 200
+    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [chunk])
+    monkeypatch.setattr(llm, "MAX_CONTEXT_LENGTH", 50)
+
+    with caplog.at_level(logging.WARNING, logger="ai_rag"):
+        context, used = llm.retrieve_and_build_context("q", chunk, None, False)
+
+    assert context.startswith("甲" * 50)
+    assert "(截断)" in context
+    assert used == [chunk]
+    assert any("MAX_CONTEXT_LENGTH" in r.getMessage() for r in caplog.records)
+
+
+def test_context_is_empty_when_nothing_retrieved(monkeypatch):
+    monkeypatch.setattr(llm, "hyde_retrieve", lambda *a, **k: [])
+
+    assert llm.retrieve_and_build_context("q", "全文", None, False) == ("", [])

@@ -92,7 +92,7 @@ BASE_URL="https://api.deepseek.com"
 MODEL_NAME="deepseek-flash"
 # 可选
 EMBEDDING_MODEL="BAAI/bge-small-zh-v1.5"
-CHUNK_SIZE=600
+CHUNK_SIZE=480
 CHUNK_OVERLAP=100
 TOP_K=10
 MAX_CONTEXT_LENGTH=8000

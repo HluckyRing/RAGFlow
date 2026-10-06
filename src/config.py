@@ -42,7 +42,10 @@ MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-flash")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "knowledge_base")
 
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
+# 切片长度受 embedding 模型的 token 窗口约束：bge-small-zh-v1.5 的
+# max_seq_length=512，中文约 1 字 1 token，600 字会被 tokenizer 静默截掉尾部。
+# 480 字给特殊 token 与中英/数字混排的拆词留了余量。
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "480"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
 TOP_K = int(os.getenv("TOP_K", "10"))
 MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "8000"))

@@ -47,6 +47,8 @@
 API_KEY="sk-你的密钥"
 BASE_URL="https://api.deepseek.com"
 MODEL_NAME="deepseek-flash"
+# 可选：文本切片长度（字），默认 480；受 embedding 模型 512 token 窗口约束
+# CHUNK_SIZE=480
 # 可选：向量相关性阈值（l2 距离，越小越严格），默认 0.55
 # MAX_DISTANCE=0.55
 # 可选：单次上传大小上限（MB），默认 20
