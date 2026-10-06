@@ -101,6 +101,9 @@ RAGFlow/
 │   └── templates/        # 前端界面（vendor/ 为本地内置的 Office 预览库）
 ├── tests/                # pytest 测试
 ├── scripts/
+│   ├── eval_retrieval.py               # 合成语料检索评测（recall/MRR/归属，默认不花额度）
+│   ├── eval_real_corpus.py             # 真实语料基线（只读、只记数字：切窗 + 距离带）
+│   ├── reindex_all.py                  # 按当前切片重建所有对话索引（默认干跑）
 │   └── cleanup_orphan_collections.py   # 孤儿向量集合清理（默认干跑）
 ├── docs/
 │   └── code-review-2026-10-01.md       # 2026-10-01 代码审查原始清单（P0/P1/P2 连续编号）
