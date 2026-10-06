@@ -21,6 +21,10 @@
   按文本标注才能让改动前后可比。
 - `--calibrate` 会额外对每条样本做一次原始向量查询（不经阈值过滤）来收集距离分布，
   据此给出 `MAX_DISTANCE` 的建议值。
+- **带页标记的语料不存二进制**：语料目录里放一份文本 spec `eval_pptx.json`，评测现场用
+  python-pptx 生成 pptx 再交给真实 `loaders.load_pptx` 抽文本 —— 页码因此由 loader 真正
+  输出的 `=== 第 N 页 ===` 驱动，而不是评测自己编的。标注里的可选字段 `expect_sections`
+  就是 section 级指标的输入。
 
 用法
 ----
@@ -32,6 +36,7 @@
 退出码：0 正常；2 输入（语料 / 标注）不合法。
 """
 import argparse
+import importlib.util
 import json
 import re
 import statistics
@@ -49,6 +54,10 @@ DEFAULT_QUERIES = ROOT / "tests" / "fixtures" / "eval_queries.json"
 
 TEXT_SUFFIXES = (".md", ".txt")
 VALID_KINDS = ("positive", "negative")
+# 带页标记的语料不放二进制：目录里放这份 spec，评测现场生成 pptx 再走真实 loader 抽文本。
+PPTX_SPEC_NAME = "eval_pptx.json"
+# 软依赖探测（与 loaders 的 HAS_PPTX 一个套路）：缺了要吵，不能静默少一个语料文件。
+HAS_PPTX = importlib.util.find_spec("pptx") is not None
 
 # NFKC 不管的破折号 / 连字符与特殊空格，统一成 ASCII：
 # 避免「看起来一样但其实不是同一个字符」导致标注假性未命中。
@@ -72,8 +81,76 @@ def normalize(text):
     return re.sub(r"\s+", "", unified).lower()
 
 
+def _build_pptx_bytes(spec):
+    """按 spec 现场生成一个 pptx，返回可读的 BytesIO。
+
+    为什么不把 .pptx 直接提交进仓库：二进制在 git 里不可读、也不可 diff，改一句话就要
+    重新生成一个 blob。存成 JSON 既能 review，又能让评测真的走一遍 `loaders.load_pptx`
+    （生成的字节 → 真实抽取），页码才不是评测自己编出来的。
+    """
+    if not HAS_PPTX:
+        raise ValueError(
+            f"{PPTX_SPEC_NAME} 需要 python-pptx 才能生成带页标记的语料：pip install python-pptx")
+    import io
+
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    blank = prs.slide_layouts[6]        # 空白版式：文字都用文本框显式摆放，不依赖模板占位符序号
+    for slide_spec in spec["slides"]:
+        slide = prs.slides.add_slide(blank)
+        title = str(slide_spec.get("title") or "").strip()
+        if title:
+            box = slide.shapes.add_textbox(Inches(0.6), Inches(0.4), Inches(8.0), Inches(0.9))
+            box.text_frame.text = title
+        # 一行正文 = 一个段落：loader 按段落逐条收集，gold_phrase 必须落在同一段里
+        body = [str(line).strip() for line in (slide_spec.get("body") or []) if str(line).strip()]
+        if body:
+            box = slide.shapes.add_textbox(Inches(0.6), Inches(1.5), Inches(8.0), Inches(3.0))
+            box.text_frame.text = body[0]
+            for line in body[1:]:
+                box.text_frame.add_paragraph().text = line
+        notes = str(slide_spec.get("notes") or "").strip()
+        if notes:
+            slide.notes_slide.notes_text_frame.text = notes
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def _add_structural_corpus(corpus_dir, files):
+    """把目录里的结构语料 spec 也变成一份语料（本体是抽取后的文本）。"""
+    spec_path = Path(corpus_dir) / PPTX_SPEC_NAME
+    if not spec_path.is_file():
+        return
+    try:
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{PPTX_SPEC_NAME} 读不出来：{e}") from e
+    if not isinstance(spec, dict):
+        raise ValueError(f"{PPTX_SPEC_NAME} 必须是 JSON 对象")
+    name = str(spec.get("file_name") or "").strip()
+    if not name:
+        raise ValueError(f"{PPTX_SPEC_NAME} 缺少 file_name")
+    slides = spec.get("slides")
+    if not isinstance(slides, list) or not slides:
+        raise ValueError(f"{PPTX_SPEC_NAME} 的 slides 必须是非空数组")
+
+    from src.loaders import load_pptx          # 延迟导入：只有真有结构语料时才需要
+    files[name] = load_pptx(_build_pptx_bytes(spec))
+
+
 def load_corpus(corpus_dir):
-    """读目录下的 .md/.txt，按文件名排序，返回 {文件名: 原文}。"""
+    """读目录下的语料，返回 {文件名: 抽取文本}，按文件名排序。
+
+    - `.md/.txt` 直接读原文；
+    - `eval_pptx.json`（`PPTX_SPEC_NAME`）按 spec 现场生成 pptx，再交给真实
+      `loaders.load_pptx` 抽文本 —— 语料里因此带上了 `=== 第 N 页 ===` 页标记，
+      section 级指标才有东西可量。
+    """
     corpus_dir = Path(corpus_dir)
     if not corpus_dir.is_dir():
         raise FileNotFoundError(f"评测语料目录不存在：{corpus_dir}")
@@ -85,7 +162,8 @@ def load_corpus(corpus_dir):
     if not files:
         raise FileNotFoundError(
             f"评测语料目录里没有任何 {'/'.join(TEXT_SUFFIXES)} 文件：{corpus_dir}")
-    return files
+    _add_structural_corpus(corpus_dir, files)
+    return {name: files[name] for name in sorted(files)}
 
 
 def load_queries(path):
@@ -111,6 +189,8 @@ def load_queries(path):
             raise ValueError(f"第 {i} 条标注缺少 question")
         gold_phrases = [str(g) for g in (item.get("gold_phrases") or [])]
         expect_files = [str(f) for f in (item.get("expect_files") or [])]
+        # 页码/工作表标注是可选的：没写 = 这个样本不测 section（不进 section 指标的分母）
+        expect_sections = [str(s) for s in (item.get("expect_sections") or [])]
         if kind == "positive":
             if not gold_phrases:
                 raise ValueError(f"第 {i} 条正样本缺少 gold_phrases")
@@ -121,6 +201,7 @@ def load_queries(path):
             "question": question,
             "kind": kind,
             "expect_files": expect_files,
+            "expect_sections": expect_sections,
             "gold_phrases": gold_phrases,
             "note": str(item.get("note") or ""),
         })
@@ -130,23 +211,41 @@ def load_queries(path):
     return queries
 
 
-def rank_and_file(hits, gold_phrases, expect_files):
-    """同时返回首个命中位次、以及该命中是否来自预期文件。
+def rank_and_source(hits, gold_phrases, expect_files, expect_sections=None):
+    """返回 (首个命中位次, 文件归属, 节归属)。
 
-    文件归属只在命中块真的带了来源元数据时才有意义；没有元数据（老索引）时返回 None，
-    由上层跳过统计，而不是把「不知道」算成「归属错误」。
+    归属只在命中块真的带了来源元数据时才有意义，所以「不知道」一律返回 None，
+    由上层跳过统计，而不是把「不知道」算成「归属错误」：
+
+    - 整块没有 metadatas（P2 之前建的老索引）→ 文件和节都是 None；
+    - 这个样本没标 `expect_sections`（大多数 .md/.docx 语料本来就没有页码）
+      → section 是 None。
+
+    唯一例外：**标了页码、块上却没有 section**，那是「该有的页码丢了」（切片不再按节，
+    或 loader 不再输出 `=== 第 N 页 ===`），必须算 False —— 判成 None 会让这条指标
+    跟着一起静默失效，那正是要防的事。
     """
     needles = [n for n in (normalize(g) for g in gold_phrases) if n]
     if not needles:
-        return None, None
+        return None, None, None
     for rank, (text, meta) in enumerate(hits, 1):
         haystack = normalize(text)
-        if any(needle in haystack for needle in needles):
-            name = (meta or {}).get("file_name")
-            if not name or not expect_files:
-                return rank, None
-            return rank, name in expect_files
-    return None, None
+        if not any(needle in haystack for needle in needles):
+            continue
+        if not meta:
+            return rank, None, None
+        name = meta.get("file_name")
+        file_ok = None if (not name or not expect_files) else (name in expect_files)
+        if not expect_sections:
+            return rank, file_ok, None
+        return rank, file_ok, meta.get("section") in expect_sections
+    return None, None, None
+
+
+def rank_and_file(hits, gold_phrases, expect_files):
+    """兼容既有调用：只要 (位次, 文件归属)。"""
+    rank, file_ok, _section_ok = rank_and_source(hits, gold_phrases, expect_files)
+    return rank, file_ok
 
 
 def rank_of_first_hit(chunks, gold_phrases):
@@ -163,10 +262,11 @@ def rank_of_first_hit(chunks, gold_phrases):
 
 
 def summarize(results, k):
-    """汇总指标。results 每条形如 {'kind', 'rank', 'returned'}。
+    """汇总指标。results 每条形如 {'kind', 'rank', 'returned', 'file_ok', 'section_ok'}。
 
     - recall@k：正样本里命中片段出现在前 k 个 chunk 的比例
     - MRR：首个命中位次倒数的均值（超出 k 的算 0）
+    - 文件 / 节归属正确率：命中块的文件、页码是否与标注一致
     - 负样本误召回率：负样本里「检索返回了非空结果」的比例
     """
     positives = [r for r in results if r["kind"] == "positive"]
@@ -176,10 +276,12 @@ def summarize(results, k):
     reciprocal = [(1.0 / r["rank"]) if (r["rank"] is not None and r["rank"] <= k) else 0.0
                   for r in positives]
     false_positives = [r for r in negatives if r.get("returned")]
-    # 文件归属只在命中块真的带了元数据时才统计：老索引没有 metadatas 时 file_ok 是 None，
-    # 不能把「不知道」算成「错了」，否则这个指标会骗人。
+    # 归属只在命中块真的带了元数据时才统计：老索引没有 metadatas 时 file_ok 是 None，
+    # 不能把「不知道」算成「错了」，否则这个指标会骗人。section 同理（还得有页码标注）。
     attributed = [r for r in positives if r.get("file_ok") is not None]
     attributed_ok = [r for r in attributed if r["file_ok"]]
+    sectioned = [r for r in positives if r.get("section_ok") is not None]
+    sectioned_ok = [r for r in sectioned if r["section_ok"]]
 
     return {
         "positives": len(positives),
@@ -190,6 +292,9 @@ def summarize(results, k):
         "file_attribution_hits": len(attributed_ok),
         "file_attribution_total": len(attributed),
         "file_attribution_rate": (len(attributed_ok) / len(attributed)) if attributed else None,
+        "section_attribution_hits": len(sectioned_ok),
+        "section_attribution_total": len(sectioned),
+        "section_attribution_rate": (len(sectioned_ok) / len(sectioned)) if sectioned else None,
         "negative_false_positives": len(false_positives),
         "negative_false_positive_rate":
             (len(false_positives) / len(negatives)) if negatives else 0.0,
@@ -317,9 +422,11 @@ def main(argv=None):
             question, collection, full_text, use_vector=True, top_k=args.top_k, files=files)
 
         if query["kind"] == "positive":
-            rank, file_ok = rank_and_file(hits, query["gold_phrases"], query["expect_files"])
+            rank, file_ok, section_ok = rank_and_source(
+                hits, query["gold_phrases"], query["expect_files"], query["expect_sections"])
             results.append({"id": query["id"], "kind": "positive", "rank": rank,
-                            "returned": len(hits), "file_ok": file_ok})
+                            "returned": len(hits), "file_ok": file_ok,
+                            "section_ok": section_ok})
         else:
             results.append({"id": query["id"], "kind": "negative",
                             "rank": None, "returned": len(hits)})
@@ -364,6 +471,11 @@ def main(argv=None):
                  f"{attr:.3f}（{summary['file_attribution_hits']}/"
                  f"{summary['file_attribution_total']}）")
     print(f"文件归属正确率 = {attr_text}")
+    sec = summary["section_attribution_rate"]
+    sec_text = ("无数据（没有带页码标注的样本，或命中块没带来源元数据）" if sec is None else
+                f"{sec:.3f}（{summary['section_attribution_hits']}/"
+                f"{summary['section_attribution_total']}）")
+    print(f"section 归属正确率 = {sec_text}")
     print(f"负样本误召回率 = {summary['negative_false_positive_rate']:.3f}"
           f"（{summary['negative_false_positives']}/{summary['negatives']}）")
     print(f"耗时 = {elapsed:.1f}s（{len(queries)} 条样本）")

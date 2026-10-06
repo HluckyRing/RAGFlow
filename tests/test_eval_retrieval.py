@@ -62,6 +62,54 @@ def test_load_corpus_rejects_missing_or_empty_dir(tmp_path):
         ev.load_corpus(tmp_path)
 
 
+def test_load_corpus_builds_the_structural_pptx_from_its_spec(tmp_path):
+    """带页标记的语料不往仓库塞二进制：按 spec 现场生成 pptx，再走真实 loader 抽文本。
+
+    这样语料内容可读可 diff，同时保证「页码」真的由 loader 输出的页标记驱动，
+    而不是评测自己编一个 section 出来。
+    """
+    (tmp_path / "a.md").write_text("纯文本语料", encoding="utf-8")
+    (tmp_path / ev.PPTX_SPEC_NAME).write_text(json.dumps({
+        "file_name": "07-x.pptx",
+        "slides": [
+            {"title": "第一页", "body": ["第一页正文"], "notes": "备注文字"},
+            {"title": "第二页", "body": ["第二页正文"]},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    got = ev.load_corpus(tmp_path)
+
+    assert list(got) == ["07-x.pptx", "a.md"], "结构语料与文本语料一起按文件名排序"
+    text = got["07-x.pptx"]
+    assert "=== 第 1 页 ===" in text and "=== 第 2 页 ===" in text
+    assert "第一页正文" in text and "第二页正文" in text
+    assert "[备注] 备注文字" in text, "备注必须走真实 loader 的抽取路径"
+
+
+def test_load_corpus_rejects_a_malformed_pptx_spec(tmp_path):
+    (tmp_path / "a.md").write_text("纯文本语料", encoding="utf-8")
+    (tmp_path / ev.PPTX_SPEC_NAME).write_text('{"slides": []}', encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        ev.load_corpus(tmp_path)
+
+    assert ev.PPTX_SPEC_NAME in str(excinfo.value)
+
+
+def test_load_corpus_needs_python_pptx_for_the_spec(tmp_path, monkeypatch):
+    """缺 python-pptx 要吵出来 —— 静默少一个语料文件会让 section 指标变成假的「无数据」。"""
+    (tmp_path / "a.md").write_text("纯文本语料", encoding="utf-8")
+    (tmp_path / ev.PPTX_SPEC_NAME).write_text(json.dumps({
+        "file_name": "07-x.pptx", "slides": [{"body": ["正文"]}]},
+        ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(ev, "HAS_PPTX", False)
+
+    with pytest.raises(ValueError) as excinfo:
+        ev.load_corpus(tmp_path)
+
+    assert "python-pptx" in str(excinfo.value)
+
+
 def _write_queries(tmp_path, data):
     path = tmp_path / "queries.json"
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -80,6 +128,21 @@ def test_load_queries_accepts_minimal_samples(tmp_path):
     assert [q["kind"] for q in got] == ["positive", "negative"]
     assert [q["id"] for q in got] == ["q01", "q02"], "没写 id 时按序号补"
     assert got[1]["gold_phrases"] == [] and got[1]["expect_files"] == []
+
+
+def test_load_queries_reads_expect_sections(tmp_path):
+    """页码标注是可选的：没写 = 这个样本不测页码（不是「第 0 页」）。"""
+    path = _write_queries(tmp_path, [
+        {"question": "窑温", "kind": "positive", "expect_files": ["a.pptx"],
+         "expect_sections": ["第 3 页"], "gold_phrases": ["窑温"]},
+        {"question": "净资产收益率", "kind": "positive", "expect_files": ["b.md"],
+         "gold_phrases": ["净资产收益率"]},
+    ])
+
+    got = ev.load_queries(path)
+
+    assert got[0]["expect_sections"] == ["第 3 页"]
+    assert got[1]["expect_sections"] == [], "没写页码标注时补空列表"
 
 
 @pytest.mark.parametrize("data, needle", [
@@ -237,6 +300,36 @@ def test_expect_files_exist(corpus, queries):
     assert unknown == [], f"标注引用了不存在的语料文件：{unknown}"
 
 
+def test_expect_sections_really_exist_in_their_files(corpus, queries):
+    """页码标错 -> section 指标变成假 0 -> 看起来像引用坏了。和 gold_phrase 一样要上保险丝。"""
+    from src.pdf_ingestion import split_files
+
+    available = {}
+    for _chunk, meta in split_files(list(corpus.items())):
+        if meta.get("section"):
+            available.setdefault(meta["file_name"], set()).add(meta["section"])
+
+    missing = []
+    for q in queries:
+        for section in q["expect_sections"]:
+            sections = set().union(*(available.get(name, set()) for name in q["expect_files"]))
+            if section not in sections:
+                missing.append((q["id"], section))
+
+    assert missing == [], f"这些页码标注在对应文件的切片里找不到：{missing}"
+
+
+def test_fixture_keeps_a_structural_file_so_the_section_metric_stays_live(corpus, queries):
+    """没有带页标记的语料，section 指标会静默退化成「无数据」—— 这条钉住它一直有。"""
+    annotated = [q for q in queries if q["expect_sections"]]
+    assert annotated, "至少要有一条 expect_sections 样本，否则这个指标是空的"
+
+    names = {name for q in annotated for name in q["expect_files"]}
+    assert names, "带页码标注的样本必须同时给出 expect_files"
+    for name in names:
+        assert "=== 第 " in corpus[name], f"{name} 里没有页标记，页码这条路测不到"
+
+
 def test_negative_questions_do_not_overlap_corpus_lexically(corpus, queries):
     """负样本必须「真的不在语料里」。
 
@@ -318,3 +411,76 @@ def test_summarize_file_attribution_is_none_without_metadata():
 
     assert got["file_attribution_rate"] is None
     assert got["file_attribution_total"] == 0
+
+
+# ── section 归属（P2 延伸：页码也可核验）──
+
+def test_rank_and_source_reports_matching_section():
+    hits = [("无关内容", {"file_name": "a.pptx", "section": "第 1 页"}),
+            ("窑温通常分三段缓慢抬升", {"file_name": "a.pptx", "section": "第 3 页"})]
+
+    assert ev.rank_and_source(
+        hits, ["窑温通常分三段缓慢抬升"], ["a.pptx"], ["第 3 页"]) == (2, True, True)
+
+
+def test_rank_and_source_reports_wrong_section():
+    hits = [("窑温通常分三段缓慢抬升", {"file_name": "a.pptx", "section": "第 1 页"})]
+
+    assert ev.rank_and_source(
+        hits, ["窑温通常分三段缓慢抬升"], ["a.pptx"], ["第 3 页"]) == (1, True, False)
+
+
+def test_rank_and_source_without_section_but_annotation_expected_is_false():
+    """本该校验页码、块上却没有 section（切片不再按节，或 loader 不再输出页头）必须算错。
+
+    这里不能返回 None：判成「不知道」会让它从分母里消失，这条指标就跟着静默失效了。
+    """
+    hits = [("窑温通常分三段缓慢抬升", {"file_name": "a.pptx"})]
+
+    assert ev.rank_and_source(
+        hits, ["窑温通常分三段缓慢抬升"], ["a.pptx"], ["第 3 页"]) == (1, True, False)
+
+
+def test_rank_and_source_is_unknown_when_sample_has_no_section_annotation():
+    hits = [("净资产收益率", {"file_name": "a.md"})]
+
+    assert ev.rank_and_source(hits, ["净资产收益率"], ["a.md"]) == (1, True, None)
+
+
+def test_rank_and_source_is_unknown_without_metadata_at_all():
+    """老索引没有 metadatas：文件和页码都不知道，两个都跳过统计。"""
+    hits = [("净资产收益率", None)]
+
+    assert ev.rank_and_source(
+        hits, ["净资产收益率"], ["a.md"], ["第 3 页"]) == (1, None, None)
+
+
+def test_rank_and_source_returns_nothing_when_nothing_hit():
+    hits = [("无关内容", {"file_name": "a.md"})]
+
+    assert ev.rank_and_source(
+        hits, ["净资产收益率"], ["a.md"], ["第 3 页"]) == (None, None, None)
+
+
+def test_summarize_reports_section_attribution_rate():
+    results = [
+        {"kind": "positive", "rank": 1, "returned": 1, "file_ok": True, "section_ok": True},
+        {"kind": "positive", "rank": 1, "returned": 1, "file_ok": True, "section_ok": False},
+        {"kind": "positive", "rank": 1, "returned": 1, "file_ok": True, "section_ok": None},
+    ]
+
+    got = ev.summarize(results, 5)
+
+    assert got["section_attribution_total"] == 2, "分母只算带页码标注的样本"
+    assert got["section_attribution_hits"] == 1
+    assert got["section_attribution_rate"] == pytest.approx(0.5)
+
+
+def test_summarize_section_attribution_is_none_without_annotation():
+    results = [{"kind": "positive", "rank": 1, "returned": 1,
+                "file_ok": True, "section_ok": None}]
+
+    got = ev.summarize(results, 5)
+
+    assert got["section_attribution_rate"] is None
+    assert got["section_attribution_total"] == 0

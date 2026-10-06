@@ -240,6 +240,60 @@
     "note": "同一段落里靠后的短语，考察硬切内容是否完整入索引"
   },
   {
+    "id": "q31",
+    "question": "漏损率怎么算",
+    "kind": "positive",
+    "expect_files": ["07-供水管网漏损控制.pptx"],
+    "expect_sections": ["第 1 页"],
+    "gold_phrases": ["漏损率等于供水量减去售水量后除以供水量"],
+    "note": "section 级：第 1 页的定义句"
+  },
+  {
+    "id": "q32",
+    "question": "怎么快速缩小漏点排查范围",
+    "kind": "positive",
+    "expect_files": ["07-供水管网漏损控制.pptx"],
+    "expect_sections": ["第 2 页"],
+    "gold_phrases": ["逐个区比对夜间最小流量"],
+    "note": "section 级：第 2 页的独立计量区做法"
+  },
+  {
+    "id": "q33",
+    "question": "夜间压力过高有什么影响",
+    "kind": "positive",
+    "expect_files": ["07-供水管网漏损控制.pptx"],
+    "expect_sections": ["第 3 页"],
+    "gold_phrases": ["夜间压力过高会显著加快漏损"],
+    "note": "section 级：第 3 页的压力管理"
+  },
+  {
+    "id": "q34",
+    "question": "接到漏点报告后多久要到场",
+    "kind": "positive",
+    "expect_files": ["07-供水管网漏损控制.pptx"],
+    "expect_sections": ["第 4 页"],
+    "gold_phrases": ["接到漏点报告后 2 小时内到场"],
+    "note": "section 级：第 4 页的抢修时限"
+  },
+  {
+    "id": "q35",
+    "question": "暗漏排查要结合什么设备",
+    "kind": "positive",
+    "expect_files": ["07-供水管网漏损控制.pptx"],
+    "expect_sections": ["第 4 页"],
+    "gold_phrases": ["听音杆与相关仪"],
+    "note": "section 级：答案只在第 4 页的演讲者备注里，顺带覆盖备注路径"
+  },
+  {
+    "id": "q36",
+    "question": "年度漏损率的考核目标是多少",
+    "kind": "positive",
+    "expect_files": ["07-供水管网漏损控制.pptx"],
+    "expect_sections": ["第 5 页"],
+    "gold_phrases": ["年度漏损率考核目标为 9% 以内"],
+    "note": "section 级：第 5 页的考核目标"
+  },
+  {
     "id": "n01",
     "question": "量子纠缠退相干",
     "kind": "negative",
