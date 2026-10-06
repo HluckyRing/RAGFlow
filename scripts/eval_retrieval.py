@@ -282,6 +282,9 @@ def summarize(results, k):
     attributed_ok = [r for r in attributed if r["file_ok"]]
     sectioned = [r for r in positives if r.get("section_ok") is not None]
     sectioned_ok = [r for r in sectioned if r["section_ok"]]
+    # 路径标签延迟导入：别让评测模块在导入阶段就把 chromadb 拉进来（输入校验要能先跑）。
+    # 用同一个常量而不是抄字面量，免得两边哪天跑偏。
+    from src.retrieval import PATH_KEYWORD
 
     return {
         "positives": len(positives),
@@ -295,6 +298,10 @@ def summarize(results, k):
         "section_attribution_hits": len(sectioned_ok),
         "section_attribution_total": len(sectioned),
         "section_attribution_rate": (len(sectioned_ok) / len(sectioned)) if sectioned else None,
+        # 向量全丢、最后靠关键词兜底捞回来的样本数（含负样本）：这些样本的分数是
+        # 2-gram 词面打分而不是向量距离，混在一起看会误判阈值的好坏。
+        "keyword_fallback_samples":
+            sum(1 for r in results if r.get("path") == PATH_KEYWORD),
         "negative_false_positives": len(false_positives),
         "negative_false_positive_rate":
             (len(false_positives) / len(negatives)) if negatives else 0.0,
@@ -418,7 +425,7 @@ def main(argv=None):
     started = time.perf_counter()
     for query in queries:
         question = query["question"]
-        hits = retrieval.hyde_retrieve_hits(
+        path, hits = retrieval.hyde_retrieve_hits_with_path(
             question, collection, full_text, use_vector=True, top_k=args.top_k, files=files)
 
         if query["kind"] == "positive":
@@ -426,10 +433,10 @@ def main(argv=None):
                 hits, query["gold_phrases"], query["expect_files"], query["expect_sections"])
             results.append({"id": query["id"], "kind": "positive", "rank": rank,
                             "returned": len(hits), "file_ok": file_ok,
-                            "section_ok": section_ok})
+                            "section_ok": section_ok, "path": path})
         else:
             results.append({"id": query["id"], "kind": "negative",
-                            "rank": None, "returned": len(hits)})
+                            "rank": None, "returned": len(hits), "path": path})
 
         if args.calibrate:
             # 原始查询：不经阈值过滤，用来看真实距离分布
@@ -476,6 +483,8 @@ def main(argv=None):
                 f"{sec:.3f}（{summary['section_attribution_hits']}/"
                 f"{summary['section_attribution_total']}）")
     print(f"section 归属正确率 = {sec_text}")
+    print(f"关键词兜底样本 = {summary['keyword_fallback_samples']}/{len(results)}"
+          f"（这些样本的分数是 2-gram 词面打分，不是向量距离）")
     print(f"负样本误召回率 = {summary['negative_false_positive_rate']:.3f}"
           f"（{summary['negative_false_positives']}/{summary['negatives']}）")
     print(f"耗时 = {elapsed:.1f}s（{len(queries)} 条样本）")
@@ -520,13 +529,15 @@ def main(argv=None):
         print()
         print("--- 明细 ---")
         by_id = {q["id"]: q for q in queries}
+        path_label = {retrieval.PATH_VECTOR: "向量", retrieval.PATH_KEYWORD: "关键词兜底"}
         for r in results:
             query = by_id[r["id"]]
             if r["kind"] == "positive":
                 status = f"rank={r['rank']}" if r["rank"] else "未命中"
             else:
                 status = "误召回" if r["returned"] else "正确返回空"
-            print(f"  [{r['id']}] {status} | {query['question']}")
+            print(f"  [{r['id']}] {status} [{path_label.get(r.get('path'), '未知')}]"
+                  f" | {query['question']}")
 
     if args.json:
         payload = {

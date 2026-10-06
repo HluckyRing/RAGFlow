@@ -484,3 +484,25 @@ def test_summarize_section_attribution_is_none_without_annotation():
 
     assert got["section_attribution_rate"] is None
     assert got["section_attribution_total"] == 0
+
+
+# ── 检索路径（向量 or 关键词兜底）──
+
+def test_summarize_counts_keyword_fallback_samples():
+    """走兜底的样本数要能直接读出来：这些样本的分数是 2-gram 打分，不是距离。"""
+    results = [
+        {"kind": "positive", "rank": 1, "returned": 1, "path": "vector"},
+        {"kind": "positive", "rank": 1, "returned": 1, "path": "keyword"},
+        {"kind": "negative", "rank": None, "returned": 0, "path": "keyword"},
+    ]
+
+    got = ev.summarize(results, 5)
+
+    assert got["keyword_fallback_samples"] == 2
+
+
+def test_summarize_keyword_count_survives_missing_path():
+    """老结果没有 path 字段时不能炸（summarize 是纯函数，别处也可能复用）。"""
+    got = ev.summarize([{"kind": "positive", "rank": 1, "returned": 1}], 5)
+
+    assert got["keyword_fallback_samples"] == 0

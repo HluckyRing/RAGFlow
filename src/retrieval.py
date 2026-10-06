@@ -191,11 +191,18 @@ def _kept_hits(docs, distances, metadatas, max_distance):
     return hits
 
 
-def hyde_retrieve_hits(question, collection, full_text, use_vector, top_k=None, files=None):
-    """检索并带上来源：返回 [(chunk_text, meta), ...]，meta 可能是 None。
+# 检索路径标签：向量召回与「阈值全丢后的关键词兜底」的分数含义完全不同 ——
+# 前者是 l2 距离、后者是 2-gram 词面打分。评测必须能把两者分开统计，
+# 否则会把兜底捞回来的样本当成「向量检索质量」，从而误判阈值的好坏。
+PATH_VECTOR = "vector"
+PATH_KEYWORD = "keyword"
 
-    meta 来自建索引时写进 Chroma 的 metadatas；老索引（P2 之前建的）没有 metadatas，
-    这时 meta 是 None，上层会标注成「未标注」，绝不编造来源。
+
+def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, top_k=None, files=None):
+    """同 `hyde_retrieve_hits`，但把「走的哪条路」一起返回：`(PATH_*, hits)`。
+
+    负样本的样子（向量全丢、兜底也没命中）返回的仍然是 `PATH_KEYWORD` —— 那条路确实
+    跑了，只是没捞出东西。**不要**用这个标签判断「有没有检索到内容」，那要看 hits 是否为空。
     """
     if top_k is None:
         top_k = TOP_K
@@ -233,8 +240,19 @@ def hyde_retrieve_hits(question, collection, full_text, use_vector, top_k=None, 
         texts = [text for text, _ in pairs]
         tops = _keyword_scores(question, texts)[:3]
         hits = [pairs[index] for _, index in tops]
+        return PATH_KEYWORD, hits
 
-    return hits
+    return PATH_VECTOR, hits
+
+
+def hyde_retrieve_hits(question, collection, full_text, use_vector, top_k=None, files=None):
+    """检索并带上来源：返回 [(chunk_text, meta), ...]，meta 可能是 None。
+
+    meta 来自建索引时写进 Chroma 的 metadatas；老索引（P2 之前建的）没有 metadatas，
+    这时 meta 是 None，上层会标注成「未标注」，绝不编造来源。
+    """
+    return hyde_retrieve_hits_with_path(
+        question, collection, full_text, use_vector, top_k=top_k, files=files)[1]
 
 
 def hyde_retrieve(question, collection, full_text, use_vector, top_k=None, files=None):

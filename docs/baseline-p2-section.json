@@ -26,6 +26,7 @@
     "section_attribution_hits": 6,
     "section_attribution_total": 6,
     "section_attribution_rate": 1.0,
+    "keyword_fallback_samples": 7,
     "negative_false_positives": 0,
     "negative_false_positive_rate": 0.0
   },
@@ -40,7 +41,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q02",
@@ -48,7 +50,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q03",
@@ -56,7 +59,8 @@
       "rank": 1,
       "returned": 1,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "keyword"
     },
     {
       "id": "q04",
@@ -64,7 +68,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q05",
@@ -72,7 +77,8 @@
       "rank": 1,
       "returned": 4,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q06",
@@ -80,7 +86,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q07",
@@ -88,7 +95,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q08",
@@ -96,7 +104,8 @@
       "rank": 1,
       "returned": 2,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q09",
@@ -104,7 +113,8 @@
       "rank": 1,
       "returned": 2,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q10",
@@ -112,7 +122,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q11",
@@ -120,7 +131,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q12",
@@ -128,7 +140,8 @@
       "rank": 1,
       "returned": 2,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q13",
@@ -136,7 +149,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q14",
@@ -144,7 +158,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q15",
@@ -152,7 +167,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q16",
@@ -160,7 +176,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q17",
@@ -168,7 +185,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q18",
@@ -176,7 +194,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q19",
@@ -184,7 +203,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q20",
@@ -192,7 +212,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q21",
@@ -200,7 +221,8 @@
       "rank": 1,
       "returned": 4,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q22",
@@ -208,7 +230,8 @@
       "rank": 1,
       "returned": 2,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q23",
@@ -216,7 +239,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q24",
@@ -224,7 +248,8 @@
       "rank": 1,
       "returned": 3,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q25",
@@ -232,7 +257,8 @@
       "rank": 1,
       "returned": 1,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q26",
@@ -240,7 +266,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q27",
@@ -248,7 +275,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q28",
@@ -256,7 +284,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q29",
@@ -264,7 +293,8 @@
       "rank": 1,
       "returned": 2,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "vector"
     },
     {
       "id": "q30",
@@ -272,7 +302,8 @@
       "rank": 1,
       "returned": 1,
       "file_ok": true,
-      "section_ok": null
+      "section_ok": null,
+      "path": "keyword"
     },
     {
       "id": "q31",
@@ -280,7 +311,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": true
+      "section_ok": true,
+      "path": "vector"
     },
     {
       "id": "q32",
@@ -288,7 +320,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": true
+      "section_ok": true,
+      "path": "vector"
     },
     {
       "id": "q33",
@@ -296,7 +329,8 @@
       "rank": 1,
       "returned": 1,
       "file_ok": true,
-      "section_ok": true
+      "section_ok": true,
+      "path": "vector"
     },
     {
       "id": "q34",
@@ -304,7 +338,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": true
+      "section_ok": true,
+      "path": "vector"
     },
     {
       "id": "q35",
@@ -312,7 +347,8 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": true
+      "section_ok": true,
+      "path": "vector"
     },
     {
       "id": "q36",
@@ -320,37 +356,43 @@
       "rank": 1,
       "returned": 5,
       "file_ok": true,
-      "section_ok": true
+      "section_ok": true,
+      "path": "vector"
     },
     {
       "id": "n01",
       "kind": "negative",
       "rank": null,
-      "returned": 0
+      "returned": 0,
+      "path": "keyword"
     },
     {
       "id": "n02",
       "kind": "negative",
       "rank": null,
-      "returned": 0
+      "returned": 0,
+      "path": "keyword"
     },
     {
       "id": "n03",
       "kind": "negative",
       "rank": null,
-      "returned": 0
+      "returned": 0,
+      "path": "keyword"
     },
     {
       "id": "n04",
       "kind": "negative",
       "rank": null,
-      "returned": 0
+      "returned": 0,
+      "path": "keyword"
     },
     {
       "id": "n05",
       "kind": "negative",
       "rank": null,
-      "returned": 0
+      "returned": 0,
+      "path": "keyword"
     }
   ]
 }

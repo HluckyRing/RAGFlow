@@ -120,6 +120,65 @@ def test_all_above_threshold_falls_back_to_keyword(monkeypatch):
     assert out == []
 
 
+# ── 检索路径标签（评测靠它区分「向量召回」与「关键词兜底」）──
+
+def test_hits_with_path_reports_the_vector_path(monkeypatch):
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection([ROE_CHUNK], [0.40])
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "净资产收益率是什么", coll, ROE_CHUNK, use_vector=True)
+
+    assert path == retrieval.PATH_VECTOR
+    assert [text for text, _ in hits] == [ROE_CHUNK]
+
+
+def test_hits_with_path_reports_the_keyword_fallback(monkeypatch):
+    """向量全超阈值、靠兜底捞回来：路径必须标成兜底，不能记成向量。
+
+    两条路的分数含义不同（l2 距离 vs 2-gram 打分），混在一起会误判阈值的好坏。
+    """
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection([ROE_CHUNK], [0.90])
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "净资产收益率是什么", coll, ROE_CHUNK, use_vector=True)
+
+    assert path == retrieval.PATH_KEYWORD
+    assert [text for text, _ in hits] == [ROE_CHUNK], "兜底按词面命中，这条应该被捞回来"
+
+
+def test_hits_with_path_stays_keyword_when_the_fallback_finds_nothing(monkeypatch):
+    """兜底也没命中（负样本的样子）：路径仍然是兜底 —— 那条路确实跑了。"""
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection([ROE_CHUNK], [0.90])
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "量子纠缠退相干时间", coll, ROE_CHUNK, use_vector=True)
+
+    assert path == retrieval.PATH_KEYWORD
+    assert hits == []
+
+
+def test_hits_with_path_in_pure_keyword_mode():
+    path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "净资产收益率是什么", None, ROE_CHUNK, use_vector=False)
+
+    assert path == retrieval.PATH_KEYWORD
+    assert [text for text, _ in hits] == [ROE_CHUNK]
+
+
+def test_hits_without_path_keeps_the_old_signature(monkeypatch):
+    """`hyde_retrieve_hits` / `hyde_retrieve` 的老签名不能变（调用方与老测试都在用）。"""
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection([ROE_CHUNK], [0.40])
+
+    assert retrieval.hyde_retrieve_hits(
+        "净资产收益率是什么", coll, ROE_CHUNK, use_vector=True) == [(ROE_CHUNK, None)]
+    assert retrieval.hyde_retrieve(
+        "净资产收益率是什么", coll, ROE_CHUNK, use_vector=True) == [ROE_CHUNK]
+
+
 # ── 缺 API_KEY 时的降级（P1-16）──
 
 def test_hyde_skips_with_clear_hint_when_client_is_none(monkeypatch, caplog):
