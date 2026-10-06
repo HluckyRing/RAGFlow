@@ -124,6 +124,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .msg:hover .mact,.msg:focus-within .mact{opacity:1}
 .mact:hover{background:var(--hover-bg);color:var(--text-primary)}
 .stopped-tag{font-size:12px;color:var(--text-muted)}
+.src-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
+.src-label{font-size:12px;color:var(--text-muted)}
+.src-chip{font-size:12px;color:var(--text-primary);background:var(--hover-bg);border-radius:10px;padding:2px 8px}
 
 .typing{display:flex;gap:4px;padding:12px 16px}
 .typing span{width:8px;height:8px;border-radius:50%;background:var(--text-muted);animation:bounce 1.4s infinite ease-in-out both}
@@ -638,6 +641,9 @@ function renderChat() {
             enhanceCodeBlocks(b);
         }
         body.appendChild(b);
+        if (m.role !== 'user' && Array.isArray(m.sources) && m.sources.length) {
+            body.appendChild(buildSources(m.sources));
+        }
         if (m.stopped) {
             const tag = document.createElement('div');
             tag.className = 'stopped-tag';
@@ -1223,6 +1229,7 @@ async function sendMsg(opts) {
     const aib = appendStreamMsg();
     let full = '';
     let aborted = false;
+    let sources = [];           // 服务端推来的来源（P3）：只显示，前端绝不自己推断
     try {
         const body = { question:text, session_id:S.sid, conv_id:S.activeCid };
         if (typeof target === 'number') body.truncate_to = target;
@@ -1244,7 +1251,10 @@ async function sendMsg(opts) {
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
                 try { const d = JSON.parse(line.slice(6));
-                    if (d.type==='token') {
+                    if (d.type==='sources') {
+                        // 形状不对就当没有来源，宁可什么都不显示，也不显示错的
+                        sources = Array.isArray(d.sources) ? d.sources : [];
+                    } else if (d.type==='token') {
                         full += d.content;
                         aib.innerHTML = toMd(full);
                         enhanceCodeBlocks(aib);
@@ -1269,10 +1279,30 @@ async function sendMsg(opts) {
     if (full.trim()) {
         const entry = { role:'assistant', content:full, time: Date.now()/1000 };
         if (aborted) entry.stopped = true;
+        if (sources.length) entry.sources = sources;   // 跟着消息走，刷新后还能渲染
         c.messages.push(entry);
     }
     if (aborted) toast('已停止生成');
     renderChat();
+}
+
+// 引用一行：来源全部来自服务端推来的 sources（P2 建索引时写下的元数据）。
+// 一律 createElement + textContent —— 文件名是用户可控的动态数据，绝不能进 innerHTML。
+function buildSources(sources) {
+    const row = document.createElement('div');
+    row.className = 'src-row';
+    const label = document.createElement('span');
+    label.className = 'src-label';
+    label.textContent = '来源：';
+    row.appendChild(label);
+    sources.forEach(s => {
+        if (!s || !s.file_name) return;              // 没有文件名的不显示，宁缺勿造
+        const chip = document.createElement('span');
+        chip.className = 'src-chip';
+        chip.textContent = s.section ? `${s.file_name} · ${s.section}` : s.file_name;
+        row.appendChild(chip);
+    });
+    return row;
 }
 
 function appendStreamMsg() {

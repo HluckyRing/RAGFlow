@@ -90,7 +90,7 @@ def test_slow_upload_does_not_block_event_loop(app_env, monkeypatch):
 def test_slow_retrieval_does_not_block_event_loop(app_env, monkeypatch):
     def slow_retrieve(*args, **kwargs):
         time.sleep(1.2)                       # 模拟 HyDE 的 LLM 调用 + 向量检索
-        return "背景内容", ["背景内容"]
+        return "背景内容", [{"text": "背景内容", "file_name": "a.txt"}]
 
     monkeypatch.setattr(server, "retrieve_and_build_context", slow_retrieve)
     monkeypatch.setattr(server, "stream_answer", lambda q, c, h: iter(["回答"]))
@@ -117,7 +117,8 @@ def test_slow_sse_stream_does_not_block_event_loop(app_env, monkeypatch):
     stream_answer 里等 LLM 出 token 的 sleep 就会把整个服务卡住。
     """
     monkeypatch.setattr(server, "retrieve_and_build_context",
-                        lambda *a, **k: ("背景内容", ["背景内容"]))
+                        lambda *a, **k: ("背景内容",
+                                         [{"text": "背景内容", "file_name": "a.txt"}]))
 
     def slow_stream(question, context, history):
         for i in range(3):
@@ -166,7 +167,8 @@ def test_chat_hands_a_sync_generator_to_streaming_response(app_env, monkeypatch)
     一旦写成 async 生成器，它就会在事件循环上被迭代，慢 token 会卡住全服务。
     """
     monkeypatch.setattr(server, "retrieve_and_build_context",
-                        lambda *a, **k: ("背景内容", ["背景内容"]))
+                        lambda *a, **k: ("背景内容",
+                                         [{"text": "背景内容", "file_name": "a.txt"}]))
     monkeypatch.setattr(server, "stream_answer", lambda q, c, h: iter(["回答"]))
 
     captured = {}

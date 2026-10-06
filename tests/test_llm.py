@@ -144,7 +144,7 @@ def test_context_is_assembled_at_chunk_boundaries(monkeypatch):
 
     context, used = llm.retrieve_and_build_context("q", "".join(chunks), None, False)
 
-    assert used == chunks[:2]
+    assert [u["text"] for u in used] == chunks[:2]
     assert context == _block(chunks[0]) + "\n\n" + _block(chunks[1])
     assert len(context) <= 120
 
@@ -158,7 +158,7 @@ def test_context_never_contains_half_a_chunk(monkeypatch):
 
     context, used = llm.retrieve_and_build_context("q", first + "\n\n" + second, None, False)
 
-    assert used == [first]
+    assert [u["text"] for u in used] == [first]
     assert context == _block(first), "宁可比预算短，也不能切出半截块"
 
 
@@ -172,7 +172,7 @@ def test_context_selects_by_relevance_but_orders_by_document_position(monkeypatc
 
     context, used = llm.retrieve_and_build_context("q", full_text, None, False)
 
-    assert used == [first, second], "返回的块要与 context 同序"
+    assert [u["text"] for u in used] == [first, second], "返回的块要与 context 同序"
     assert context.index(first) < context.index(second)
 
 
@@ -184,7 +184,7 @@ def test_context_keeps_unknown_position_chunks_at_the_end(monkeypatch):
 
     context, used = llm.retrieve_and_build_context("q", known, None, False)
 
-    assert used == [known, stale]
+    assert [u["text"] for u in used] == [known, stale]
     assert stale in context and known in context
 
 
@@ -199,7 +199,7 @@ def test_context_truncates_single_chunk_when_budget_is_contradictory(monkeypatch
 
     assert context.startswith("【来源：未标注】")
     assert context.endswith("...(截断)")
-    assert used == [chunk]
+    assert [u["text"] for u in used] == [chunk]
     assert any("MAX_CONTEXT_LENGTH" in r.getMessage() for r in caplog.records)
 
 
@@ -221,7 +221,7 @@ def test_context_labels_each_block_with_its_source(monkeypatch):
         "q", text, None, False, files=[("01-财务指标.md", text)])
 
     assert context == "【来源：01-财务指标.md · 第 2 页】\n" + text
-    assert used == [text]
+    assert [u["text"] for u in used] == [text]
 
 
 def test_context_omits_section_when_there_is_none(monkeypatch):
@@ -259,3 +259,42 @@ def test_context_passes_files_through_to_retrieval(monkeypatch):
     llm.retrieve_and_build_context("q", "正文", None, False, files=files)
 
     assert seen["files"] == files
+
+
+def test_used_blocks_carry_source_for_the_frontend(monkeypatch):
+    """第二个返回值要带来源（P3 的前端引用全靠它），且与 context 同序。"""
+    meta = {"file_name": "a.md", "section": "第 2 页"}
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: [("正文", meta)])
+
+    _context, used = llm.retrieve_and_build_context("q", "正文", None, False)
+
+    assert used == [{"text": "正文", "file_name": "a.md", "section": "第 2 页"}]
+
+
+def test_used_blocks_omit_unknown_source(monkeypatch):
+    """老索引没有元数据：用块里不该出现 file_name，更不该编一个。"""
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", lambda *a, **k: [("正文", None)])
+
+    _context, used = llm.retrieve_and_build_context("q", "正文", None, False)
+
+    assert used == [{"text": "正文"}]
+
+
+def test_source_list_dedupes_and_drops_unknown():
+    """同一文件同一页只出现一次；没有来源的丢掉（前端就不显示，而不是显示「未标注」）。"""
+    used = [
+        {"text": "a", "file_name": "x.md", "section": "第 1 页"},
+        {"text": "b", "file_name": "x.md", "section": "第 1 页"},   # 同一页，去重
+        {"text": "c", "file_name": "y.md"},
+        {"text": "d"},                                             # 没来源：丢掉
+        "不是 dict",                                                # 老调用方：跳过而不是崩
+    ]
+
+    assert llm.source_list(used) == [
+        {"file_name": "x.md", "section": "第 1 页"}, {"file_name": "y.md"}]
+
+
+def test_source_list_is_empty_without_any_source():
+    assert llm.source_list([]) == []
+    assert llm.source_list(None) == []
+    assert llm.source_list(["纯文本老格式"]) == []

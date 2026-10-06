@@ -336,3 +336,28 @@ def test_pptx_viewer_is_destroyed_on_close_and_text_mode():
     assert "destroyPptxViewer" in text_mode, "切回抽取文本要释放渲染器"
     close = _source_between("function closeFilePreview", "function confirmDeleteFile")
     assert "destroyPptxViewer" in close, "关闭抽屉要释放渲染器"
+
+
+# ── 回答里的来源（P3）──
+
+def test_sources_event_is_handled_defensively():
+    """要接住 sources 事件；形状不对就当没有来源 —— 宁可什么都不显示。"""
+    html = _html()
+    assert "d.type==='sources'" in html, "前端必须处理 sources 事件"
+    assert "Array.isArray(d.sources)" in html, "形状不对时不能硬用"
+
+
+def test_sources_row_is_built_with_textContent_only():
+    """文件名是用户可控的动态数据：来源 chip 只能 createElement + textContent。"""
+    src = _source_between("function buildSources", "function appendStreamMsg")
+    assert "createElement" in src
+    assert "textContent" in src, "来源要用 textContent 写入"
+    assert "innerHTML" not in src, "来源块不得走 innerHTML"
+
+
+def test_sources_ride_along_with_the_message_and_renderChat_draws_them():
+    """来源要挂到消息对象上（刷新后仍能渲染），并由 renderChat 渲染出来。"""
+    html = _html()
+    assert "entry.sources = sources" in html, "来源要跟着消息走，否则刷新就没了"
+    chat = _source_between("function renderChat", "const QUICK_PROMPTS")
+    assert "buildSources" in chat, "renderChat 要渲染来源行"

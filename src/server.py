@@ -19,7 +19,8 @@ from src.pdf_ingestion import split_files
 from src.text_utils import strip_surrogates, strip_surrogates_counted
 from src.retrieval import (init_vector_store, sanitize_collection_name, drop_collection,
                            chroma_meta)
-from src.llm import resolve_query, retrieve_and_build_context, stream_answer, LLMStreamError
+from src.llm import (resolve_query, retrieve_and_build_context, stream_answer,
+                     source_list, LLMStreamError)
 
 # session_id -> 状态 dict。与 state 模块的缓存共用同一个对象，改动会被 _save_state 落盘。
 sessions = {}
@@ -657,7 +658,7 @@ def _sse_event(payload):
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def _chat_stream(sid, conv_id, question, context, history):
+def _chat_stream(sid, conv_id, question, context, history, sources=None):
     """同步生成器：把 stream_answer 的 token 转成 SSE，并在结束时落盘。
 
     Starlette 会用 iterate_in_threadpool 迭代它，因此 stream_answer 里等 LLM
@@ -667,12 +668,21 @@ def _chat_stream(sid, conv_id, question, context, history):
     前端点「停止生成」时这个生成器会被 close()、抛 GeneratorExit：已经吐给前端
     的半截回答必须落盘（否则刷新后凭空消失），并打上 stopped 标记，免得下次加载
     把一段半截回答当成完整回答。错误文案仍然只推给前端、绝不进历史。
+
+    sources（见 `llm.source_list`）：在**第一个 token 之前**推一条 sources 事件，
+    并跟着 assistant 消息一起落盘 —— 刷新后靠 `message.sources` 重新渲染。一个 token
+    都没出来（LLM 直接报错）时不推也不落，免得给一条错误消息挂上引用。
     """
     full_answer = ""
     stopped = False
+    sent_sources = False
     try:
         try:
             for token in stream_answer(question, context, history):
+                if not sent_sources:
+                    if sources:
+                        yield _sse_event({"type": "sources", "sources": sources})
+                    sent_sources = True
                 full_answer += token
                 yield _sse_event({"type": "token", "content": token})
         except LLMStreamError as e:
@@ -688,6 +698,8 @@ def _chat_stream(sid, conv_id, question, context, history):
             entry = {"role": "assistant", "content": full_answer}
             if stopped:
                 entry["stopped"] = True
+            if sources:
+                entry["sources"] = sources
             _append_message(sid, conv_id, entry)
     yield _sse_event({"type": "done"})
 
@@ -729,12 +741,14 @@ async def chat(request: Request):
     files = [(f.get("file_name", ""), f.get("file_text", ""))
              for f in (conv.get("files") or [])]
     # HyDE 的 LLM 调用 + Chroma 查询 + embedding 推理全是阻塞的
-    context, _ = await run_in_threadpool(
+    context, used = await run_in_threadpool(
         retrieve_and_build_context, search_query, _conv_full_text(conv),
         conv["collection"], conv["use_vector"], dynamic_top_k, files,
     )
     if not context:
         return JSONResponse({"error": "未找到相关内容"}, status_code=400)
+    # 来源只从前端拿到的东西里来（去重后的文件+页），前端不自己推断，引用不可能凭空出现
+    sources = source_list(used)
 
     # 检索成功才把提问写进历史（带 truncate_to 时同时覆盖旧轮次），
     # 所以「没检索到内容」的提问依然不会入库。
@@ -742,7 +756,7 @@ async def chat(request: Request):
             _append_message, sid, conv_id, {"role": "user", "content": question}, truncate_to):
         return JSONResponse({"error": "对话不存在"}, status_code=400)
 
-    return StreamingResponse(_chat_stream(sid, conv_id, question, context, history),
+    return StreamingResponse(_chat_stream(sid, conv_id, question, context, history, sources),
                              media_type="text/event-stream")
 
 

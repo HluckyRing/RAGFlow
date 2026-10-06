@@ -95,7 +95,10 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
        按原文顺序拼起来；不再 `context[:MAX]` 从中间硬切，宁可比预算短也不给半截块。
     2. 带上来源（P2）：每块前面加 `【来源：文件名 · 第 N 页】`，引用才可核验。
 
-    返回 (context, used_chunks)。used_chunks 是 context 里真正用到的块文本、与 context 同序。
+    返回 (context, used_blocks)。used_blocks 是 context 里真正用到的块**及其来源**、与 context
+    同序：`[{"text": ..., "file_name": ..., "section": ...}]`（没有来源时只有 text）。
+    交给 `source_list()` 去重后就得到前端要显示的来源 —— 前端只显示这里给出的东西、
+    不自己推断，这样引用不可能凭空出现。
 
     唯一例外：单块（含来源标签）本身就超过 MAX_CONTEXT_LENGTH（配置互相矛盾，例如把
     MAX_CONTEXT_LENGTH 调得比一个 chunk 还小）。此时只能截断这一块 —— 总比返回空好 ——
@@ -118,8 +121,8 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
     if total > MAX_CONTEXT_LENGTH:                  # 只有「第一块自己就超预算」会走到这
         logger.warning("单块长度（含来源标签）已超过 MAX_CONTEXT_LENGTH=%d，只能截断第一块；"
                        "请调大 MAX_CONTEXT_LENGTH 或调小 CHUNK_SIZE", MAX_CONTEXT_LENGTH)
-        text, _meta, block = used[0]
-        return block[:MAX_CONTEXT_LENGTH] + "\n...(截断)", [text]
+        text, meta, block = used[0]
+        return block[:MAX_CONTEXT_LENGTH] + "\n...(截断)", [_used_entry(text, meta)]
 
     if len(used) < len(hits):
         logger.info("context 按块边界装配：保留 %d/%d 块（%d 字符，预算 %d）",
@@ -127,7 +130,44 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
 
     ordered = _order_pairs_by_position([(text, meta) for text, meta, _ in used], full_text)
     context = "\n\n".join(_format_source_block(text, meta) for text, meta in ordered)
-    return context, [text for text, _ in ordered]
+    return context, [_used_entry(text, meta) for text, meta in ordered]
+
+
+def _used_entry(text, meta):
+    """一条「用块」记录：块文本 + 可核验的来源；没有来源就只留 text。"""
+    entry = {"text": text}
+    name = (meta or {}).get("file_name")
+    if name:
+        entry["file_name"] = name
+    section = (meta or {}).get("section")
+    if section:
+        entry["section"] = section
+    return entry
+
+
+def source_list(used):
+    """把用块整理成给前端显示的来源列表：按（文件 + 页/工作表）去重，丢掉没有来源的。
+
+    没有来源（P2 之前建的老索引）时**什么都不显示** —— 既不编造，也不显示「来源未标注」
+    这种没有信息量的东西。顺序按首次出现，也就是原文顺序。
+    """
+    out, seen = [], set()
+    for item in used or []:
+        if not isinstance(item, dict):
+            continue                      # 兼容老调用方传进来的纯文本列表
+        name = item.get("file_name")
+        if not name:
+            continue
+        section = item.get("section") or ""
+        key = (name, section)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {"file_name": name}
+        if section:
+            entry["section"] = section
+        out.append(entry)
+    return out
 
 
 

@@ -24,7 +24,8 @@ def client(tmp_path, monkeypatch):
     server.sessions.clear()
     monkeypatch.setattr(server, "init_vector_store", lambda name=None: (None, False))
     monkeypatch.setattr(server, "retrieve_and_build_context",
-                        lambda *a, **k: ("背景：ROE 是净利润/股东权益", ["背景"]))
+                        lambda *a, **k: ("背景：ROE 是净利润/股东权益",
+                                         [{"text": "背景", "file_name": "a.txt"}]))
     yield TestClient(server.app)
     server.sessions.clear()
     state._cache.clear()
@@ -313,3 +314,56 @@ def test_messages_get_a_timestamp(client, asked, monkeypatch):
 
     msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
     assert all(isinstance(m.get("time"), (int, float)) for m in msgs), msgs
+
+
+# ── 来源（P3）──
+
+def test_chat_pushes_sources_and_persists_them(client, asked, monkeypatch):
+    """来源要以一条 SSE 事件推给前端，并跟着 assistant 消息落盘（刷新后还能渲染）。"""
+    seen, fake_stream = asked
+    monkeypatch.setattr(server, "stream_answer", fake_stream)
+    monkeypatch.setattr(server, "retrieve_and_build_context",
+                        lambda *a, **k: ("背景内容", [
+                            {"text": "背景内容", "file_name": "a.txt", "section": "第 2 页"},
+                            {"text": "背景内容", "file_name": "a.txt", "section": "第 2 页"},
+                        ]))
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+
+    r = client.post("/api/chat", json={"question": "ROE 是什么", "session_id": sid,
+                                       "conv_id": conv_id})
+    assert r.status_code == 200
+
+    events = [json.loads(line[6:]) for line in r.text.split("\n") if line.startswith("data: ")]
+    kinds = [e["type"] for e in events]
+    assert "sources" in kinds, "前端靠这条事件才拿得到来源"
+    assert kinds.index("sources") < kinds.index("token"), "来源要在回答正文之前推"
+    assert events[kinds.index("sources")]["sources"] == [
+        {"file_name": "a.txt", "section": "第 2 页"}], "同一文件同一页要去重"
+
+    saved = json.loads(state.file_for(sid).read_text(encoding="utf-8"))
+    msgs = saved["conversations"][conv_id]["messages"]
+    assert msgs[1]["sources"] == [{"file_name": "a.txt", "section": "第 2 页"}], "来源要落盘"
+
+
+def test_no_sources_event_when_answer_never_starts(client, monkeypatch):
+    """LLM 一个 token 都没出（例如没配 API_KEY）：不该推 sources，免得给错误消息挂引用。"""
+    def boom(question, context, history):
+        raise server.LLMStreamError("没配 API_KEY")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(server, "stream_answer", boom)
+    monkeypatch.setattr(server, "retrieve_and_build_context",
+                        lambda *a, **k: ("背景内容",
+                                         [{"text": "背景内容", "file_name": "a.txt"}]))
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+
+    r = client.post("/api/chat", json={"question": "问题", "session_id": sid, "conv_id": conv_id})
+
+    events = [json.loads(line[6:]) for line in r.text.split("\n") if line.startswith("data: ")]
+    assert not any(e["type"] == "sources" for e in events), "错误消息不该挂引用"
+    msgs = server.sessions[sid]["conversations"][conv_id]["messages"]
+    assert [m["role"] for m in msgs] == ["user"], "错误文案不落盘，来源也就不该落盘"
