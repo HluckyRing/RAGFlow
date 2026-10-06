@@ -261,6 +261,31 @@ def rank_of_first_hit(chunks, gold_phrases):
     return None
 
 
+def score_band(scores):
+    """精排分数的分数带（与距离带对称，只是**越大越相关**）。"""
+    values = [float(s) for s in scores]
+    if not values:
+        return {"n": 0, "min": None, "median": None, "max": None}
+    return {"n": len(values), "min": round(min(values), 4),
+            "median": round(statistics.median(values), 4), "max": round(max(values), 4)}
+
+
+def suggest_score_threshold(positive_scores, negative_scores):
+    """从精排分数里取分离带中点当 `RERANK_MIN_SCORE` 建议；分不开时返回 None。
+
+    与距离相反：分数越大越相关，所以只有 `max(负) < min(正)` 才是干净的分隔带。
+    负样本用它的**最高分**（最容易被误召回的那条），正样本用命中块自己的分数。
+    """
+    pos = [float(s) for s in positive_scores]
+    neg = [float(s) for s in negative_scores]
+    if not pos or not neg:
+        return None
+    lower, upper = max(neg), min(pos)
+    if lower >= upper:
+        return None
+    return round((lower + upper) / 2.0, 4)
+
+
 def summarize(results, k):
     """汇总指标。results 每条形如 {'kind', 'rank', 'returned', 'file_ok', 'section_ok'}。
 
@@ -396,6 +421,10 @@ def main(argv=None):
                         help="额外做一次原始向量查询，报告距离分布与建议阈值")
     parser.add_argument("--verbose", action="store_true", help="打印逐条明细")
     parser.add_argument("--json", default=None, help="把结果另存到该 JSON 文件")
+    parser.add_argument("--rerank", action="store_true",
+                        help="开启跨编码器精排（首次会下载约 1.1GB 权重）")
+    parser.add_argument("--rerank-min-score", type=float, default=None,
+                        help="覆盖 RERANK_MIN_SCORE（按 --calibrate 的实测分数带标定）")
     args = parser.parse_args(argv)
 
     # 输入校验放在最前面：语料 / 标注不合法时直接返回 2，不必先把模型加载起来。
@@ -448,6 +477,16 @@ def main(argv=None):
         print(f"检索模式：HyDE（真实调用大模型，会花 API 额度）；"
               f"自检通过（首句生成 {len(hyde_text)} 字）")
 
+    if args.rerank:
+        # 评测要能明确对比「开/关精排」，所以这里直接按开关覆盖模块级常量
+        retrieval.RERANK_ENABLED = True
+        if args.rerank_min_score is not None:
+            retrieval.RERANK_MIN_SCORE = args.rerank_min_score
+        print(f"精排：开启（{retrieval.RERANK_MODEL}；候选 {retrieval.RERANK_CANDIDATES} "
+              f"→ 保留 {retrieval.RERANK_TOP_N}；分数下限 {retrieval.RERANK_MIN_SCORE}）")
+    else:
+        retrieval.RERANK_ENABLED = False
+
     files = [(name, corpus[name]) for name in sorted(corpus)]
     full_text = "\n\n".join(text for _, text in files)
     # P2：按文件、按节切片（与生产一致），并把来源写进 metadatas —— 评测要能量到
@@ -472,6 +511,7 @@ def main(argv=None):
 
     results = []
     positive_distances, negative_distances = [], []
+    positive_scores, negative_scores = [], []
     started = time.perf_counter()
     for query in queries:
         question = query["question"]
@@ -504,6 +544,23 @@ def main(argv=None):
                     positive_distances.append(min(gold_hits))
             elif dists:
                 negative_distances.append(min(dists))
+
+        if args.calibrate and retrieval.RERANK_ENABLED:
+            # 精排分数的分离带：距离分不开时靠它决定 RERANK_MIN_SCORE。
+            # 另取一次原始候选（不经 min_score 过滤）、并用**原问题**打分。
+            raw = collection.query(
+                query_texts=[calibrate_query_text(question, args.hyde, retrieval._generate_hyde)],
+                n_results=min(retrieval.RERANK_CANDIDATES, len(chunks)))
+            cand = (raw.get("documents") or [[]])[0]
+            cand_scores = retrieval.rerank_mod.score_pairs(question, cand) if cand else None
+            if cand_scores:
+                if query["kind"] == "positive":
+                    gold_scores = [s for doc, s in zip(cand, cand_scores)
+                                   if rank_of_first_hit([doc], query["gold_phrases"]) == 1]
+                    if gold_scores:
+                        positive_scores.append(max(gold_scores))
+                else:
+                    negative_scores.append(max(cand_scores))
     elapsed = time.perf_counter() - started
 
     summary = summarize(results, args.top_k)
@@ -572,6 +629,28 @@ def main(argv=None):
         else:
             print(f"建议 MAX_DISTANCE：{suggested}（当前默认 {MAX_DISTANCE}）")
 
+        if retrieval.RERANK_ENABLED:
+            print()
+            print("--- 精排分数标定（原问题 × 候选，未经 min_score 过滤）---")
+            pos_band, neg_band = score_band(positive_scores), score_band(negative_scores)
+            if pos_band["n"]:
+                print(f"正样本命中块分数：min={pos_band['min']} 中位={pos_band['median']} "
+                      f"max={pos_band['max']} n={pos_band['n']}")
+            else:
+                print("正样本命中块分数：无数据")
+            if neg_band["n"]:
+                print(f"负样本最高分：    min={neg_band['min']} 中位={neg_band['median']} "
+                      f"max={neg_band['max']} n={neg_band['n']}")
+            else:
+                print("负样本最高分：无数据")
+            suggested_score = suggest_score_threshold(positive_scores, negative_scores)
+            if suggested_score is None:
+                print(f"建议 RERANK_MIN_SCORE：分不开（正负分数重叠），"
+                      f"当前 {retrieval.RERANK_MIN_SCORE}")
+            else:
+                print(f"建议 RERANK_MIN_SCORE：{suggested_score}"
+                      f"（当前 {retrieval.RERANK_MIN_SCORE}）")
+
     misses = [r for r in results if r["kind"] == "positive" and r["rank"] is None]
     false_positives = [r for r in results if r["kind"] == "negative" and r["returned"]]
     print()
@@ -606,6 +685,16 @@ def main(argv=None):
             "over_window_chunks": len(token_over),
             "current_max_distance": MAX_DISTANCE,
             "suggested_max_distance": suggest_threshold(positive_distances, negative_distances),
+            "rerank_enabled": bool(retrieval.RERANK_ENABLED),
+            "rerank": ({
+                "model": retrieval.RERANK_MODEL,
+                "candidates": retrieval.RERANK_CANDIDATES,
+                "top_n": retrieval.RERANK_TOP_N,
+                "min_score": retrieval.RERANK_MIN_SCORE,
+                "positive_scores": score_band(positive_scores),
+                "negative_scores": score_band(negative_scores),
+                "suggested_min_score": suggest_score_threshold(positive_scores, negative_scores),
+            } if args.calibrate and retrieval.RERANK_ENABLED else None),
             "results": results,
         }
         Path(args.json).write_text(

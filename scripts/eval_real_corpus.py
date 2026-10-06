@@ -153,6 +153,10 @@ def main(argv=None):
     parser.add_argument("--top-k", type=int, default=5, help="原始查询取几块，默认 5")
     parser.add_argument("--queries", default=str(DEFAULT_QUERIES),
                         help="无关提问代理的标注文件（只取负样本）")
+    parser.add_argument("--rerank", action="store_true",
+                        help="开启跨编码器精排（首次会下载约 1.1GB 权重）")
+    parser.add_argument("--rerank-min-score", type=float, default=None,
+                        help="覆盖 RERANK_MIN_SCORE")
     args = parser.parse_args(argv)
 
     from src import state as state_mod
@@ -172,6 +176,11 @@ def main(argv=None):
     if not args.hyde:
         # 与合成评测一致：把 HyDE 换成恒等函数，可重复、不花额度
         retrieval._generate_hyde = lambda question: question  # noqa: SLF001
+
+    if args.rerank:
+        retrieval.RERANK_ENABLED = True
+        if args.rerank_min_score is not None:
+            retrieval.RERANK_MIN_SCORE = args.rerank_min_score
 
     negatives = negative_questions(args.queries)
     embedding_fn = retrieval._get_embedding_fn()
@@ -193,6 +202,11 @@ def main(argv=None):
     print(f"检索模式：{'HyDE（真实调用大模型）' if args.hyde else 'no-hyde（query = 原问题）'}")
     print(f"切片：CHUNK_SIZE={CHUNK_SIZE}（overlap={CHUNK_OVERLAP}）"
           f"；阈值 MAX_DISTANCE={MAX_DISTANCE}")
+    if retrieval.RERANK_ENABLED:
+        print(f"精排：开启（{retrieval.RERANK_MODEL}；候选 {retrieval.RERANK_CANDIDATES} → "
+              f"保留 {retrieval.RERANK_TOP_N}；分数下限 {retrieval.RERANK_MIN_SCORE}）")
+        print("  注意：下面的距离带描述的是**候选池**、不是最终进 context 的块；"
+              "真实语料的精排分数带尚未实现（见 docs/retrieval-baseline-2026-10-06.md）。")
     print()
 
     if args.hyde:

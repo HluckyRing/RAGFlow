@@ -249,6 +249,85 @@ def test_hyde_falls_back_on_api_error(monkeypatch, caplog):
     assert any("HyDE 生成失败" in r.getMessage() for r in caplog.records)
 
 
+# ── reranker 接入（2026-10-06：无关问题靠距离分不开，改用 query×块 逐对打分）──
+
+def _enable_rerank(monkeypatch, rerank_impl, top_n=1, min_score=0.0, candidates=10):
+    """打开重排开关并注入替身 —— 测试绝不加载真的模型（见 conftest 的 autouse）。"""
+    monkeypatch.setattr(retrieval, "RERANK_ENABLED", True)
+    monkeypatch.setattr(retrieval, "RERANK_CANDIDATES", candidates)
+    monkeypatch.setattr(retrieval, "RERANK_TOP_N", top_n)
+    monkeypatch.setattr(retrieval, "RERANK_MIN_SCORE", min_score)
+    monkeypatch.setattr(retrieval.rerank_mod, "rerank", rerank_impl)
+
+
+def test_rerank_candidates_skip_the_distance_filter_and_use_the_original_question(monkeypatch):
+    """开了重排：候选**不再**先用距离砍（距离在这条路上不是最终裁判），
+    而且打分用**原问题**而不是 HyDE 文本（跨编码器的训练分布是 question → passage）。"""
+    seen = {}
+
+    def fake_rerank(query, hits, top_n, min_score):
+        seen["query"] = query
+        seen["texts"] = [text for text, _ in hits]
+        return [(hits[-1][0], hits[-1][1], 0.9)]
+
+    _enable_rerank(monkeypatch, fake_rerank)
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection(["近块", "远块"], [0.40, 0.99])      # 远块远超阈值
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path("原问题", coll, "全文", use_vector=True)
+
+    assert [text for text, _ in hits] == ["远块"], "超阈值的候选也要交给重排"
+    assert seen["query"] == "原问题"
+    assert seen["texts"] == ["近块", "远块"]
+    assert path == retrieval.PATH_VECTOR
+
+
+def test_rerank_unavailable_falls_back_to_the_distance_filter(monkeypatch):
+    """重排不可用（None）必须退回距离阈值 —— 否则会把一堆远块原样塞给模型。"""
+    _enable_rerank(monkeypatch, lambda *a, **k: None)
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection(["近块", "远块"], [0.40, 0.99])
+
+    _path, hits = retrieval.hyde_retrieve_hits_with_path("问题", coll, "全文", use_vector=True)
+
+    assert [text for text, _ in hits] == ["近块"]
+
+
+def test_rerank_dropping_everything_falls_back_to_keyword(monkeypatch):
+    """重排把候选全判为不相关 → 命中为空 → 走关键词兜底，与「距离全丢」语义一致。"""
+    _enable_rerank(monkeypatch, lambda *a, **k: [])
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection(["块A"], [0.30])                    # 距离上其实很近
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "量子纠缠退相干时间", coll, "完全无关的一段文字", use_vector=True)
+
+    assert path == retrieval.PATH_KEYWORD
+    assert hits == []
+
+
+def test_rerank_off_keeps_the_old_distance_behaviour(monkeypatch):
+    """开关关掉时行为必须与从前逐位一致（这是回退保命的那条路）。"""
+    monkeypatch.setattr(retrieval, "RERANK_ENABLED", False)
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: "假设答案")
+    coll = _DistanceCollection(["近块", "远块"], [0.40, 0.99])
+
+    _path, hits = retrieval.hyde_retrieve_hits_with_path("问题", coll, "全文", use_vector=True)
+
+    assert [text for text, _ in hits] == ["近块"]
+
+
+def test_retrieval_exposes_all_rerank_knobs():
+    """评测脚本要靠 `retrieval.RERANK_*` 打印与覆盖这些开关。
+
+    少暴露一个就是运行时 AttributeError（2026-10-06 实测：`RERANK_MODEL` 漏在导入列表外，
+    `--rerank` 一跑就崩），所以这里把名字钉住。
+    """
+    for name in ("RERANK_ENABLED", "RERANK_MODEL", "RERANK_CANDIDATES",
+                 "RERANK_TOP_N", "RERANK_MIN_SCORE"):
+        assert hasattr(retrieval, name), f"retrieval 缺 {name}"
+
+
 # ── 来源元数据（P2）──
 
 class _MetaCollection:

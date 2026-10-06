@@ -1,0 +1,400 @@
+{
+  "corpus_files": [
+    "01-财务指标.md",
+    "02-考勤与假期制度.md",
+    "03-客户分级与响应时效.md",
+    "04-数据备份与恢复.md",
+    "05-费用报销流程.md",
+    "06-长段落与窗口压测.md",
+    "07-供水管网漏损控制.pptx"
+  ],
+  "chunks": 14,
+  "chunk_size": 480,
+  "chunk_overlap": 100,
+  "top_k": 5,
+  "hyde": true,
+  "model": "BAAI/bge-small-zh-v1.5",
+  "summary": {
+    "positives": 36,
+    "negatives": 5,
+    "hits_at_k": 36,
+    "recall_at_k": 1.0,
+    "mrr": 1.0,
+    "file_attribution_hits": 36,
+    "file_attribution_total": 36,
+    "file_attribution_rate": 1.0,
+    "section_attribution_hits": 6,
+    "section_attribution_total": 6,
+    "section_attribution_rate": 1.0,
+    "keyword_fallback_samples": 6,
+    "negative_false_positives": 0,
+    "negative_false_positive_rate": 0.0
+  },
+  "max_seq_length": 512,
+  "over_window_chunks": 0,
+  "current_max_distance": 0.55,
+  "suggested_max_distance": null,
+  "rerank_enabled": true,
+  "rerank": null,
+  "results": [
+    {
+      "id": "q01",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q02",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q03",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q04",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q05",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q06",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q07",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q08",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q09",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q10",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q11",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q12",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q13",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q14",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q15",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q16",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q17",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q18",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q19",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q20",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q21",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q22",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q23",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q24",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q25",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q26",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q27",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q28",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q29",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "vector"
+    },
+    {
+      "id": "q30",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": null,
+      "path": "keyword"
+    },
+    {
+      "id": "q31",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true,
+      "section_ok": true,
+      "path": "vector"
+    },
+    {
+      "id": "q32",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 3,
+      "file_ok": true,
+      "section_ok": true,
+      "path": "vector"
+    },
+    {
+      "id": "q33",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 1,
+      "file_ok": true,
+      "section_ok": true,
+      "path": "vector"
+    },
+    {
+      "id": "q34",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true,
+      "section_ok": true,
+      "path": "vector"
+    },
+    {
+      "id": "q35",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true,
+      "section_ok": true,
+      "path": "vector"
+    },
+    {
+      "id": "q36",
+      "kind": "positive",
+      "rank": 1,
+      "returned": 2,
+      "file_ok": true,
+      "section_ok": true,
+      "path": "vector"
+    },
+    {
+      "id": "n01",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0,
+      "path": "keyword"
+    },
+    {
+      "id": "n02",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0,
+      "path": "keyword"
+    },
+    {
+      "id": "n03",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0,
+      "path": "keyword"
+    },
+    {
+      "id": "n04",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0,
+      "path": "keyword"
+    },
+    {
+      "id": "n05",
+      "kind": "negative",
+      "rank": null,
+      "returned": 0,
+      "path": "keyword"
+    }
+  ]
+}

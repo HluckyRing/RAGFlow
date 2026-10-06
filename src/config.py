@@ -52,6 +52,19 @@ MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "8000"))
 # 向量检索相关性阈值（l2 距离，越小越严格）。实测本项目语料上相关查询 max≈0.47、
 # 无关查询 min≈0.62，默认取分离带中点 0.55；换语料/换 embedding 模型时应重新标定。
 MAX_DISTANCE = float(os.getenv("MAX_DISTANCE", "0.55"))
+
+# 跨编码器精排（见 src/rerank.py）：把「向量距离」换成 query×块 的逐对匹配分。
+# **默认先关**：等真实测出 CPU 延迟与正负分数带之后再决定默认值（2026-10-06 约定），
+# 在那之前开它等于让每个提问白付一次 1.1GB 模型推理，阈值也只能靠猜。
+# 实测数据与最终默认值记在 docs/retrieval-baseline-2026-10-06.md。
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "0").strip().lower() not in ("0", "false", "no", "")
+RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
+# 送进重排的候选数：先放宽召回，再由重排决定留谁（开了重排就不再用 MAX_DISTANCE 先砍）
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
+# 重排后最多留几块进 context
+RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "5"))
+# 重排分数下限：低于它的候选直接丢。用实测正负分带标定，见文档。
+RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.3"))
 VECTOR_DB_PATH = resolve_path(os.getenv("VECTOR_DB_PATH"), "chroma_db")
 # 上传原件（不是抽取文本）的存放根目录。原文件预览要读它；同样锚定项目根，
 # 测试/冒烟用 UPLOAD_DIR 指向临时目录，避免落到真实用户数据上。

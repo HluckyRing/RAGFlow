@@ -24,3 +24,15 @@ def _isolate_upload_dir(tmp_path, monkeypatch):
     import src.server as server
 
     monkeypatch.setattr(server, "UPLOAD_DIR", str(tmp_path / "uploads"), raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _never_load_the_reranker(monkeypatch):
+    """测试套件绝不加载 reranker 模型（权重 1.1GB、首次还会联网下载）。
+
+    要测重排的用例自己把开关打开、并注入替身（见 tests/test_retrieval.py 的 `_enable_rerank`），
+    所以这里一律先关掉，不受 config 默认值影响。
+    """
+    import src.retrieval as retrieval
+
+    monkeypatch.setattr(retrieval, "RERANK_ENABLED", False)

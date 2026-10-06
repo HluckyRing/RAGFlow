@@ -2,8 +2,10 @@ import re
 import hashlib
 import chromadb
 from chromadb.utils import embedding_functions
+from src import rerank as rerank_mod
 from src.config import (logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME,
-                        VECTOR_DB_PATH, TOP_K, MAX_DISTANCE)
+                        VECTOR_DB_PATH, TOP_K, MAX_DISTANCE, RERANK_ENABLED, RERANK_MODEL,
+                        RERANK_CANDIDATES, RERANK_TOP_N, RERANK_MIN_SCORE)
 from src.pdf_ingestion import split_files, split_text
 from src.prompts import HYDE_SYSTEM_PROMPT
 from src.text_utils import extract_terms
@@ -188,6 +190,15 @@ def _pairs_with_meta(files, full_text):
     return [(chunk, None) for chunk in split_text(full_text)]
 
 
+def _hits_with_meta(docs, metadatas):
+    """全部候选、保持距离序：开了重排就不再用距离先砍人，取舍权交给跨编码器。"""
+    hits = []
+    for index, text in enumerate(docs):
+        meta = metadatas[index] if index < len(metadatas) else None
+        hits.append((text, meta if isinstance(meta, dict) else None))
+    return hits
+
+
 def _kept_hits(docs, distances, metadatas, max_distance):
     """按距离过滤，连来源一起返回 [(文本, meta), ...]。"""
     kept = _kept_indices(distances, max_distance)
@@ -232,15 +243,31 @@ def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, to
                 count = collection.count()
                 logger.info("已为新文档建立向量索引，共 %d 块", count)
             if count > 0:
+                # 开了重排就多召回一些候选：距离在这条路上不再当最终裁判，别先用它砍人
+                limit = max(top_k, RERANK_CANDIDATES) if RERANK_ENABLED else top_k
                 results = collection.query(
                     query_texts=[search_query],
-                    n_results=min(top_k, count)
+                    n_results=min(limit, count)
                 )
                 docs = results["documents"][0] if results.get("documents") else []
                 dists = results["distances"][0] if results.get("distances") else []
                 metas = results["metadatas"][0] if results.get("metadatas") else []
                 if docs:
-                    hits = _kept_hits(docs, dists, metas, MAX_DISTANCE)
+                    if RERANK_ENABLED:
+                        # 打分用**原问题**：跨编码器的训练分布是 question → passage，
+                        # HyDE 文本（像文档的片段）当 query 属于分布外
+                        candidates = _hits_with_meta(docs, metas)
+                        reranked = rerank_mod.rerank(question, candidates,
+                                                     RERANK_TOP_N, RERANK_MIN_SCORE)
+                        if reranked is None:
+                            # 重排不可用：退回距离阈值，绝不把一堆远块原样塞给模型
+                            hits = _kept_hits(docs, dists, metas, MAX_DISTANCE)
+                        else:
+                            hits = [(text, meta) for text, meta, _score in reranked]
+                            logger.info("重排 %d 个候选 → 保留 %d 块（分数下限 %.2f）",
+                                        len(candidates), len(hits), RERANK_MIN_SCORE)
+                    else:
+                        hits = _kept_hits(docs, dists, metas, MAX_DISTANCE)
         except Exception as e:
             logger.warning("向量检索失败，降级为关键词检索: %s", str(e)[:80])
 

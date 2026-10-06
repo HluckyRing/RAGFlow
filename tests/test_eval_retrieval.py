@@ -562,3 +562,27 @@ def test_calibrate_query_text_follows_the_retrieval_path():
     """
     assert ev.calibrate_query_text("原问题", use_hyde=False, generate=lambda q: "假设") == "原问题"
     assert ev.calibrate_query_text("原问题", use_hyde=True, generate=lambda q: "假设") == "假设"
+
+
+# ── 精排分数标定 ──
+
+def test_score_band_summarizes_and_handles_empty():
+    assert ev.score_band([]) == {"n": 0, "min": None, "median": None, "max": None}
+
+    got = ev.score_band([0.2, 0.9, 0.5])
+
+    assert got["n"] == 3
+    assert got["min"] == pytest.approx(0.2)
+    assert got["median"] == pytest.approx(0.5)
+    assert got["max"] == pytest.approx(0.9)
+
+
+def test_suggest_score_threshold_takes_midpoint_when_bands_separate():
+    """与距离相反：分数越大越相关，所以是 max(负) < min(正) 才算干净。"""
+    assert ev.suggest_score_threshold([0.8, 0.9], [0.2, 0.4]) == pytest.approx(0.6)
+
+
+def test_suggest_score_threshold_none_when_overlapping_or_missing():
+    assert ev.suggest_score_threshold([0.5, 0.9], [0.4, 0.6]) is None, "重叠就没有可用的阈值"
+    assert ev.suggest_score_threshold([], [0.4]) is None
+    assert ev.suggest_score_threshold([0.9], []) is None
