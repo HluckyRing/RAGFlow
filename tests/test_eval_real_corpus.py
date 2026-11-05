@@ -134,32 +134,55 @@ def test_annotation_file_really_has_negative_questions():
     assert all(q.strip() for q in got)
 
 
-# ── 原始查询的最佳距离 ──
+# ── 原始查询的最佳距离（双路探针）──
 
 class _FakeCollection:
+    """`per_query` 给了就按 query 文本各回一条列表，否则永远只回一条（模拟老实现）。"""
+
     def __init__(self, distances=None, boom=False):
         self._distances = distances or []
         self._boom = boom
+        self.per_query = None
 
     def query(self, query_texts, n_results):
         if self._boom:
             raise RuntimeError("向量库挂了")
-        return {"distances": [self._distances]}
+        if self.per_query is None:
+            return {"distances": [self._distances]}
+        return {"distances": [self.per_query.get(text, []) for text in query_texts]}
 
 
-def test_best_distance_takes_the_closest_of_the_returned_chunks():
-    """原始查询取最佳距离（不经阈值）—— 阈值只决定它接下来走哪条路。"""
+def test_probe_distances_returns_one_best_distance_per_probe():
+    """两条探针（HyDE / 原问题）各自取最佳距离；融合闸门用的是两者中的较小值。"""
     coll = _FakeCollection([0.62, 0.41, 0.55])
+    coll.per_query = {"假设文本": [0.62, 0.41, 0.55], "问题": [0.30, 0.90]}
 
-    assert erc.best_distance(coll, "问题", top_k=3, count=3) == pytest.approx(0.41)
+    hyde, question = erc.probe_distances(coll, "假设文本", "问题", top_k=3, count=3)
+
+    assert hyde == pytest.approx(0.41)
+    assert question == pytest.approx(0.30)
+    assert min(hyde, question) == pytest.approx(0.30)
 
 
-def test_best_distance_is_none_when_the_query_fails():
-    assert erc.best_distance(_FakeCollection(boom=True), "问题", top_k=3, count=3) is None
+def test_probe_distances_is_none_when_the_query_fails():
+    assert erc.probe_distances(_FakeCollection(boom=True), "假设", "问题",
+                               top_k=3, count=3) == (None, None)
 
 
-def test_best_distance_is_none_when_nothing_came_back():
-    assert erc.best_distance(_FakeCollection([]), "问题", top_k=3, count=3) is None
+def test_probe_distances_is_none_when_nothing_came_back():
+    assert erc.probe_distances(_FakeCollection([]), "假设", "问题",
+                               top_k=3, count=3) == (None, None)
+
+
+def test_probe_distances_treats_a_missing_second_list_as_no_measurement():
+    """老实现/替身只回一条列表时，第二路必须是 None（而不是拿第一路的值冒充）。"""
+    coll = _FakeCollection([0.42])
+    coll.per_query = None                     # 无论几条 query 都只回一条列表
+
+    hyde, question = erc.probe_distances(coll, "假设", "问题", top_k=3, count=1)
+
+    assert hyde == pytest.approx(0.42)
+    assert question is None
 
 
 # ── HyDE 调用缓存与自检的用例已随助手函数搬到 tests/test_eval_retrieval.py ──

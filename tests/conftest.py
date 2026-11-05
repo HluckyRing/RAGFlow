@@ -36,3 +36,13 @@ def _never_load_the_reranker(monkeypatch):
     import src.retrieval as retrieval
 
     monkeypatch.setattr(retrieval, "RERANK_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_pairs_cache():
+    """切片缓存是模块级的：用例之间清一次，免得上一条用例的正文影响这一条。"""
+    import src.retrieval as retrieval
+
+    retrieval.clear_pairs_cache()
+    yield
+    retrieval.clear_pairs_cache()

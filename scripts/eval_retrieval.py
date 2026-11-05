@@ -381,6 +381,29 @@ def cached_generate(generate, cache=None):
     return cached
 
 
+def load_hyde_cache(path):
+    """读回上一轮落盘的假设文本。
+
+    文件不存在、不是 JSON、不是对象时一律当成空缓存 —— 缓存坏掉不该让整轮评测失败。
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def save_hyde_cache(path, cache):
+    """把假设文本落盘，让「换个开关再跑一轮」用**同一批**文本。
+
+    否则两轮的差异里混着大模型的随机性（2026-10-06 实测同一份配置连跑两次
+    MRR 分别是 0.972 与 0.958），根本分不清是开关的作用还是 HyDE 抽风。
+    """
+    Path(path).write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def hyde_self_check(question, generate):
     """`--hyde` 自检：返回 `(是否真的生成了不一样的文本, 生成的文本)`。
 
@@ -425,6 +448,13 @@ def main(argv=None):
                         help="开启跨编码器精排（首次会下载约 1.1GB 权重）")
     parser.add_argument("--rerank-min-score", type=float, default=None,
                         help="覆盖 RERANK_MIN_SCORE（按 --calibrate 的实测分数带标定）")
+    parser.add_argument("--fusion", action="store_true",
+                        help="开启双路融合（原问题 + HyDE 各当一次向量探针，按 RRF 合并名次）")
+    parser.add_argument("--fusion-gate", default=None, choices=["union", "intersect"],
+                        help="融合闸门：union=任一路近就算近；intersect=两路都得近")
+    parser.add_argument("--hyde-cache", default=None,
+                        help="把生成的假设文本落盘到该 JSON；已存在就直接复用"
+                             "（对比不同开关时保证两轮用的是同一批文本）")
     args = parser.parse_args(argv)
 
     # 输入校验放在最前面：语料 / 标注不合法时直接返回 2，不必先把模型加载起来。
@@ -465,8 +495,9 @@ def main(argv=None):
         print("检索模式：no-hyde（query = 原问题，不调大模型）")
     else:
         # 每个问题只生成一次假设文本：检索路径与 --calibrate 共用同一份，既不多花一倍调用，
-        # 也让两条路量的是同一个 query。
-        retrieval._generate_hyde = cached_generate(retrieval._generate_hyde)  # noqa: SLF001
+        # 也让两条路量的是同一个 query。给了 --hyde-cache 就跨轮复用（对比实验的地基）。
+        hyde_cache = load_hyde_cache(args.hyde_cache) if args.hyde_cache else {}
+        retrieval._generate_hyde = cached_generate(retrieval._generate_hyde, hyde_cache)  # noqa: SLF001
         # 先自检再跑：HyDE 失效时会静默退回原问题，那样整轮「HyDE 口径」其实是 no-hyde。
         ok, hyde_text = hyde_self_check(queries[0]["question"], retrieval._generate_hyde)
         if not ok:
@@ -474,8 +505,20 @@ def main(argv=None):
             print("   排查：上面有没有「HyDE 返回空内容 / 生成失败」告警？"
                   "推理模型的 max_tokens 被 reasoning 吃光就会这样。")
             return 2
+        cached_before = len(hyde_cache)
         print(f"检索模式：HyDE（真实调用大模型，会花 API 额度）；"
-              f"自检通过（首句生成 {len(hyde_text)} 字）")
+              f"自检通过（首句生成 {len(hyde_text)} 字）；"
+              f"假设文本缓存已有 {cached_before} 条")
+
+    if args.fusion:
+        # 评测要能明确对比「开/关融合」，所以这里直接按开关覆盖模块级常量
+        retrieval.FUSION_ENABLED = True
+        if args.fusion_gate is not None:
+            retrieval.FUSION_GATE = args.fusion_gate
+        print(f"双路融合：开启（原问题 + HyDE 各一路探针，RRF k={retrieval.RRF_K}，"
+              f"闸门={retrieval.FUSION_GATE}）")
+    else:
+        retrieval.FUSION_ENABLED = False
 
     if args.rerank:
         # 评测要能明确对比「开/关精排」，所以这里直接按开关覆盖模块级常量
@@ -686,6 +729,9 @@ def main(argv=None):
             "current_max_distance": MAX_DISTANCE,
             "suggested_max_distance": suggest_threshold(positive_distances, negative_distances),
             "rerank_enabled": bool(retrieval.RERANK_ENABLED),
+            "fusion": {"enabled": bool(retrieval.FUSION_ENABLED),
+                        "gate": retrieval.FUSION_GATE,
+                        "rrf_k": retrieval.RRF_K},
             "rerank": ({
                 "model": retrieval.RERANK_MODEL,
                 "candidates": retrieval.RERANK_CANDIDATES,
@@ -700,6 +746,12 @@ def main(argv=None):
         Path(args.json).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n结果已写入：{args.json}")
+
+    if args.hyde and args.hyde_cache:
+        # 落盘时机放在最后：中途 return 2（自检失败等）不写，免得把半成品当基线复用
+        save_hyde_cache(args.hyde_cache, hyde_cache)
+        print(f"假设文本已缓存：{args.hyde_cache}（{len(hyde_cache)} 条；"
+              f"下一轮换个开关跑会直接复用这批文本）")
 
     return 0
 

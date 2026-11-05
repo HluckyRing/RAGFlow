@@ -53,6 +53,29 @@ MAX_CONTEXT_LENGTH = int(os.getenv("MAX_CONTEXT_LENGTH", "8000"))
 # 无关查询 min≈0.62，默认取分离带中点 0.55；换语料/换 embedding 模型时应重新标定。
 MAX_DISTANCE = float(os.getenv("MAX_DISTANCE", "0.55"))
 
+# 双路融合：把**原问题**和 **HyDE 文本**各当一次向量探针，两路名次用 RRF 融合。
+# 动机：HyDE 会把短问句改写成「像文档的片段」，关键词被揉进长句后那一侧偶尔整段超阈值，
+# 而原问题侧还贴着答案（反之亦然）；单探针遇到这种情况只能退到关键词兜底。
+#
+# 默认开启、闸门用 intersect（**两路都得近**）。依据是 2026-11-05 的实测：
+#   - 合成语料两批独立假设文本：误召回 2/5→0/5、1/5→0/5，recall@5 与文件/section 归属
+#     一分不掉，MRR 0.972→1.000、0.972→0.986；
+#   - 真实语料（1199 块）：无关提问代理漏进 17/20→13/20，真实提问 11/12 不变；
+#   - 代价：每条提问多一次 embedding 查询，实测 +17 ms（41 条 1.1s→1.8s）。
+# 这条正好过「误召回压到 0/5 且中位延迟 ≤1.5s」那条默认开线，而 reranker 因为 3.9s 没过。
+# union（任一路近就算近）召回更宽，但误召回一点没降；想换回来只改 FUSION_GATE。
+# 数字与逐条明细见 docs/retrieval-baseline-2026-10-06.md「双路融合」一节。
+FUSION_ENABLED = os.getenv("FUSION_ENABLED", "1").strip().lower() not in ("0", "false", "no", "")
+# RRF 的平滑常数：越大越平缓（标准值 60）。两路各只取 top_k/RERANK_CANDIDATES 条，
+# 60 让「名次的相对差」不至于被单路的第一名吃掉。
+RRF_K = int(os.getenv("RRF_K", "60"))
+# 融合闸门口径：`intersect` = 两路都得近才算命中（默认，精度优先）；
+# `union` = 任一路近就算近（召回优先）。实测 union 不降误召回，见上。
+FUSION_GATE = (os.getenv("FUSION_GATE", "intersect").strip().lower() or "intersect")
+if FUSION_GATE not in ("union", "intersect"):
+    logger.warning("FUSION_GATE=%r 不认识（只认 union / intersect），按 intersect 处理", FUSION_GATE)
+    FUSION_GATE = "intersect"
+
 # 跨编码器精排（见 src/rerank.py）：把「向量距离」换成 query×块 的逐对匹配分。
 # **默认先关**：等真实测出 CPU 延迟与正负分数带之后再决定默认值（2026-10-06 约定），
 # 在那之前开它等于让每个提问白付一次 1.1GB 模型推理，阈值也只能靠猜。

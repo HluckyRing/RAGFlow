@@ -3,6 +3,9 @@
 import logging
 from types import SimpleNamespace
 
+import pytest
+
+import src.pdf_ingestion as pdf_ingestion
 import src.retrieval as retrieval
 from src.text_utils import extract_terms, strip_question_words
 
@@ -376,3 +379,342 @@ def test_hyde_retrieve_still_returns_plain_texts(monkeypatch):
     coll = _MetaCollection(["块A"], [0.30], [{"file_name": "a.md"}])
 
     assert retrieval.hyde_retrieve("问题", coll, "全文", use_vector=True) == ["块A"], "应提示缺少 API_KEY"
+
+
+# ── 双路融合：原问题 + HyDE 各当一次探针，按 RRF 融合名次 ──
+
+class _TwoProbeCollection:
+    """按 query 文本返回不同候选，用来确定性地测「两路召回 + 融合」。
+
+    真实 Chroma 一次 `query(query_texts=[a, b])` 返回两条候选列表；这里照抄那个形状。
+    """
+
+    def __init__(self, by_query, distances=None):
+        self.by_query = by_query
+        self.distances = distances or {}
+        self.calls = []
+
+    def count(self):
+        return 10
+
+    def query(self, query_texts, n_results):
+        self.calls.append(list(query_texts))
+        docs, dists, metas = [], [], []
+        for text in query_texts:
+            found = list(self.by_query.get(text, []))
+            docs.append(found)
+            dists.append(list(self.distances.get(text, [0.30] * len(found))))
+            metas.append([{"file_name": "a.md"} for _ in found])
+        return {"documents": docs, "distances": dists, "metadatas": metas}
+
+
+def _enable_fusion(monkeypatch, enabled=True, rrf_k=60, hyde_text="假设答案", gate=None):
+    monkeypatch.setattr(retrieval, "FUSION_ENABLED", enabled)
+    monkeypatch.setattr(retrieval, "RRF_K", rrf_k)
+    # 默认用 union 写用例：多数用例要验证的是「两路都参与」，闸门口径另有专门用例
+    monkeypatch.setattr(retrieval, "FUSION_GATE",
+                        retrieval.GATE_UNION if gate is None else gate)
+    monkeypatch.setattr(retrieval, "RERANK_ENABLED", False)
+    monkeypatch.setattr(retrieval, "_generate_hyde", lambda q: hyde_text)
+
+
+def test_rrf_fuse_puts_the_document_both_probes_agree_on_first():
+    """RRF 的基本性质：两路都排第 1 的文档，必须排在「只有一路排第 1」的前面。
+
+    这就是融合的全部价值 —— 单探针的「第 1 名」可能只是那一侧的口味。
+    """
+    fused = retrieval._rrf_fuse([["共同块", "只有HyDE"], ["共同块", "只有原问题"]], k=60)
+
+    assert [text for text, _score in fused][:1] == ["共同块"]
+    assert set(text for text, _ in fused) == {"共同块", "只有HyDE", "只有原问题"}
+
+
+def test_fusion_off_queries_once_with_the_hyde_text(monkeypatch):
+    """开关关掉时行为与改造前逐位一致（这是回退保命的那条路）。"""
+    _enable_fusion(monkeypatch, enabled=False)
+    coll = _TwoProbeCollection({"假设答案": [ROE_CHUNK]})
+
+    _path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "净资产收益率是什么", coll, ROE_CHUNK, use_vector=True)
+
+    assert coll.calls == [["假设答案"]]
+    assert [text for text, _ in hits] == [ROE_CHUNK]
+
+
+def test_fusion_on_queries_both_probes_in_one_call(monkeypatch):
+    """两路探针合并成一次 query 调用（Chroma 会一次性算两条 embedding），不是两次往返。"""
+    _enable_fusion(monkeypatch)
+    coll = _TwoProbeCollection({"假设答案": [ROE_CHUNK], "净资产收益率是什么": [PE_CHUNK]})
+
+    retrieval.hyde_retrieve_hits_with_path(
+        "净资产收益率是什么", coll, ROE_CHUNK, use_vector=True)
+
+    assert coll.calls == [["假设答案", "净资产收益率是什么"]]
+
+
+def test_fusion_recalls_a_chunk_only_the_original_question_probe_sees(monkeypatch):
+    """HyDE 改写会把短问句里的关键词揉进「像文档的片段」，那一侧可能整段都超阈值；
+    原问题那一侧却贴着答案。单探针在那种情况下只能退到关键词兜底，融合能直接救回来。"""
+    _enable_fusion(monkeypatch)
+    coll = _TwoProbeCollection(
+        by_query={"假设答案": ["无关块"], "原问题里的问题": [ROE_CHUNK]},
+        distances={"假设答案": [0.90], "原问题里的问题": [0.35]},
+    )
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "原问题里的问题", coll, ROE_CHUNK, use_vector=True)
+
+    assert path == retrieval.PATH_VECTOR, "这仍然是向量召回，不是关键词兜底"
+    assert [text for text, _ in hits] == [ROE_CHUNK]
+
+
+def test_fusion_drops_chunks_far_from_both_probes(monkeypatch):
+    """距离闸门仍在：两路都判「远」的块不许进 context（否则误召回会反弹）。"""
+    _enable_fusion(monkeypatch)
+    coll = _TwoProbeCollection(
+        by_query={"假设答案": ["远块"], "量子纠缠退相干时间": ["远块"]},
+        distances={"假设答案": [0.90], "量子纠缠退相干时间": [0.95]},
+    )
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "量子纠缠退相干时间", coll, "完全无关的一段文字", use_vector=True)
+
+    assert path == retrieval.PATH_KEYWORD
+    assert hits == []
+
+
+def test_fusion_skips_the_second_probe_when_hyde_degrades_to_the_question(monkeypatch):
+    """HyDE 退化（空内容/失败）时假设文本就是原问题：再查一遍是白花一次 embedding。"""
+    _enable_fusion(monkeypatch, hyde_text="净资产收益率是什么")
+    coll = _TwoProbeCollection({"净资产收益率是什么": [ROE_CHUNK]})
+
+    retrieval.hyde_retrieve_hits_with_path(
+        "净资产收益率是什么", coll, ROE_CHUNK, use_vector=True)
+
+    assert coll.calls == [["净资产收益率是什么"]]
+
+
+def test_fusion_tolerates_a_collection_that_returns_one_list(monkeypatch):
+    """老替身/老实现只回一条列表时不能炸：缺的那一路直接当作没召回。"""
+    class _OneListCollection(_TwoProbeCollection):
+        def query(self, query_texts, n_results):
+            self.calls.append(list(query_texts))
+            return {"documents": [[ROE_CHUNK]], "distances": [[0.30]]}
+
+    _enable_fusion(monkeypatch)
+    coll = _OneListCollection({})
+
+    _path, hits = retrieval.hyde_retrieve_hits_with_path(
+        "净资产收益率是什么", coll, ROE_CHUNK, use_vector=True)
+
+    assert [text for text, _ in hits] == [ROE_CHUNK]
+
+
+def test_fusion_keeps_the_rerank_contract(monkeypatch):
+    """融合 + 重排同时开：候选仍然不做距离预砍，打分仍然用**原问题**。"""
+    seen = {}
+
+    def fake_rerank(query, hits, top_n, min_score):
+        seen["query"] = query
+        seen["texts"] = [text for text, _ in hits]
+        return [(hits[0][0], hits[0][1], 0.9)]
+
+    _enable_fusion(monkeypatch)
+    monkeypatch.setattr(retrieval, "RERANK_ENABLED", True)
+    monkeypatch.setattr(retrieval, "RERANK_CANDIDATES", 10)
+    monkeypatch.setattr(retrieval, "RERANK_TOP_N", 1)
+    monkeypatch.setattr(retrieval, "RERANK_MIN_SCORE", 0.0)
+    monkeypatch.setattr(retrieval.rerank_mod, "rerank", fake_rerank)
+    coll = _TwoProbeCollection(
+        by_query={"假设答案": ["近块"], "原问题": ["远块"]},
+        distances={"假设答案": [0.30], "原问题": [0.95]},
+    )
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path("原问题", coll, "全文", use_vector=True)
+
+    assert seen["query"] == "原问题"
+    assert set(seen["texts"]) == {"远块", "近块"}, "超阈值的候选也要交给重排"
+    assert path == retrieval.PATH_VECTOR
+    assert [text for text, _ in hits] == ["近块"]
+
+
+def test_retrieval_exposes_fusion_knobs():
+    """评测脚本要靠 `retrieval.FUSION_ENABLED` / `RRF_K` / `FUSION_GATE` 覆盖开关
+    （漏暴露就是 AttributeError）。"""
+    for name in ("FUSION_ENABLED", "RRF_K", "FUSION_GATE"):
+        assert hasattr(retrieval, name), f"retrieval 缺 {name}"
+
+
+def test_union_gate_keeps_a_chunk_only_one_probe_finds_close(monkeypatch):
+    """union：一块只要贴着**任一**探针就算命中（这是召回侧的假设）。"""
+    _enable_fusion(monkeypatch)
+    monkeypatch.setattr(retrieval, "FUSION_GATE", retrieval.GATE_UNION)
+    coll = _TwoProbeCollection(
+        by_query={"假设答案": ["只有HyDE近"], "原问题": ["只有原问题近"]},
+        distances={"假设答案": [0.30], "原问题": [0.30]},
+    )
+
+    _path, hits = retrieval.hyde_retrieve_hits_with_path("原问题", coll, "全文", use_vector=True)
+
+    assert set(text for text, _ in hits) == {"只有HyDE近", "只有原问题近"}
+
+
+def test_intersect_gate_drops_chunks_that_only_one_probe_finds_close(monkeypatch):
+    """intersect：两路都近才进 context —— 这是给「无关提问被强行作答」准备的精度闸门。
+
+    无关提问往往只是**某一侧**看起来像（HyDE 生成的片段会漂向语料主题），
+    要求两路同时贴近，才能把它挡在门外。
+    """
+    _enable_fusion(monkeypatch)
+    monkeypatch.setattr(retrieval, "FUSION_GATE", retrieval.GATE_INTERSECT)
+    coll = _TwoProbeCollection(
+        by_query={"假设答案": ["只有HyDE近", "两路都近"], "原问题": ["两路都近", "只有原问题近"]},
+        distances={"假设答案": [0.30, 0.32], "原问题": [0.33, 0.30]},
+    )
+
+    _path, hits = retrieval.hyde_retrieve_hits_with_path("原问题", coll, "全文", use_vector=True)
+
+    assert [text for text, _ in hits] == ["两路都近"]
+
+
+def test_intersect_gate_drops_a_shared_chunk_that_is_far_from_one_probe(monkeypatch):
+    """两路都召回了、但其中一路判它远 —— 也不算命中（阈值仍然是每路的闸门）。"""
+    _enable_fusion(monkeypatch)
+    monkeypatch.setattr(retrieval, "FUSION_GATE", retrieval.GATE_INTERSECT)
+    coll = _TwoProbeCollection(
+        by_query={"假设答案": ["共享块"], "原问题": ["共享块"]},
+        distances={"假设答案": [0.30], "原问题": [0.90]},
+    )
+
+    path, hits = retrieval.hyde_retrieve_hits_with_path("原问题", coll, "全文", use_vector=True)
+
+    assert path == retrieval.PATH_KEYWORD, "全被挡下 → 与「距离全丢」同义，走关键词兜底"
+    assert hits == []
+
+
+def test_intersect_gate_with_one_empty_probe_does_not_wipe_the_other(monkeypatch):
+    """一路什么都没召回时，intersect 不能把另一路的命中全判死 —— 那种情况等于退化单探针。"""
+    _enable_fusion(monkeypatch)
+    monkeypatch.setattr(retrieval, "FUSION_GATE", retrieval.GATE_INTERSECT)
+    coll = _TwoProbeCollection(by_query={"原问题": [ROE_CHUNK]}, distances={"原问题": [0.30]})
+
+    _path, hits = retrieval.hyde_retrieve_hits_with_path("原问题", coll, ROE_CHUNK, use_vector=True)
+
+    assert [text for text, _ in hits] == [ROE_CHUNK]
+
+
+def test_intersect_gate_does_not_narrow_the_rerank_candidate_pool(monkeypatch):
+    """开了重排就由跨编码器当最终裁判：闸门口径**不**先砍候选（那是没重排时的分工）。"""
+    seen = {}
+
+    def fake_rerank(query, hits, top_n, min_score):
+        seen["texts"] = [text for text, _ in hits]
+        return [(hits[0][0], hits[0][1], 0.9)]
+
+    _enable_fusion(monkeypatch, gate=retrieval.GATE_INTERSECT)
+    monkeypatch.setattr(retrieval, "RERANK_ENABLED", True)
+    monkeypatch.setattr(retrieval, "RERANK_CANDIDATES", 10)
+    monkeypatch.setattr(retrieval, "RERANK_TOP_N", 1)
+    monkeypatch.setattr(retrieval, "RERANK_MIN_SCORE", 0.0)
+    monkeypatch.setattr(retrieval.rerank_mod, "rerank", fake_rerank)
+    coll = _TwoProbeCollection(
+        by_query={"假设答案": ["近块"], "原问题": ["远块"]},
+        distances={"假设答案": [0.30], "原问题": [0.95]},
+    )
+
+    retrieval.hyde_retrieve_hits_with_path("原问题", coll, "全文", use_vector=True)
+
+    assert set(seen["texts"]) == {"近块", "远块"}, "intersect 也不许在重排之前把远块砍掉"
+
+
+def test_unknown_gate_name_falls_back_to_union():
+    """拼错的 FUSION_GATE 不能把检索带崩：config 里已经归一到 union，这里钉住常量。"""
+    assert retrieval.GATE_UNION == "union"
+    assert retrieval.GATE_INTERSECT == "intersect"
+
+
+# ── 关键词兜底的切片缓存 ──
+
+def _counting_split(monkeypatch):
+    calls = []
+    real = pdf_ingestion.split_files
+
+    def counting(files, chunk_size=None, overlap=None):
+        calls.append(len(files))
+        return real(files, chunk_size=chunk_size, overlap=overlap)
+
+    monkeypatch.setattr(retrieval, "split_files", counting)
+    return calls
+
+
+def test_pairs_cache_splits_once_for_the_same_content(monkeypatch):
+    """同一条对话连问两次，兜底不该把 297KB 正文重新切一遍（真实语料实测 8.3ms/次）。"""
+    calls = _counting_split(monkeypatch)
+    files = [("a.md", "第一段。\n\n第二段。")]
+
+    first = retrieval._pairs_with_meta(files, "")
+    second = retrieval._pairs_with_meta([("a.md", "第一段。\n\n第二段。")], "")
+
+    assert calls == [1], "内容没变就该命中缓存"
+    assert first == second
+
+
+def test_pairs_cache_invalidates_when_content_changes(monkeypatch):
+    """换了正文（上传/删除文件）必须重新切：缓存键是内容哈希，不是文件数。"""
+    calls = _counting_split(monkeypatch)
+
+    retrieval._pairs_with_meta([("a.md", "旧正文。")], "")
+    retrieval._pairs_with_meta([("a.md", "新正文。")], "")
+
+    assert calls == [1, 1]
+
+
+def test_pairs_cache_tracks_the_chunk_size(monkeypatch):
+    """评测脚本会临时改 pdf_ingestion.CHUNK_SIZE 做对照：键里必须带上它，否则换了切片长度还吃旧缓存。"""
+    calls = _counting_split(monkeypatch)
+    files = [("a.md", "一句。" * 200)]
+    monkeypatch.setattr(pdf_ingestion, "CHUNK_SIZE", 480)
+
+    wide = retrieval._pairs_with_meta(files, "")
+    monkeypatch.setattr(pdf_ingestion, "CHUNK_SIZE", 120)
+    narrow = retrieval._pairs_with_meta(files, "")
+
+    assert calls == [1, 1]
+    assert len(narrow) > len(wide)
+
+
+def test_pairs_cache_is_bounded(monkeypatch):
+    """缓存必须有上限：不然多轮对话/多份上传会把正文全部留在内存里。"""
+    _counting_split(monkeypatch)
+
+    for i in range(retrieval.PAIRS_CACHE_MAX + 5):
+        retrieval._pairs_with_meta([("a.md", f"第 {i} 份正文。")], "")
+
+    assert len(retrieval._split_cache) <= retrieval.PAIRS_CACHE_MAX
+
+
+def test_keyword_fallback_reuses_the_cached_lowercase_texts(monkeypatch):
+    """兜底打分复用缓存的 lowercase，而不是每次把 1199 个块重新 lower 一遍（实测 1.0ms）。"""
+    seen = {}
+    monkeypatch.setattr(retrieval, "split_files", lambda files, **k: [(c, None) for c in CHUNKS])
+    monkeypatch.setattr(retrieval, "FUSION_ENABLED", False)
+    real_scores = retrieval._keyword_scores
+
+    def spy(question, chunks, lowered=None):
+        seen["lowered"] = lowered
+        return real_scores(question, chunks, lowered=lowered)
+
+    monkeypatch.setattr(retrieval, "_keyword_scores", spy)
+
+    retrieval.hyde_retrieve_hits_with_path(
+        "净资产收益率是什么", None, "全文", use_vector=False, files=[("a.md", "x")])
+
+    assert seen["lowered"] == [c.lower() for c in CHUNKS]
+
+
+def test_keyword_scores_accepts_precomputed_lowercase():
+    """预先算好的 lowercase 必须算出与现算逐位一致的分数（否则缓存会悄悄改排序）。"""
+    question = "什么是净资产收益率"
+
+    assert (retrieval._keyword_scores(question, CHUNKS)
+            == retrieval._keyword_scores(question, CHUNKS, lowered=[c.lower() for c in CHUNKS]))

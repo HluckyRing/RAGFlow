@@ -586,3 +586,47 @@ def test_suggest_score_threshold_none_when_overlapping_or_missing():
     assert ev.suggest_score_threshold([0.5, 0.9], [0.4, 0.6]) is None, "重叠就没有可用的阈值"
     assert ev.suggest_score_threshold([], [0.4]) is None
     assert ev.suggest_score_threshold([0.9], []) is None
+
+
+# ── HyDE 文本落盘缓存：让「开/关某个开关」的两轮跑在**同一批**假设文本上 ──
+
+def test_save_and_load_hyde_cache_roundtrip(tmp_path):
+    path = tmp_path / "hyde.json"
+
+    ev.save_hyde_cache(str(path), {"漏损率怎么算": "假设片段"})
+
+    assert ev.load_hyde_cache(str(path)) == {"漏损率怎么算": "假设片段"}
+
+
+def test_load_hyde_cache_tolerates_missing_or_broken_file(tmp_path):
+    """缓存文件不存在、不是 JSON、不是对象 —— 一律当成空缓存，不能把评测带崩。"""
+    missing = tmp_path / "nope.json"
+    assert ev.load_hyde_cache(str(missing)) == {}
+
+    broken = tmp_path / "broken.json"
+    broken.write_text("{不是 json", encoding="utf-8")
+    assert ev.load_hyde_cache(str(broken)) == {}
+
+    not_object = tmp_path / "list.json"
+    not_object.write_text("[1, 2, 3]", encoding="utf-8")
+    assert ev.load_hyde_cache(str(not_object)) == {}
+
+
+def test_saved_hyde_cache_makes_the_second_run_free_and_identical(tmp_path):
+    """这是对比实验的地基：第二轮直接复用第一轮的假设文本，不再调大模型。
+
+    没有它就只能拿两批「大模型随机生成的不同文本」比配置，MRR 的差异分不清是
+    开关的作用还是 HyDE 的随机性（2026-10-06 实测同一份配置连跑两次 MRR 0.972 / 0.958）。
+    """
+    path = tmp_path / "hyde.json"
+    first = ev.cached_generate(lambda q: f"假设：{q}")
+    first("问题A")
+
+    ev.save_hyde_cache(str(path), {"问题A": first("问题A")})
+
+    def boom(question):                       # 第二轮绝不该再调大模型
+        raise AssertionError("缓存命中时不应调用大模型")
+
+    second = ev.cached_generate(boom, ev.load_hyde_cache(str(path)))
+
+    assert second("问题A") == "假设：问题A"

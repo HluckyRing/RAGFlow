@@ -42,7 +42,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.eval_retrieval import (  # noqa: E402
-    DEFAULT_QUERIES, cached_generate, exceeds_model_window, hyde_self_check)
+    DEFAULT_QUERIES, cached_generate, exceeds_model_window, hyde_self_check,
+    load_hyde_cache, save_hyde_cache)
 from src.config import logger  # noqa: E402
 
 
@@ -120,15 +121,40 @@ def band_stats(distances, threshold):
     }
 
 
-def best_distance(collection, query_text, top_k, count):
-    """原始查询（不经阈值过滤）的最佳距离；查不到或出错返回 None。"""
+def probe_distances(collection, hyde_text, question, top_k, count):
+    """两条探针各自的**最佳距离**：`(HyDE 侧, 原问题侧)`。
+
+    双路融合的闸门用「两路里最近的那个距离」，所以这两列取 min 就是融合口径的距离。
+    两条探针合成一次 query 调用（Chroma 一次算两条 embedding）。
+    """
     try:
-        result = collection.query(query_texts=[query_text], n_results=min(top_k, count))
+        result = collection.query(query_texts=[hyde_text, question],
+                                  n_results=min(top_k, count))
     except Exception as e:
         logger.warning("查询失败，跳过这条：%s", str(e)[:80])
-        return None
-    dists = (result.get("distances") or [[]])[0]
-    return min(dists) if dists else None
+        return None, None
+    dists = result.get("distances") or []
+    hyde_min = min(dists[0]) if dists and dists[0] else None
+    question_min = min(dists[1]) if len(dists) > 1 and dists[1] else None
+    return hyde_min, question_min
+
+
+def retrieval_outcome(collection, question, conv, top_k):
+    """真跑一次线上检索路径（距离闸门 + 可选融合 + 关键词兜底）：`(路径, 块数)`。
+
+    距离带只能说明「贴得多近」，返回不返回内容还取决于闸门和兜底 —— 误伤要看这一列。
+    延迟导入 src.retrieval：让只测纯函数的用例不必拉起 chromadb。
+    """
+    import src.retrieval as retrieval_mod
+
+    try:
+        path, hits = retrieval_mod.hyde_retrieve_hits_with_path(
+            question, collection, "\n\n".join(text for _, text in conv["files"]),
+            use_vector=True, top_k=top_k, files=conv["files"])
+    except Exception as e:
+        logger.warning("检索失败，跳过这条：%s", str(e)[:80])
+        return None, 0
+    return path, len(hits)
 
 
 def _num(value):
@@ -153,6 +179,12 @@ def main(argv=None):
     parser.add_argument("--top-k", type=int, default=5, help="原始查询取几块，默认 5")
     parser.add_argument("--queries", default=str(DEFAULT_QUERIES),
                         help="无关提问代理的标注文件（只取负样本）")
+    parser.add_argument("--fusion", action="store_true",
+                        help="开启双路融合（原问题 + HyDE 各当一次探针，按 RRF 合并名次）")
+    parser.add_argument("--fusion-gate", default=None, choices=["union", "intersect"],
+                        help="融合闸门：union=任一路近就算近；intersect=两路都得近")
+    parser.add_argument("--hyde-cache", default=None,
+                        help="把假设文本落盘到该 JSON；已存在就直接复用（对比两轮用同一批文本）")
     parser.add_argument("--rerank", action="store_true",
                         help="开启跨编码器精排（首次会下载约 1.1GB 权重）")
     parser.add_argument("--rerank-min-score", type=float, default=None,
@@ -181,11 +213,16 @@ def main(argv=None):
         retrieval.RERANK_ENABLED = True
         if args.rerank_min_score is not None:
             retrieval.RERANK_MIN_SCORE = args.rerank_min_score
+    # 融合开关按命令行覆盖：不传就是「关」，免得本机 .env 里的默认值偷偷影响基线数字
+    retrieval.FUSION_ENABLED = bool(args.fusion)
+    if args.fusion_gate is not None:
+        retrieval.FUSION_GATE = args.fusion_gate
 
     negatives = negative_questions(args.queries)
     embedding_fn = retrieval._get_embedding_fn()
-    # 同一句话只生成一次假设文本、且跨对话复用（助手函数住在 eval_retrieval，别处也用它）
-    hyde_cache = {}
+    # 同一句话只生成一次假设文本、且跨对话复用（助手函数住在 eval_retrieval，别处也用它）；
+    # 给了 --hyde-cache 还能跨轮复用，对比「融合开/关」时两轮才是同一批文本
+    hyde_cache = load_hyde_cache(args.hyde_cache) if args.hyde_cache else {}
     generate = cached_generate(retrieval._generate_hyde, hyde_cache)  # noqa: SLF001
 
     # 切窗诊断要 tokenizer；拿不到就跳过这一项，不让整次统计失败
@@ -207,6 +244,8 @@ def main(argv=None):
               f"保留 {retrieval.RERANK_TOP_N}；分数下限 {retrieval.RERANK_MIN_SCORE}）")
         print("  注意：下面的距离带描述的是**候选池**、不是最终进 context 的块；"
               "真实语料的精排分数带尚未实现（见 docs/retrieval-baseline-2026-10-06.md）。")
+    print(f"双路融合：{'开启' if retrieval.FUSION_ENABLED else '关闭'}"
+          f"（闸门={retrieval.FUSION_GATE}，RRF k={retrieval.RRF_K}）")
     print()
 
     if args.hyde:
@@ -227,6 +266,11 @@ def main(argv=None):
             print()
 
     real_distances, proxy_distances, over_lengths = [], [], []
+    # 双路探针分开记：HyDE 侧 / 原问题侧；融合口径就是两者的 min
+    real_hyde, real_question = [], []
+    proxy_hyde, proxy_question = [], []
+    # 线上口径复核：真跑检索路径后「有没有返回内容」
+    real_outcome, proxy_outcome = [], []
     total_chunks = total_over = 0
     for conv in conversations:
         pairs = split_files(conv["files"])
@@ -249,19 +293,48 @@ def main(argv=None):
 
         # 真实提问与无关代理走同一条查询路径（--hyde 时都用 HyDE 文本查）
         def _ask(question):
-            return best_distance(collection, generate(question), args.top_k, len(chunks))
+            return probe_distances(collection, generate(question), question,
+                                   args.top_k, len(chunks))
 
-        conv_real = [d for d in (_ask(q) for q in conv["questions"]) if d is not None]
-        conv_proxy = [d for d in (_ask(q) for q in negatives) if d is not None]
-        real_distances += conv_real
-        proxy_distances += conv_proxy
+        conv_real_pairs = [d for d in (_ask(q) for q in conv["questions"]) if d[0] is not None]
+        conv_proxy_pairs = [d for d in (_ask(q) for q in negatives) if d[0] is not None]
+        conv_real_hyde = [hyde for hyde, _q in conv_real_pairs]
+        conv_real_question = [q for _h, q in conv_real_pairs if q is not None]
+        conv_proxy_hyde = [hyde for hyde, _q in conv_proxy_pairs]
+        conv_proxy_question = [q for _h, q in conv_proxy_pairs if q is not None]
+        real_hyde += conv_real_hyde
+        real_question += conv_real_question
+        proxy_hyde += conv_proxy_hyde
+        proxy_question += conv_proxy_question
+        real_distances += conv_real_hyde
+        proxy_distances += conv_proxy_hyde
+
+        # 线上口径复核（含闸门与兜底）：真实提问应尽量有内容，无关代理应尽量空
+        conv_real_out = [(q, retrieval_outcome(collection, q, conv, args.top_k))
+                         for q in conv["questions"]]
+        conv_proxy_out = [(q, retrieval_outcome(collection, q, conv, args.top_k))
+                          for q in negatives]
+        real_outcome += [outcome for _q, outcome in conv_real_out]
+        proxy_outcome += [outcome for _q, outcome in conv_proxy_out]
+
+        def _nonempty(outcomes):
+            asked = [(path, count) for path, count in outcomes if path is not None]
+            returned = [item for item in asked if item[1] > 0]
+            fallback = [item for item in returned if item[0] == "keyword"]
+            return len(returned), len(asked), len(fallback)
+
+        real_hit, real_n, real_fb = _nonempty([o for _q, o in conv_real_out])
+        proxy_hit, proxy_n, proxy_fb = _nonempty([o for _q, o in conv_proxy_out])
 
         over_text = f"{len(conv_over)}/{len(chunks)}" if encode_len is not None else "未测"
         print(f"[{conv['conv_id']}] 文件={len(conv['files'])} 块={len(chunks)} 超窗={over_text}"
               f" 真实提问={len(conv['questions'])}")
-        _print_band("    真实提问最佳距离", band_stats(conv_real, MAX_DISTANCE), MAX_DISTANCE)
+        _print_band("    真实提问最佳距离", band_stats(conv_real_hyde, MAX_DISTANCE), MAX_DISTANCE)
         if negatives:
-            _print_band("    无关代理最佳距离", band_stats(conv_proxy, MAX_DISTANCE), MAX_DISTANCE)
+            _print_band("    无关代理最佳距离", band_stats(conv_proxy_hyde, MAX_DISTANCE), MAX_DISTANCE)
+        print(f"    线上口径：真实提问返回内容 {real_hit}/{real_n}"
+              f"（其中关键词兜底 {real_fb} 条）；无关代理返回内容 {proxy_hit}/{proxy_n}"
+              f"（兜底 {proxy_fb} 条）")
 
     print()
     print("=== 真实语料基线（只记数字）===")
@@ -274,16 +347,44 @@ def main(argv=None):
     else:
         print(f"chunk 总数：{total_chunks}（切窗诊断不可用）")
     _print_band("真实提问最佳距离", band_stats(real_distances, MAX_DISTANCE), MAX_DISTANCE)
+    _print_band("真实提问最佳距离（原问题探针）",
+                band_stats(real_question, MAX_DISTANCE), MAX_DISTANCE)
+    _print_band("真实提问最佳距离（融合 = 两路取近）",
+                band_stats([min(a, b) for a, b in zip(real_hyde, real_question)
+                            if a is not None and b is not None], MAX_DISTANCE), MAX_DISTANCE)
     if negatives:
         _print_band("无关提问代理距离", band_stats(proxy_distances, MAX_DISTANCE), MAX_DISTANCE)
+        _print_band("无关提问代理距离（原问题探针）",
+                    band_stats(proxy_question, MAX_DISTANCE), MAX_DISTANCE)
+        _print_band("无关提问代理距离（融合 = 两路取近）",
+                    band_stats([min(a, b) for a, b in zip(proxy_hyde, proxy_question)
+                                if a is not None and b is not None], MAX_DISTANCE), MAX_DISTANCE)
         print(f"  （代理 = 评测标注里的 {len(negatives)} 条负样本，套到真实语料上；"
               f"真实语料没有 gold，这不是它的真实负样本）")
+
+    real_returned = [item for item in real_outcome if item[0] is not None]
+    proxy_returned = [item for item in proxy_outcome if item[0] is not None]
+    print()
+    print("--- 线上口径复核（跑完整检索路径：距离闸门 + 关键词兜底 + 融合开关）---")
+    print(f"真实提问返回了内容：{sum(1 for _p, n in real_returned if n > 0)}"
+          f"/{len(real_returned)}"
+          f"（关键词兜底 {sum(1 for p, n in real_returned if n > 0 and p == 'keyword')} 条）")
+    if proxy_returned:
+        print(f"无关代理返回了内容：{sum(1 for _p, n in proxy_returned if n > 0)}"
+              f"/{len(proxy_returned)}"
+              f"（关键词兜底 {sum(1 for p, n in proxy_returned if n > 0 and p == 'keyword')} 条）"
+              f"  ← 越小越好")
     if args.hyde:
         print(f"HyDE 调用：{len(hyde_cache)} 次（同一问题只生成一次；"
               f"{len(real_distances) + len(proxy_distances)} 条查询复用它）")
     else:
         print("提示：这版是 no-hyde 口径，而线上走 HyDE —— 两者距离不可直接互换，"
               "要重标 MAX_DISTANCE 得用 --hyde 重跑。")
+
+    if args.hyde and args.hyde_cache:
+        # 落盘放在最后：中途 return 2（自检失败）不写，免得半成品被下一轮当基线复用
+        save_hyde_cache(args.hyde_cache, hyde_cache)
+        print(f"假设文本已缓存：{args.hyde_cache}（{len(hyde_cache)} 条）")
     return 0
 
 

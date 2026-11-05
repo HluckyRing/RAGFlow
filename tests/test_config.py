@@ -75,3 +75,16 @@ def test_client_gets_configured_timeout():
 def test_host_defaults_to_loopback_and_port_to_8080():
     assert config.HOST == "127.0.0.1", "默认只监听回环，避免无鉴权服务暴露到局域网"
     assert config.PORT == 8080
+
+
+# ── 双路融合的默认值（2026-11-05 实测标定，改它请连文档一起改）──
+
+def test_fusion_defaults_follow_the_measured_baseline():
+    """默认值是量出来的，不是拍的：intersect 闸门在合成语料把误召回 2/5、1/5 都压到 0/5，
+    真实语料无关代理 17/20→13/20，代价 +17ms/问 —— 刚好过「误召回 0/5 且延迟 ≤1.5s」那条线。
+
+    这条用例是防止有人把默认值改回去却忘了改文档（也可能反过来）。
+    """
+    assert config.FUSION_ENABLED is True
+    assert config.FUSION_GATE == "intersect"
+    assert config.RRF_K == 60

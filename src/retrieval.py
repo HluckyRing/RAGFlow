@@ -1,11 +1,16 @@
 import re
 import hashlib
+from collections import OrderedDict
+
 import chromadb
 from chromadb.utils import embedding_functions
+
+import src.pdf_ingestion as pdf_ingestion
 from src import rerank as rerank_mod
 from src.config import (logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME,
                         VECTOR_DB_PATH, TOP_K, MAX_DISTANCE, RERANK_ENABLED, RERANK_MODEL,
-                        RERANK_CANDIDATES, RERANK_TOP_N, RERANK_MIN_SCORE)
+                        RERANK_CANDIDATES, RERANK_TOP_N, RERANK_MIN_SCORE,
+                        FUSION_ENABLED, RRF_K, FUSION_GATE)
 from src.pdf_ingestion import split_files, split_text
 from src.prompts import HYDE_SYSTEM_PROMPT
 from src.text_utils import extract_terms
@@ -74,17 +79,19 @@ def drop_collection(collection_name):
         return False
 
 
-def _keyword_scores(question, chunks):
+def _keyword_scores(question, chunks, lowered=None):
     """关键词打分：中文 2/3-gram + 英文单词。返回 [(分数, 下标)]，按分数降序。
 
     除以 sqrt(长度) 归一化，避免长段落仅因为字多就排到前面。
+    `lowered` 是预先算好的小写正文（切片缓存里存着），省掉每次把上千块重新 lower 一遍；
+    归一化仍用原文长度，所以传不传它算出来的分数逐位一致。
     """
     terms = extract_terms(question)
     if not terms or not chunks:
         return []
     scored = []
     for index, chunk in enumerate(chunks):
-        low = chunk.lower()
+        low = chunk.lower() if lowered is None else lowered[index]
         score = sum(low.count(t) * len(t) for t in terms)
         if score > 0:
             scored.append((score / (len(chunk) ** 0.5), index))
@@ -185,32 +192,133 @@ def _pairs_with_meta(files, full_text):
     给了 files 就按文件分别切片（块不跨文件，来源才唯一）；没给就退回旧的整篇切片、
     来源标成 None —— 老调用方、老测试与老索引都能继续工作。
     """
+    return _cached_pairs(files, full_text)[0]
+
+
+# ── 切片缓存 ──
+# 关键词兜底每问一次都要把整篇正文重新切一遍：真实语料 297KB / 1199 块实测 8.3 ms，
+# 而同一份对话的正文几乎不变。缓存键是「正文内容 + 当前切片参数」的 sha1，所以上传/
+# 删除文件后天然失效（不需要谁去主动 clear）；容量有上限，免得长驻服务把多轮对话的
+# 正文全留在内存里。
+PAIRS_CACHE_MAX = 8
+_split_cache = OrderedDict()
+
+
+def clear_pairs_cache():
+    """清空切片缓存。评测脚本换切片参数、或测试用例之间要互不干扰时用。"""
+    _split_cache.clear()
+
+
+def _content_key(files, full_text):
+    """缓存键：内容 + 切片参数。用的是 pdf_ingestion 当前的常量（评测会临时改它）。"""
+    digest = hashlib.sha1()
+    digest.update(f"{pdf_ingestion.CHUNK_SIZE}:{pdf_ingestion.CHUNK_OVERLAP}".encode())
     if files:
-        return split_files(files)
-    return [(chunk, None) for chunk in split_text(full_text)]
+        for name, text in files:
+            digest.update(b"\x01")
+            digest.update((name or "").encode())
+            digest.update(b"\x02")
+            digest.update((text or "").encode())
+    else:
+        digest.update(b"\x03")
+        digest.update((full_text or "").encode())
+    return digest.hexdigest()
 
 
-def _hits_with_meta(docs, metadatas):
-    """全部候选、保持距离序：开了重排就不再用距离先砍人，取舍权交给跨编码器。"""
+def _cached_pairs(files, full_text):
+    """返回 `([(块, meta), ...], [小写块, ...])`；同一份内容只切一次。"""
+    key = _content_key(files, full_text)
+    entry = _split_cache.get(key)
+    if entry is not None:
+        _split_cache.move_to_end(key)          # LRU：常用的留到最后
+        return entry
+    if files:
+        pairs = split_files(files)
+    else:
+        pairs = [(chunk, None) for chunk in split_text(full_text)]
+    entry = (pairs, [chunk.lower() for chunk, _ in pairs])
+    _split_cache[key] = entry
+    while len(_split_cache) > PAIRS_CACHE_MAX:
+        _split_cache.popitem(last=False)
+    return entry
+
+
+def _probe_hits(docs, distances, metadatas):
+    """一路向量召回 → [(文本, meta, 距离)]，保持 Chroma 的距离序（近的在前）。"""
     hits = []
-    for index, text in enumerate(docs):
-        meta = metadatas[index] if index < len(metadatas) else None
-        hits.append((text, meta if isinstance(meta, dict) else None))
+    for index, text in enumerate(docs or []):
+        meta = metadatas[index] if index < len(metadatas or []) else None
+        dist = distances[index] if index < len(distances or []) else None
+        hits.append((text, meta if isinstance(meta, dict) else None,
+                     None if dist is None else float(dist)))
     return hits
 
 
-def _kept_hits(docs, distances, metadatas, max_distance):
-    """按距离过滤，连来源一起返回 [(文本, meta), ...]。"""
-    kept = _kept_indices(distances, max_distance)
-    if kept is None:
-        kept = range(len(docs))
-    hits = []
-    for index in kept:
-        if index >= len(docs):
-            break
-        meta = metadatas[index] if index < len(metadatas) else None
-        hits.append((docs[index], meta if isinstance(meta, dict) else None))
-    return hits
+def _rrf_fuse(ranked_lists, k=None):
+    """倒数排名融合（RRF）：每路第 rank 位的文本得 1/(k+rank) 分，跨路相加。
+
+    返回 [(文本, 融合分)]，分数降序（同分按文本排，保证结果可重复）。
+    用名次而不是距离：两路的距离虽是同一把尺子，但「这路排第 1」比「0.42 vs 0.44」
+    稳得多，而且 RRF 天然把**两路都认可**的块顶到前面。
+    """
+    if k is None:
+        k = RRF_K
+    scores = {}
+    for ranked in ranked_lists:
+        for rank, text in enumerate(ranked, 1):
+            scores[text] = scores.get(text, 0.0) + 1.0 / (k + rank)
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _fuse_probes(probes, max_distance=None, gate=None):
+    """多路向量召回 → `(全部候选, 过闸门的候选)`，都按融合分降序。
+
+    元素是 `(文本, meta, 两路里最近的距离)`。闸门口径由 `FUSION_GATE` 决定：
+
+    - `union`（任一路近就算近）：HyDE 侧漂了、原问题侧还贴着答案的提问能被救回来；
+    - `intersect`（**两路都得近**）：无关提问往往只是某一侧「像」，两路都贴上去才进
+      context —— 这是给「无关问题被强行作答」用的精度闸门。
+
+    两种口径都保留在代码里是因为它们是两个不同的假设，只能靠实测选（见
+    docs/retrieval-baseline-2026-10-06.md「双路融合」一节）。
+    """
+    if max_distance is None:
+        max_distance = MAX_DISTANCE
+    if gate is None:
+        gate = FUSION_GATE
+    active = [probe for probe in probes if probe]
+    entries = {}                                   # 文本 -> 记账
+    for probe_index, probe in enumerate(probes):
+        for rank, (text, meta, dist) in enumerate(probe, 1):
+            entry = entries.get(text)
+            if entry is None:
+                entry = {"score": 0.0, "meta": meta, "min_dist": dist,
+                         "order": len(entries), "seen": set(), "far": 0}
+                entries[text] = entry
+            entry["score"] += 1.0 / (RRF_K + rank)
+            entry["seen"].add(probe_index)
+            if entry["meta"] is None and meta is not None:
+                entry["meta"] = meta
+            near = dist is None or dist <= max_distance
+            if dist is not None and (entry["min_dist"] is None or dist < entry["min_dist"]):
+                entry["min_dist"] = dist
+            if not near:
+                entry["far"] += 1
+    ranked = sorted(entries.items(),
+                    key=lambda kv: (-kv[1]["score"],
+                                    kv[1]["min_dist"] if kv[1]["min_dist"] is not None
+                                    else float("inf"),
+                                    kv[1]["order"]))
+    filled = [(text, entry["meta"], entry["min_dist"]) for text, entry in ranked]
+
+    def _kept(text):
+        entry = entries[text]
+        if gate == GATE_INTERSECT:
+            # 两路都召回了它、而且每一路都在阈值内
+            return bool(active) and len(entry["seen"]) >= len(active) and entry["far"] == 0
+        return entry["far"] < len(entry["seen"]) or entry["min_dist"] is None
+
+    return filled, [hit for hit in filled if _kept(hit[0])]
 
 
 # 检索路径标签：向量召回与「阈值全丢后的关键词兜底」的分数含义完全不同 ——
@@ -218,6 +326,21 @@ def _kept_hits(docs, distances, metadatas, max_distance):
 # 否则会把兜底捞回来的样本当成「向量检索质量」，从而误判阈值的好坏。
 PATH_VECTOR = "vector"
 PATH_KEYWORD = "keyword"
+
+# 双路融合的闸门口径
+GATE_UNION = "union"          # 任一路近就算近（提高召回）
+GATE_INTERSECT = "intersect"  # 两路都得近（提高精度）
+
+
+def _probe_queries(question, search_query):
+    """要拿哪几路文本去查向量库。开了融合就是 [HyDE, 原问题]，否则只有 HyDE 一路。
+
+    HyDE 退化（生成失败/空内容）时假设文本就是原问题，这时**不**再查第二遍 ——
+    重复探针只会白花一次 embedding，融合结果也不会变。
+    """
+    if FUSION_ENABLED and search_query.strip() != question.strip():
+        return [search_query, question]
+    return [search_query]
 
 
 def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, top_k=None, files=None):
@@ -233,6 +356,7 @@ def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, to
     if use_vector and collection is not None:
         # 只有真要查向量库时才值得花一次 API 调用来生成 HyDE
         search_query = _generate_hyde(question)
+        probes_wanted = _probe_queries(question, search_query)
         try:
             count = collection.count()
             if count == 0:
@@ -245,38 +369,55 @@ def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, to
             if count > 0:
                 # 开了重排就多召回一些候选：距离在这条路上不再当最终裁判，别先用它砍人
                 limit = max(top_k, RERANK_CANDIDATES) if RERANK_ENABLED else top_k
+                # 两路探针合成**一次** query 调用：Chroma 一次算两条 embedding 再各自检索，
+                # 比两次往返省一次进程内开销。
                 results = collection.query(
-                    query_texts=[search_query],
+                    query_texts=probes_wanted,
                     n_results=min(limit, count)
                 )
-                docs = results["documents"][0] if results.get("documents") else []
-                dists = results["distances"][0] if results.get("distances") else []
-                metas = results["metadatas"][0] if results.get("metadatas") else []
-                if docs:
+                docs_all = results.get("documents") or []
+                dists_all = results.get("distances") or []
+                metas_all = results.get("metadatas") or []
+                # 老替身可能只回一条列表：缺的那一路当作没召回，绝不按错位去读
+                probes = []
+                for i, docs in enumerate(docs_all):
+                    probes.append(_probe_hits(
+                        docs,
+                        dists_all[i] if i < len(dists_all) else [],
+                        metas_all[i] if i < len(metas_all) else []))
+                if probes and any(probes):
+                    ordered, kept = _fuse_probes(probes, MAX_DISTANCE)
+                    if len(probes) > 1:
+                        logger.info(
+                            "双路融合（%s）：HyDE 探针 %d 块 / 原问题探针 %d 块 → 候选 %d 块，"
+                            "过距离闸门 %d 块", FUSION_GATE, len(probes[0]), len(probes[1]),
+                            len(ordered), len(kept))
                     if RERANK_ENABLED:
                         # 打分用**原问题**：跨编码器的训练分布是 question → passage，
-                        # HyDE 文本（像文档的片段）当 query 属于分布外
-                        candidates = _hits_with_meta(docs, metas)
+                        # HyDE 文本（像文档的片段）当 query 属于分布外。
+                        # 候选池是**融合排序后的全部候选**，不经距离/闸门预砍 —— 开了重排就由
+                        # 它当最终裁判（闸门口径只在没有重排时才决定取舍）。
+                        candidates = [(text, meta) for text, meta, _dist in ordered][:max(RERANK_CANDIDATES, 1)]
                         reranked = rerank_mod.rerank(question, candidates,
                                                      RERANK_TOP_N, RERANK_MIN_SCORE)
                         if reranked is None:
-                            # 重排不可用：退回距离阈值，绝不把一堆远块原样塞给模型
-                            hits = _kept_hits(docs, dists, metas, MAX_DISTANCE)
+                            # 重排不可用：退回距离闸门，绝不把一堆远块原样塞给模型
+                            hits = [(text, meta) for text, meta, _dist in kept]
                         else:
                             hits = [(text, meta) for text, meta, _score in reranked]
                             logger.info("重排 %d 个候选 → 保留 %d 块（分数下限 %.2f）",
                                         len(candidates), len(hits), RERANK_MIN_SCORE)
                     else:
-                        hits = _kept_hits(docs, dists, metas, MAX_DISTANCE)
+                        hits = [(text, meta) for text, meta, _dist in kept]
         except Exception as e:
             logger.warning("向量检索失败，降级为关键词检索: %s", str(e)[:80])
 
     if not hits:
         logger.info("使用关键词检索作为备用方案")
         # 关键词检索用原始问题：search_query 是 HyDE 生成的长段落，不适合做词频匹配
-        pairs = _pairs_with_meta(files, full_text)
+        pairs, lowered = _cached_pairs(files, full_text)
         texts = [text for text, _ in pairs]
-        tops = _keyword_scores(question, texts)[:3]
+        tops = _keyword_scores(question, texts, lowered=lowered)[:3]
         hits = [pairs[index] for _, index in tops]
         return PATH_KEYWORD, hits
 
