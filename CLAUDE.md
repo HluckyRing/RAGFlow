@@ -41,7 +41,7 @@ python -m src.server            # 等价写法
 | `src/loaders.py` | 多格式文件加载器，通过 `LOADERS` 字典按扩展名分发，`load_file()` 为统一入口；`_decode_bytes()` 做多编码回退（utf-8-sig/utf-8/gbk/gb2312/big5/latin-1） |
 | `src/pdf_ingestion.py` | `split_text()` — 按段落切分文本，支持 chunk_size/overlap 可配 |
 | `src/text_utils.py` | 中文文本轻量处理：`strip_question_words()` 剥离疑问词，`content_phrases()` 抽实义片段（指代消解用），`extract_terms()` 生成 2/3-gram（关键词检索用） |
-| `src/retrieval.py` | ChromaDB 向量存储管理 + `hyde_retrieve()` 核心检索（向量检索 → 失败降级关键词匹配） |
+| `src/retrieval.py` | ChromaDB 向量存储管理 + `hyde_retrieve()` 核心检索（双路融合 → 距离闸门 → 失败降级关键词匹配） |
 | `src/llm.py` | `resolve_query()` 指代消解（短问题 + 代词时拼接上文实体）+ `stream_answer()` SSE 流式生成 |
 | `src/prompts.py` | HyDE 和 QA 两套 system prompt 模板 |
 | `src/server.py` | FastAPI 应用：会话/对话 CRUD、文件上传、SSE 聊天接口 |
@@ -83,8 +83,10 @@ python -m src.server            # 等价写法
 - **孤儿 collection 清理**: `scripts/cleanup_orphan_collections.py` —— 默认干跑，要 `--apply` 才真删；只删名字以 `kb_conv_` 开头且不被任何状态文件引用的集合；如果一个被引用的集合都没扫到（通常是路径指错）就中止，只有 `--force` 能越过。状态来源含 `state/*.json` 与旧版 `kb_state.json(.migrated)`
 - **重建索引按 conv_id 去重**: `scripts/reindex_all.py` —— 默认干跑，要 `--apply` 才真重建；一个状态文件都没扫到就中止，只有 `--force` 能越过。**同一个 conv_id 只重建一次**：`state/*.json` 会话文件先扫、优先保留，旧版 `kb_state.json(.migrated)` 只补 `state/` 里没有的对话 —— 集合名由 conv_id 派生，两份都重建就是让后跑的迁移前旧快照**覆盖线上索引**（真实数据里 `.migrated` 与 `state/` 就有两个同 conv_id、内容不同的对话）。被跳过的重复项打印 `[跳过]` 并记 WARNING
 - **评测语料的结构标记不存二进制**: `scripts/eval_retrieval.py` 的语料目录里，带页标记的那份是文本 spec `tests/fixtures/eval_corpus/eval_pptx.json`（评测现场用 python-pptx 生成 pptx → 真实 `loaders.load_pptx` 抽文本），仓库不放 `.pptx`。标注用可选字段 `expect_sections`（如 `["第 3 页"]`）驱动 **section 归属正确率**；**标了页码而命中块没有 section 必须判 False**（判成「不知道」会让这条指标静默失效），并且要用保险丝钉住「标注的页码真的存在于该文件的切片里」。另外每条样本都记 `path`（`vector`/`keyword`）：**关键词兜底样本的分数是 2-gram 词面打分、不是向量距离**，看指标前先按它拆开（2026-10-06 实测 41 条里 7 条走兜底，且含全部负样本）
-- **真实语料只记数字不留文件**: 真实语料基线用 `scripts/eval_real_corpus.py` —— 只读 `state/*.json` 的 `files[].file_text`、`chromadb.EphemeralClient` 临时库、不落文件、不打印正文，数字记进 `docs/retrieval-baseline-2026-10-06.md`。真实语料没有 gold，**不要**给它套 recall/MRR/section 那套指标（只会得到看起来像「检索坏了」的假数字）；「无关提问」只能用合成负样本当代理并标注清楚。默认 `--no-hyde`（免费可重复），`--hyde` 才花额度、且那才是线上口径
+- **真实语料只记数字不留文件**: 真实语料基线用 `scripts/eval_real_corpus.py` —— 只读 `state/*.json` 的 `files[].file_text`、`chromadb.EphemeralClient` 临时库、不落文件、不打印正文，数字记进 `docs/retrieval-baseline-2026-10-06.md`。真实语料没有 gold，**不要**给它套 recall/MRR/section 那套指标（只会得到看起来像「检索坏了」的假数字）；「无关提问」只能用合成负样本当代理并标注清楚。默认 `--no-hyde`（免费可重复），`--hyde` 才花额度、且那才是线上口径。两个脚本都支持 `--fusion` / `--fusion-gate`，`eval_retrieval.py` 还有 `--hyde-cache <json>`：**对比不同开关时必须带上它**，否则两轮比的是大模型随机性（同一配置连跑两次 MRR 0.972 / 0.958）
 - **推理模型的小 max_tokens 会把内容吃光**: `deepseek-flash` 是推理模型，`_generate_hyde` 写死的 `max_tokens=200` 会被 reasoning 全吃掉（实测 `finish_reason=length`、`reasoning_tokens=200`、`content` 空串），空内容又被 `or question` 悄悄兜成原问题 —— **HyDE 自模型切到 `deepseek-flash` 起一直是关着的**（2026-10-06 才发现），此前标着「HyDE 口径」的数字全是 no-hyde。修法：这次调用显式 `extra_body={"thinking": {"type": "disabled"}}`（HyDE 不需要推理链、cap 保持 200），**空内容必须记 WARNING**；`eval_real_corpus.py --hyde` 跑前有自检，生成文本与原问题相同就直接中止
+- **双路融合（默认开，闸门 intersect）**: `retrieval._probe_queries` 把**原问题**和 **HyDE 文本**各当一次向量探针，一次 `query(query_texts=[...])` 拿回两条候选列表，再用 RRF（`_rrf_fuse`，k=`RRF_K`=60）合并名次。闸门 `FUSION_GATE` 两种口径都留着：`union`=任一路近就算近（召回优先，实测不降误召回）、`intersect`=**两路都得近**（**默认**，精度优先）。2026-11-05 实测：合成语料两批独立假设文本下 `intersect` 把误召回 2/5、1/5 都压到 **0/5**，recall@5 与文件/section 归属一分不掉，MRR 0.972→1.000 / 0.986；真实语料（1199 块）无关提问代理漏进 17/20→13/20、真实提问 11/12 不变；代价是每问多一次 embedding，**实测 +17 ms**。这条过了「误召回 0/5 且中位延迟 ≤1.5s」的默认开线（reranker 因 3.9s 没过）。副作用要记住：闸门收窄后**更多样本落进关键词兜底**（3–4 条 → 7/41），那部分分数是 2-gram 词面分。HyDE 退化（写不出内容、假设文本=原问题）时自动只查一路，不会白花第二次 embedding。**开了重排时闸门不预砍候选**：候选池是融合排序后的全量，最终取舍交给跨编码器
+- **关键词兜底的切片走缓存**: `retrieval._cached_pairs` 按「正文内容+切片参数」的 sha1 缓存 `(pairs, 小写正文)`，`PAIRS_CACHE_MAX=8` 条 LRU。真实语料 297KB/1199 块实测：每问重切 8.3 ms、重新 lower 1.0 ms，命中缓存后只剩 0.78 ms 的哈希。缓存键是内容派生的，所以上传/删除文件后**天然失效**，不需要谁去主动清；评测脚本临时改 `pdf_ingestion.CHUNK_SIZE` 也在键里，换切片长度不会吃旧缓存
 - **reranker 默认关，因为 CPU 延迟实测 3.9s**: `src/rerank.py` 用 `BAAI/bge-reranker-base`（MIT、278M、1.11GB、**零新依赖**，`sentence-transformers` 自带 `CrossEncoder`）对 query×块 逐对打分：开了它就不再用 `MAX_DISTANCE` 先砍候选，而是取 `RERANK_CANDIDATES=20`、用**原问题**打分（不是 HyDE 文本，跨编码器的训练分布是 question→passage）、留 `score >= RERANK_MIN_SCORE=0.3` 的前 `RERANK_TOP_N=5`。**线上口径（HyDE）实测把负样本误召回 2/5 → 0/5，recall/MRR/归属一分不掉**，但 CPU 3.9 s/次 → 按「误召回 0/5 且延迟 ≤1.5s 才默认开」的约定，`RERANK_ENABLED` 默认 **0**。模型不可用/离线/打分抛错一律 WARNING + 退回距离阈值。国内下权重走 ModelScope（12.6 MB/s）而不是 HF（34–245 KB/s、`huggingface_hub` 会卡在 0 字节），拉到本地目录后把 `RERANK_MODEL` 指过去
 - **审查清单与 CI**: 2026-10-01 那次代码审查的原始条目归档在 `docs/code-review-2026-10-01.md`（**编号连续**：P0 1–7 / P1 8–17 / P2 18–21；**不存在 P1-1~7 与 P1-18**），整改状态随代码更新；`.github/workflows/ci.yml` 在 push/PR 上跑 `pytest -q`
 - **发版用标签触发 Release**: 流程 = 改 `pyproject.toml` 的 `version`（必须与新标签一致；新功能升次版本、修复升补丁）→ 本地 `python -m build --wheel` 确认 wheel 内容 + `pytest` 全绿 → 提交并推 `main` → `git tag -a vX.Y.Z -m "vX.Y.Z"` + `git push origin vX.Y.Z`。`.github/workflows/publish.yml` 收到 `v*` 标签会构建 wheel 并 `gh release create <tag> dist/*.whl --title "<tag>" --generate-notes`（用仓库自带的 `GITHUB_TOKEN`，本机 `gh` 未登录也能发）。**不要先在网页 UI 手动新建同名 Release**，否则工作流的 `gh release create` 会因同名已存在而失败。**`package-data` 必须覆盖 `templates/vendor/*` 与 `templates/vendor/aiden0z-pptx-renderer-licenses/*`**：漏了 wheel 里就只有 `index.html`、vendor 0 个文件，从 release 附件安装后原文件预览会缺 JSZip/docx-preview/SheetJS/PPTX bundle（2026-10-05 v1.1.0 发版实测踩到并修复）。发布后回读 `git ls-remote --tags origin` 与 GitHub releases API，确认标签/Release/wheel 附件都在，并抽查 wheel 内含 vendor 文件。
@@ -104,6 +106,11 @@ CHUNK_OVERLAP=100
 TOP_K=10
 MAX_CONTEXT_LENGTH=8000
 MAX_DISTANCE=0.55
+# 双路融合（原问题 + HyDE 各当一次探针，RRF 合并名次）
+FUSION_ENABLED=1
+# union=任一路近就算近；intersect=两路都得近（默认，误召回 0/5）
+FUSION_GATE="intersect"
+RRF_K=60
 MAX_UPLOAD_MB=20
 LLM_TIMEOUT=60
 # 相对路径一律锚定项目根，可填绝对路径
