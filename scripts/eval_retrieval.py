@@ -54,6 +54,10 @@ DEFAULT_QUERIES = ROOT / "tests" / "fixtures" / "eval_queries.json"
 
 TEXT_SUFFIXES = (".md", ".txt")
 VALID_KINDS = ("positive", "negative")
+# 负样本的两种口径（见 docs/retrieval-baseline-2026-10-06.md「负样本分两类」）：
+# - far：与语料零词面重叠的远域提问，考「会不会被阈值外的噪声拉进来」；
+# - adjacent：域内但语料里没有答案，考「看起来像就作答」——产品里真正的答非所问。
+VALID_NEGATIVE_CLASSES = ("far", "adjacent")
 # 带页标记的语料不放二进制：目录里放这份 spec，评测现场生成 pptx 再走真实 loader 抽文本。
 PPTX_SPEC_NAME = "eval_pptx.json"
 # 软依赖探测（与 loaders 的 HAS_PPTX 一个套路）：缺了要吵，不能静默少一个语料文件。
@@ -191,15 +195,21 @@ def load_queries(path):
         expect_files = [str(f) for f in (item.get("expect_files") or [])]
         # 页码/工作表标注是可选的：没写 = 这个样本不测 section（不进 section 指标的分母）
         expect_sections = [str(s) for s in (item.get("expect_sections") or [])]
+        negative_class = str(item.get("negative_class") or "far").strip().lower()
         if kind == "positive":
             if not gold_phrases:
                 raise ValueError(f"第 {i} 条正样本缺少 gold_phrases")
             if not expect_files:
                 raise ValueError(f"第 {i} 条正样本缺少 expect_files")
+        elif negative_class not in VALID_NEGATIVE_CLASSES:
+            raise ValueError(
+                f"第 {i} 条负样本 negative_class 非法：{negative_class!r}"
+                f"（只能是 {VALID_NEGATIVE_CLASSES}）")
         queries.append({
             "id": str(item.get("id") or f"q{i:02d}"),
             "question": question,
             "kind": kind,
+            "negative_class": negative_class,
             "expect_files": expect_files,
             "expect_sections": expect_sections,
             "gold_phrases": gold_phrases,
@@ -301,6 +311,11 @@ def summarize(results, k):
     reciprocal = [(1.0 / r["rank"]) if (r["rank"] is not None and r["rank"] <= k) else 0.0
                   for r in positives]
     false_positives = [r for r in negatives if r.get("returned")]
+
+    def _negative_split(cls):
+        group = [r for r in negatives if (r.get("negative_class") or "far") == cls]
+        bad = [r for r in group if r.get("returned")]
+        return len(group), len(bad)
     # 归属只在命中块真的带了元数据时才统计：老索引没有 metadatas 时 file_ok 是 None，
     # 不能把「不知道」算成「错了」，否则这个指标会骗人。section 同理（还得有页码标注）。
     attributed = [r for r in positives if r.get("file_ok") is not None]
@@ -330,6 +345,17 @@ def summarize(results, k):
         "negative_false_positives": len(false_positives),
         "negative_false_positive_rate":
             (len(false_positives) / len(negatives)) if negatives else 0.0,
+        # 远域 / 域内分开报：前者考阈值外的噪声，后者考「看起来像就作答」
+        "negative_far_total": _negative_split("far")[0],
+        "negative_false_positives_far": _negative_split("far")[1],
+        "negative_false_positive_rate_far": (
+            _negative_split("far")[1] / _negative_split("far")[0]
+            if _negative_split("far")[0] else None),
+        "negative_adjacent_total": _negative_split("adjacent")[0],
+        "negative_false_positives_adjacent": _negative_split("adjacent")[1],
+        "negative_false_positive_rate_adjacent": (
+            _negative_split("adjacent")[1] / _negative_split("adjacent")[0]
+            if _negative_split("adjacent")[0] else None),
     }
 
 
@@ -569,7 +595,8 @@ def main(argv=None):
                             "section_ok": section_ok, "path": path})
         else:
             results.append({"id": query["id"], "kind": "negative",
-                            "rank": None, "returned": len(hits), "path": path})
+                            "rank": None, "returned": len(hits), "path": path,
+                            "negative_class": query["negative_class"]})
 
         if args.calibrate:
             # 原始查询：不经阈值过滤，用来看真实距离分布。
@@ -640,6 +667,15 @@ def main(argv=None):
           f"（这些样本的分数是 2-gram 词面打分，不是向量距离）")
     print(f"负样本误召回率 = {summary['negative_false_positive_rate']:.3f}"
           f"（{summary['negative_false_positives']}/{summary['negatives']}）")
+    far_rate = summary["negative_false_positive_rate_far"]
+    adj_rate = summary["negative_false_positive_rate_adjacent"]
+    print(f"  ├ 远域（零词面重叠）误召回 = "
+          f"{'无数据' if far_rate is None else f'{far_rate:.3f}'}"
+          f"（{summary['negative_false_positives_far']}/{summary['negative_far_total']}）")
+    print(f"  └ 域内（无答案但有重叠）误召回 = "
+          f"{'无数据' if adj_rate is None else f'{adj_rate:.3f}'}"
+          f"（{summary['negative_false_positives_adjacent']}/"
+          f"{summary['negative_adjacent_total']}）")
     print(f"耗时 = {elapsed:.1f}s（{len(queries)} 条样本）")
 
     if max_seq_length is not None:

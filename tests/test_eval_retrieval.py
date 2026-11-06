@@ -145,6 +145,35 @@ def test_load_queries_reads_expect_sections(tmp_path):
     assert got[1]["expect_sections"] == [], "没写页码标注时补空列表"
 
 
+def test_load_queries_reads_the_negative_class(tmp_path):
+    """负样本分两类：`far`（远域、零词面重叠）与 `adjacent`（域内但无答案、**有**重叠）。
+
+    两条路的失败模式不一样：远域考「会不会被阈值外的噪声拉进来」，域内考「看起来像
+    有没有就作答」。混成一锅统计，会把后者的问题藏在前者里。
+    """
+    path = _write_queries(tmp_path, [
+        {"question": "量子纠缠", "kind": "negative", "negative_class": "far"},
+        {"question": "年会的奖品预算走谁的审批", "kind": "negative",
+         "negative_class": "adjacent"},
+        {"question": "火星探测器", "kind": "negative"},
+    ])
+
+    got = ev.load_queries(path)
+
+    assert [q["negative_class"] for q in got] == ["far", "adjacent", "far"], \
+        "没写 negative_class 的老标注按 far 处理"
+
+
+def test_load_queries_rejects_an_unknown_negative_class(tmp_path):
+    path = _write_queries(tmp_path, [
+        {"question": "x", "kind": "negative", "negative_class": "maybe"}])
+
+    with pytest.raises(ValueError) as excinfo:
+        ev.load_queries(path)
+
+    assert "negative_class" in str(excinfo.value)
+
+
 @pytest.mark.parametrize("data, needle", [
     ({"question": "x", "kind": "negative"}, "JSON 数组"),
     ([{"kind": "positive", "expect_files": ["a.md"], "gold_phrases": ["g"]}], "question"),
@@ -233,6 +262,35 @@ def test_summarize_handles_empty_groups():
     assert got["negative_false_positive_rate"] == 0.0
 
 
+def test_summarize_splits_false_positives_by_negative_class():
+    """远域与域内两条路的失败模式不同，必须分开报：混在一起会把「域内乱答」藏起来。"""
+    results = [
+        {"kind": "negative", "rank": None, "returned": 0, "negative_class": "far"},
+        {"kind": "negative", "rank": None, "returned": 0, "negative_class": "far"},
+        {"kind": "negative", "rank": None, "returned": 3, "negative_class": "adjacent"},
+        {"kind": "negative", "rank": None, "returned": 2, "negative_class": "adjacent"},
+        {"kind": "negative", "rank": None, "returned": 0, "negative_class": "adjacent"},
+    ]
+
+    got = ev.summarize(results, 3)
+
+    assert got["negatives"] == 5 and got["negative_false_positives"] == 2, "总数不变（向后兼容）"
+    assert (got["negative_far_total"], got["negative_false_positives_far"]) == (2, 0)
+    assert (got["negative_adjacent_total"], got["negative_false_positives_adjacent"]) == (3, 2)
+    assert got["negative_false_positive_rate_far"] == pytest.approx(0.0)
+    assert got["negative_false_positive_rate_adjacent"] == pytest.approx(2 / 3)
+
+
+def test_summarize_treats_negatives_without_a_class_as_far():
+    """老结果没有 negative_class 字段时按 far 归类 —— 否则老脚本的汇总会静默少一半样本。"""
+    got = ev.summarize([{"kind": "negative", "rank": None, "returned": 1}], 3)
+
+    assert got["negative_far_total"] == 1
+    assert got["negative_false_positives_far"] == 1
+    assert got["negative_adjacent_total"] == 0
+    assert got["negative_false_positive_rate_adjacent"] is None
+
+
 # ── 阈值建议 ──
 
 def test_suggest_threshold_takes_midpoint_of_separation_band():
@@ -276,7 +334,12 @@ def test_fixture_has_enough_samples(queries):
     positives = [q for q in queries if q["kind"] == "positive"]
     negatives = [q for q in queries if q["kind"] == "negative"]
     assert len(positives) >= 15, "正样本太少，指标没有统计意义"
-    assert len(negatives) >= 3, "至少要有几条负样本才能看误召回"
+    # 2026-11-05：负样本从 5 条加到 23 条 —— 5 条撑不起「误召回 0/5」这种结论
+    assert len(negatives) >= 15, "负样本太少，误召回率没有统计意义"
+    adjacent = [q for q in negatives if q.get("negative_class") == "adjacent"]
+    assert len(adjacent) >= 5, "缺「域内但无答案」的难负样本，误召回会被系统性低估"
+    far = [q for q in negatives if q.get("negative_class") == "far"]
+    assert len(far) >= 5, "缺远域负样本，就分不清「模型没乱答」还是「问得太远」"
 
 
 def test_fixture_ids_are_unique(queries):
@@ -331,7 +394,7 @@ def test_fixture_keeps_a_structural_file_so_the_section_metric_stays_live(corpus
 
 
 def test_negative_questions_do_not_overlap_corpus_lexically(corpus, queries):
-    """负样本必须「真的不在语料里」。
+    """**远域**负样本必须「真的不在语料里」。
 
     只要有一个词撞上语料，关键词兜底就会召回它，误召回率就不再是「向量阈值」的
     信号，而变成 2-gram 松散的噪声——那样这条指标就没法用来判断阈值好坏了。
@@ -340,13 +403,39 @@ def test_negative_questions_do_not_overlap_corpus_lexically(corpus, queries):
 
     overlaps = []
     for q in queries:
-        if q["kind"] != "negative":
+        if q["kind"] != "negative" or q.get("negative_class") != "far":
             continue
         hit = [term for term in extract_terms(q["question"]) if term in haystack]
         if hit:
             overlaps.append((q["id"], hit))
 
-    assert overlaps == [], f"负样本与语料有词面重叠：{overlaps}"
+    assert overlaps == [], f"远域负样本与语料有词面重叠：{overlaps}"
+
+
+def test_adjacent_negatives_really_are_adjacent(corpus, queries):
+    """**域内但无答案**的负样本反过来必须与语料有词面重叠。
+
+    这类样本是产品里真正的「答非所问」（用户问的话很像库里的内容，但库里没有答案）。
+    如果它也零重叠，那它和远域样本没区别 —— 统计上等于高估了鲁棒性。
+    """
+    haystack = ev.normalize("\n\n".join(corpus.values()))
+
+    not_adjacent = []
+    for q in queries:
+        if q["kind"] != "negative" or q.get("negative_class") != "adjacent":
+            continue
+        hit = [term for term in extract_terms(q["question"]) if term in haystack]
+        if not hit:
+            not_adjacent.append(q["id"])
+
+    assert not_adjacent == [], f"这些「域内」负样本其实与语料毫无词面交集：{not_adjacent}"
+
+
+def test_every_negative_says_why_it_has_no_answer(queries):
+    """「域内但无答案」是个判断题，必须写清楚没有答案的理由，否则后人无法复核。"""
+    missing = [q["id"] for q in queries if q["kind"] == "negative" and not q["note"].strip()]
+
+    assert missing == [], f"这些负样本没写 note：{missing}"
 
 
 # ── 无模型环境下 main 必须安全（输入校验先于加载模型）──

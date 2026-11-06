@@ -297,6 +297,7 @@
     "id": "n01",
     "question": "量子纠缠退相干",
     "kind": "negative",
+    "negative_class": "far",
     "expect_files": [],
     "gold_phrases": [],
     "note": "语料完全不涉及，用于测误召回"
@@ -305,6 +306,7 @@
     "id": "n02",
     "question": "火星探测器发射",
     "kind": "negative",
+    "negative_class": "far",
     "expect_files": [],
     "gold_phrases": [],
     "note": "同上；刻意避开语料中出现过的 2-gram"
@@ -313,6 +315,7 @@
     "id": "n03",
     "question": "莫扎特奏鸣曲的调性布局",
     "kind": "negative",
+    "negative_class": "far",
     "expect_files": [],
     "gold_phrases": [],
     "note": "同上"
@@ -321,6 +324,7 @@
     "id": "n04",
     "question": "光合作用的光反应阶段",
     "kind": "negative",
+    "negative_class": "far",
     "expect_files": [],
     "gold_phrases": [],
     "note": "同上"
@@ -329,8 +333,171 @@
     "id": "n05",
     "question": "板块构造学说与地震成因",
     "kind": "negative",
+    "negative_class": "far",
     "expect_files": [],
     "gold_phrases": [],
     "note": "同上"
+  },
+  {
+    "id": "n06",
+    "question": "大提琴的泛音列",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：器乐声学"
+  },
+  {
+    "id": "n07",
+    "question": "马拉松配速与乳酸阈值",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：运动生理"
+  },
+  {
+    "id": "n08",
+    "question": "火山岩的分类",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：地质"
+  },
+  {
+    "id": "n09",
+    "question": "半导体光刻的光源波长",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：半导体制造"
+  },
+  {
+    "id": "n10",
+    "question": "围棋劫争规则",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：棋类规则"
+  },
+  {
+    "id": "n11",
+    "question": "巴洛克教堂立面的山花造型",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：建筑史"
+  },
+  {
+    "id": "n12",
+    "question": "酿造米酒的下曲比例",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：食品工艺"
+  },
+  {
+    "id": "n13",
+    "question": "台风登陆点预报误差",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：气象"
+  },
+  {
+    "id": "n14",
+    "question": "敦煌壁画的矿物颜料",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：文物保护"
+  },
+  {
+    "id": "n15",
+    "question": "变压器油的色谱检测",
+    "kind": "negative",
+    "negative_class": "far",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "远域：电力设备"
+  },
+  {
+    "id": "n16",
+    "question": "年会抽奖的奖品预算走谁的审批",
+    "kind": "negative",
+    "negative_class": "adjacent",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "域内无答案：语料只写了报销审批，没写年会预算"
+  },
+  {
+    "id": "n17",
+    "question": "婚假需要提交哪些证明材料",
+    "kind": "negative",
+    "negative_class": "adjacent",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "域内无答案：语料写了病假要证明，没写婚假"
+  },
+  {
+    "id": "n18",
+    "question": "客户响应时效的违约金怎么定",
+    "kind": "negative",
+    "negative_class": "adjacent",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "域内无答案：语料写了响应时效，没写违约条款"
+  },
+  {
+    "id": "n19",
+    "question": "季度绩效考核的权重怎么分配",
+    "kind": "negative",
+    "negative_class": "adjacent",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "域内无答案：语料只提到考核计入，没有权重"
+  },
+  {
+    "id": "n20",
+    "question": "数据库主从切换的演练步骤",
+    "kind": "negative",
+    "negative_class": "adjacent",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "域内无答案：语料写了恢复演练场景，没写主从切换"
+  },
+  {
+    "id": "n21",
+    "question": "家属探亲的机票能报销吗",
+    "kind": "negative",
+    "negative_class": "adjacent",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "域内无答案：语料写了出差住宿与餐补，没写探亲"
+  },
+  {
+    "id": "n22",
+    "question": "股息率与市盈率怎么换算",
+    "kind": "negative",
+    "negative_class": "adjacent",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "域内无答案：语料写了市盈率与每股收益，没写股息率"
+  },
+  {
+    "id": "n23",
+    "question": "调休没休完能不能折成工资",
+    "kind": "negative",
+    "negative_class": "adjacent",
+    "expect_files": [],
+    "gold_phrases": [],
+    "note": "域内无答案：语料只说逾期作废，没说折现"
   }
 ]
