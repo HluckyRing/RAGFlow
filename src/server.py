@@ -12,6 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, FileResponse
 
 import src.state as state
+import src.answerability as answerability
 from src.config import (logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, HOST, PORT,
                         UPLOAD_DIR)
 from src.loaders import load_file
@@ -747,6 +748,16 @@ async def chat(request: Request):
     )
     if not context:
         return JSONResponse({"error": "未找到相关内容"}, status_code=400)
+    # 可答性判断：检索到材料 ≠ 材料能回答这个问题（2026-11-05 实测：域内「看着像但没答案」
+    # 的提问 8/8 全被作答，阈值与兜底门都挡不住）。判「不能」就走上面那条拒答路径；
+    # 判定不可用（None）一律按老行为继续作答 —— 一次判定故障不许把问答堵死。
+    if answerability.ANSWERABILITY_ENABLED:
+        verdict = await run_in_threadpool(
+            answerability.judge_answerable, search_query, context)
+        if verdict is False:
+            logger.info("可答性判断：材料不足以回答，按「未找到相关内容」拒答（问题=%s）",
+                        search_query[:40])
+            return JSONResponse({"error": "未找到相关内容"}, status_code=400)
     # 来源只从前端拿到的东西里来（去重后的文件+页），前端不自己推断，引用不可能凭空出现
     sources = source_list(used)
 

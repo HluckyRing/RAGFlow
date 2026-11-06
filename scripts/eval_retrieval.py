@@ -271,6 +271,45 @@ def rank_of_first_hit(chunks, gold_phrases):
     return None
 
 
+def build_context(hits):
+    """把命中装配成与线上同款的「【来源：…】+ 正文」背景。
+
+    可答性判断必须看**线上真正喂给模型的形状**（带来源标签），否则量出来的不是同一件事。
+    """
+    from src.llm import _format_source_block
+
+    return "\n\n".join(_format_source_block(text, meta) for text, meta in hits)
+
+
+def summarize_answerability(results):
+    """汇总可答性判断的效果：正样本误杀多少、两类负样本各拦下多少。
+
+    只统计**真的判过**的样本（`answerable` 不为 None）：检索本来就返回空的负样本不需要判，
+    判定不可用（None）的也不能算进任何一边。
+    """
+    def _group(kind, cls=None):
+        rows = [r for r in results
+                if r["kind"] == kind and r.get("answerable") is not None
+                and (cls is None or (r.get("negative_class") or "far") == cls)]
+        rejected = [r for r in rows if r["answerable"] is False]
+        return len(rows), len(rejected)
+
+    pos_total, pos_rejected = _group("positive")
+    far_total, far_rejected = _group("negative", "far")
+    adj_total, adj_rejected = _group("negative", "adjacent")
+    unknown = sum(1 for r in results if r.get("answerable") is None and r.get("judged"))
+    return {
+        "positive_judged": pos_total,
+        "positive_rejected": pos_rejected,
+        "positive_rejected_rate": (pos_rejected / pos_total) if pos_total else None,
+        "far_judged": far_total,
+        "far_rejected": far_rejected,
+        "adjacent_judged": adj_total,
+        "adjacent_rejected": adj_rejected,
+        "unknown_verdicts": unknown,
+    }
+
+
 def score_band(scores):
     """精排分数的分数带（与距离带对称，只是**越大越相关**）。"""
     values = [float(s) for s in scores]
@@ -481,6 +520,8 @@ def main(argv=None):
     parser.add_argument("--hyde-cache", default=None,
                         help="把生成的假设文本落盘到该 JSON；已存在就直接复用"
                              "（对比不同开关时保证两轮用的是同一批文本）")
+    parser.add_argument("--answerability", action="store_true",
+                        help="对「检索返回了内容」的样本再跑一次可答性判断（会调大模型）")
     args = parser.parse_args(argv)
 
     # 输入校验放在最前面：语料 / 标注不合法时直接返回 2，不必先把模型加载起来。
@@ -556,6 +597,16 @@ def main(argv=None):
     else:
         retrieval.RERANK_ENABLED = False
 
+    judge = None
+    if args.answerability:
+        from src import answerability as answerability_mod
+
+        if answerability_mod.client is None:
+            print("错误：--answerability 需要能调用大模型（缺 API_KEY），已中止。")
+            return 2
+        judge = answerability_mod.judge_answerable
+        print(f"可答性判断：开启（max_tokens={answerability_mod.MAX_TOKENS}，关思考）")
+
     files = [(name, corpus[name]) for name in sorted(corpus)]
     full_text = "\n\n".join(text for _, text in files)
     # P2：按文件、按节切片（与生产一致），并把来源写进 metadatas —— 评测要能量到
@@ -581,6 +632,7 @@ def main(argv=None):
     results = []
     positive_distances, negative_distances = [], []
     positive_scores, negative_scores = [], []
+    judge_seconds = []
     started = time.perf_counter()
     for query in queries:
         question = query["question"]
@@ -597,6 +649,14 @@ def main(argv=None):
             results.append({"id": query["id"], "kind": "negative",
                             "rank": None, "returned": len(hits), "path": path,
                             "negative_class": query["negative_class"]})
+
+        if judge is not None and hits:
+            # 只对「检索返回了内容」的样本判：检索本来就空的不需要判（线上也走不到这一步）
+            t0 = time.perf_counter()
+            verdict = judge(question, build_context(hits))
+            judge_seconds.append(time.perf_counter() - t0)
+            results[-1]["judged"] = True
+            results[-1]["answerable"] = verdict
 
         if args.calibrate:
             # 原始查询：不经阈值过滤，用来看真实距离分布。
@@ -730,7 +790,26 @@ def main(argv=None):
                 print(f"建议 RERANK_MIN_SCORE：{suggested_score}"
                       f"（当前 {retrieval.RERANK_MIN_SCORE}）")
 
+    if judge is not None:
+        verdicts = summarize_answerability(results)
+        print()
+        print("--- 可答性判断（只判「检索返回了内容」的样本）---")
+        print(f"正样本被误杀 = {verdicts['positive_rejected']}/{verdicts['positive_judged']}"
+              f"（判「不能」；越少越好，理想是 0）")
+        print(f"远域负样本被拦下 = {verdicts['far_rejected']}/{verdicts['far_judged']}")
+        print(f"域内负样本被拦下 = {verdicts['adjacent_rejected']}/{verdicts['adjacent_judged']}"
+              f"（这是这次改造的主要目标）")
+        print(f"判定不可用（None，按原行为作答）= {verdicts['unknown_verdicts']}")
+        if judge_seconds:
+            ordered = sorted(judge_seconds)
+            print(f"判定耗时 = 平均 {sum(ordered) / len(ordered):.2f}s / 中位 "
+                  f"{ordered[len(ordered) // 2]:.2f}s（{len(ordered)} 次调用）")
+
     misses = [r for r in results if r["kind"] == "positive" and r["rank"] is None]
+    if judge is not None:
+        rejected_pos = [r["id"] for r in results
+                        if r["kind"] == "positive" and r.get("answerable") is False]
+        print(f"被判「不能」的正样本：{', '.join(rejected_pos) or '无'}")
     false_positives = [r for r in results if r["kind"] == "negative" and r["returned"]]
     print()
     print(f"未命中正样本：{', '.join(r['id'] for r in misses) or '无'}")
@@ -768,6 +847,7 @@ def main(argv=None):
             "fusion": {"enabled": bool(retrieval.FUSION_ENABLED),
                         "gate": retrieval.FUSION_GATE,
                         "rrf_k": retrieval.RRF_K},
+            "answerability": (summarize_answerability(results) if judge is not None else None),
             "rerank": ({
                 "model": retrieval.RERANK_MODEL,
                 "candidates": retrieval.RERANK_CANDIDATES,

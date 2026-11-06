@@ -653,6 +653,51 @@ def test_calibrate_query_text_follows_the_retrieval_path():
     assert ev.calibrate_query_text("原问题", use_hyde=True, generate=lambda q: "假设") == "假设"
 
 
+# ── 可答性判断的评测汇总（2026-11-05：域内负样本 8/8 全被作答，靠它验收）──
+
+def test_summarize_answerability_counts_both_sides():
+    """只统计**真的判过**的样本：检索本来就返回空的负样本不该进分母，判定不可用的也不算。"""
+    results = [
+        {"kind": "positive", "answerable": True},
+        {"kind": "positive", "answerable": False},
+        {"kind": "negative", "negative_class": "far", "returned": 0},        # 没判
+        {"kind": "negative", "negative_class": "far", "judged": True,
+         "answerable": False},
+        {"kind": "negative", "negative_class": "adjacent", "judged": True,
+         "answerable": False},
+        {"kind": "negative", "negative_class": "adjacent", "judged": True,
+         "answerable": True},
+        {"kind": "negative", "negative_class": "adjacent", "judged": True,
+         "answerable": None},                                               # 判不了
+    ]
+
+    got = ev.summarize_answerability(results)
+
+    assert (got["positive_judged"], got["positive_rejected"]) == (2, 1)
+    assert (got["far_judged"], got["far_rejected"]) == (1, 1)
+    assert (got["adjacent_judged"], got["adjacent_rejected"]) == (2, 1), \
+        "answerable=None 的样本两边都不算"
+    assert got["unknown_verdicts"] == 1
+    assert got["positive_rejected_rate"] == pytest.approx(0.5)
+
+
+def test_summarize_answerability_is_empty_when_nothing_was_judged():
+    got = ev.summarize_answerability([{"kind": "positive", "answerable": None}])
+
+    assert got["positive_judged"] == 0
+    assert got["positive_rejected_rate"] is None
+
+
+def test_build_context_uses_the_same_source_labels_as_the_live_path():
+    """可答性判断必须看线上真正喂给模型的形状（带【来源：…】），否则量的不是同一件事。"""
+    context = ev.build_context([("ROE 是净利润/股东权益", {"file_name": "a.md"}),
+                                ("第二块", None)])
+
+    assert context.startswith("【来源：a.md】")
+    assert "【来源：未标注】" in context
+    assert "ROE 是净利润/股东权益" in context
+
+
 # ── 精排分数标定 ──
 
 def test_score_band_summarizes_and_handles_empty():

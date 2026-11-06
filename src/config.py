@@ -88,6 +88,16 @@ RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "5"))
 # 重排分数下限：低于它的候选直接丢。用实测正负分带标定，见文档。
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.3"))
+# 可答性判断（见 src/answerability.py）：材料检索到之后，再让模型判一次「这段材料能不能
+# 回答这个问题」，判「不能」就走已有的「未找到相关内容」拒答路径。
+# 动机（2026-11-05 实测）：域内「看着像但没答案」的提问 8/8 全被作答，而阈值扫描与兜底
+# 命中强度闸门都分不开（重排分里域内负样本 0.0004–0.9529 与正样本 0.0284–0.9993 完全重叠）。
+# 代价是每条能检索到内容的提问多一次很小的大模型调用（关思考、max_tokens 十几）。
+ANSWERABILITY_CHECK = os.getenv("ANSWERABILITY_CHECK", "1").strip().lower() not in ("0", "false", "no", "")
+# 可答性判断要输出「能：<原文依据>」或「不能」，32 个 token 够写一小段依据；
+# 关思考后这点预算不会被 reasoning 吃掉。
+ANSWERABILITY_MAX_TOKENS = int(os.getenv("ANSWERABILITY_MAX_TOKENS", "32"))
+
 VECTOR_DB_PATH = resolve_path(os.getenv("VECTOR_DB_PATH"), "chroma_db")
 # 上传原件（不是抽取文本）的存放根目录。原文件预览要读它；同样锚定项目根，
 # 测试/冒烟用 UPLOAD_DIR 指向临时目录，避免落到真实用户数据上。
