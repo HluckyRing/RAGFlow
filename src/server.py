@@ -677,20 +677,27 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
     拒答（2026-11-06）：模型答不出时按 `prompts.REFUSAL_MARKER` 开头输出。**开头要缓冲**
     到判得出来为止（标记可能被拆在两个 token 里），判成拒答就推一条 `refused` 事件、
     把标记从正文里去掉，落盘带 `refused: true` —— 前端据此单独渲染，而不是靠事后猜文案。
+
+    **拒答不挂来源**（2026-11-07）：既然材料答不了这个问题，把「查过哪些文件」贴给用户只会
+    让人以为这些文件就是答案出处。所以 sources 事件**推迟到判定之后**再推：正常回答照旧
+    在第一个 token 之前到达（token 本来就被缓冲着），拒答则既不推也不落盘。代价是前端在
+    判定完成前看不到来源行 —— 也就是头几十个 token 的延迟，用户无感。
     """
     full_answer = ""
     stopped = False
-    sent_sources = False
     refused = False
     decided = False        # 开头到底是拒答还是正常回答，判出来没有
     pending = ""           # 判定期间攒着的 token（判定完一次性吐出）
+
+    def _sources_event():
+        """判成正常回答后才推来源；拒答一条都不推。"""
+        if sources:
+            return _sse_event({"type": "sources", "sources": sources})
+        return None
+
     try:
         try:
             for token in stream_answer(question, context, history):
-                if not sent_sources:
-                    if sources:
-                        yield _sse_event({"type": "sources", "sources": sources})
-                    sent_sources = True
                 if decided:
                     full_answer += token
                     yield _sse_event({"type": "token", "content": token})
@@ -704,6 +711,10 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
                 if refused:
                     yield _sse_event({"type": "refused"})
                     pending = strip_refusal_marker(pending)
+                else:
+                    event = _sources_event()
+                    if event:
+                        yield event
                 if pending:
                     full_answer += pending
                     yield _sse_event({"type": "token", "content": pending})
@@ -714,6 +725,10 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
                     refused = True
                     yield _sse_event({"type": "refused"})
                     pending = strip_refusal_marker(pending)
+                else:
+                    event = _sources_event()
+                    if event:
+                        yield event
                 if pending:
                     full_answer += pending
                     yield _sse_event({"type": "token", "content": pending})
@@ -733,7 +748,7 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
                 entry["stopped"] = True
             if refused:
                 entry["refused"] = True
-            if sources:
+            if sources and not refused:
                 entry["sources"] = sources
             _append_message(sid, conv_id, entry)
     yield _sse_event({"type": "done"})

@@ -161,6 +161,42 @@ def test_marker_in_the_middle_is_not_a_refusal(client, monkeypatch):
     assert not any(e["type"] == "refused" for e in events)
 
 
+def test_refusal_carries_no_sources(client, monkeypatch):
+    """拒答不挂来源：材料答不了这个问题，再贴「查过哪些文件」只会让人以为那就是答案出处。
+
+    sources 事件是**判成正常回答之后**才推的（token 本来就缓冲着，顺序不变），
+    拒答既推也不落盘。
+    """
+    monkeypatch.setattr(server, "stream_answer",
+                        _tokens([REFUSAL_MARKER, "材料里没有相关内容。"]))
+    sid, conv_id = _prepare(client)
+
+    resp = client.post("/api/chat", json={"session_id": sid, "conv_id": conv_id,
+                                         "question": "无关问题"})
+
+    events = _events(resp)
+    assert not any(e["type"] == "sources" for e in events), "拒答不该推 sources 事件"
+    saved = server.sessions[sid]["conversations"][conv_id]["messages"][-1]
+    assert saved["refused"] is True
+    assert "sources" not in saved, "拒答不该把来源落盘（刷新后也不该显示）"
+
+
+def test_normal_answer_still_pushes_sources_before_the_first_token(client, monkeypatch):
+    """正常回答的契约不变：sources 事件必须先于第一个 token 到达（前端据此先画来源行）。"""
+    monkeypatch.setattr(server, "stream_answer",
+                        _tokens(["根据《a.txt》，", "市盈率等于股价除以每股收益。"]))
+    sid, conv_id = _prepare(client)
+
+    resp = client.post("/api/chat", json={"session_id": sid, "conv_id": conv_id,
+                                         "question": "市盈率怎么算"})
+
+    kinds = [e["type"] for e in _events(resp)]
+    assert "sources" in kinds and "token" in kinds
+    assert kinds.index("sources") < kinds.index("token"), "来源要在第一个 token 之前"
+    saved = server.sessions[sid]["conversations"][conv_id]["messages"][-1]
+    assert saved["sources"] == [{"file_name": "a.txt"}]
+
+
 def test_bare_marker_only_answer_still_marks_refusal(client, monkeypatch):
     """模型只回了标记本身（没有解释）也要算拒答；正文为空就不落一条空消息。"""
     monkeypatch.setattr(server, "stream_answer", _tokens([REFUSAL_MARKER]))

@@ -740,9 +740,24 @@ etrieve_and_build_context 返回非空后加一次廉价判定（deepseek-flash 
   「恢复演练要请哪些人参加」→ `refused=True`，正文里**没有**标记残留；
   落盘核对 `[('assistant', False), ('assistant', True)]` —— 刷新后仍能渲染成拒答。
 
+### 拒答不挂来源（2026-11-07 补）
+
+最初拒答消息也会带上 `sources`（「查过哪些文件」）。**改掉了**：既然材料答不了这个问题，
+把来源贴给用户只会让人以为这些文件就是答案出处。做法是把 `sources` 事件**推迟到判定之后**
+再推 —— token 本来就在缓冲，正常回答仍然「sources 先于第一个 token」到达，顺序契约不变；
+判成拒答则既不推也不落盘。
+
+| 场景 | sources 事件 | 落盘 |
+| --- | --- | --- |
+| 正常回答 | 有（第一个 token 之前） | `sources` + 正文 |
+| 拒答 | **无** | 只有 `refused: true` + 正文（标记已剥） |
+
+验证：`tests/test_refusal.py` 的 `test_refusal_carries_no_sources` /
+`test_normal_answer_still_pushes_sources_before_the_first_token`；真实 uvicorn 冒烟核对
+`落盘 (refused, has_sources) = [(False, True), (True, False)]`。
+
 ### 还没做
 
-1. **拒答仍带 sources**：拒答消息会把「查过哪些文件」一起落盘并显示。语义上没错（确实查过），
-   但如果你希望拒答**不显示**来源，得在 `source_list` 之前按 `refused` 过滤 —— 目前刻意保留，
-   因为「查过什么」对用户判断「是不是文件没传对」有用。
-2. **前端没有 e2e 测试**：静态守卫只能保证「代码里有这段」，渲染出来的样子还得人工看一次。
+1. **前端没有 e2e 测试**：静态守卫只能保证「代码里有这段」，渲染出来的样子还得人工看一次。
+2. **拒答的「查过什么」完全丢了**：如果以后想让用户知道「你的文件里没有」，得换一种表达
+   （比如拒答标签里写「已查阅 2 个文件，均未涉及该问题」），而不是把 sources chip 挂上去。
