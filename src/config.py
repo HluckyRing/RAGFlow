@@ -92,8 +92,14 @@ RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "0.3"))
 # 回答这个问题」，判「不能」就走已有的「未找到相关内容」拒答路径。
 # 动机（2026-11-05 实测）：域内「看着像但没答案」的提问 8/8 全被作答，而阈值扫描与兜底
 # 命中强度闸门都分不开（重排分里域内负样本 0.0004–0.9529 与正样本 0.0284–0.9993 完全重叠）。
-# 代价是每条能检索到内容的提问多一次很小的大模型调用（关思考、max_tokens 十几）。
-ANSWERABILITY_CHECK = os.getenv("ANSWERABILITY_CHECK", "1").strip().lower() not in ("0", "false", "no", "")
+#
+# **默认关（2026-11-06 实测）**：这次调用每条提问固定 +0.78 s，而缩短判定输入并不省时间
+# （top1 1.01 s / top2 0.92 s / 全长 0.78 s，延迟是 API 往返不是 prefill）。同时实测发现
+# **生成那一次调用自己就会拒答**：`QA_SYSTEM_PROMPT_TEMPLATE` 第 1 条要求「背景没有答案就说
+# 背景中没有提到相关内容」，59 条语料上域内负样本 **8/8**、远域 **2/2** 正确拒答，正样本
+# **0/36** 误拒 —— 与独立判定分毫不差，却零额外调用（`scripts/measure_inline_abstention.py`）。
+# 所以默认走 inline 拒答；要「硬 400 + 不生成」的严格口径再设 ANSWERABILITY_CHECK=1。
+ANSWERABILITY_CHECK = os.getenv("ANSWERABILITY_CHECK", "0").strip().lower() not in ("0", "false", "no", "")
 # 可答性判断要输出「能：<原文依据>」或「不能」，32 个 token 够写一小段依据；
 # 关思考后这点预算不会被 reasoning 吃掉。
 ANSWERABILITY_MAX_TOKENS = int(os.getenv("ANSWERABILITY_MAX_TOKENS", "32"))

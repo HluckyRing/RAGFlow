@@ -201,6 +201,8 @@ def load_queries(path):
                 raise ValueError(f"第 {i} 条正样本缺少 gold_phrases")
             if not expect_files:
                 raise ValueError(f"第 {i} 条正样本缺少 expect_files")
+            # 正样本没有「负样本类别」：留空而不是沿用 far，免得下游按类分组时把它也算进去
+            negative_class = None
         elif negative_class not in VALID_NEGATIVE_CLASSES:
             raise ValueError(
                 f"第 {i} 条负样本 negative_class 非法：{negative_class!r}"
@@ -522,6 +524,8 @@ def main(argv=None):
                              "（对比不同开关时保证两轮用的是同一批文本）")
     parser.add_argument("--answerability", action="store_true",
                         help="对「检索返回了内容」的样本再跑一次可答性判断（会调大模型）")
+    parser.add_argument("--answerability-chunks", type=int, default=0,
+                        help="判定只看前 N 个命中块（0 = 全部，按线上口径）")
     args = parser.parse_args(argv)
 
     # 输入校验放在最前面：语料 / 标注不合法时直接返回 2，不必先把模型加载起来。
@@ -652,8 +656,9 @@ def main(argv=None):
 
         if judge is not None and hits:
             # 只对「检索返回了内容」的样本判：检索本来就空的不需要判（线上也走不到这一步）
+            seen_hits = hits if args.answerability_chunks <= 0 else hits[:args.answerability_chunks]
             t0 = time.perf_counter()
-            verdict = judge(question, build_context(hits))
+            verdict = judge(question, build_context(seen_hits))
             judge_seconds.append(time.perf_counter() - t0)
             results[-1]["judged"] = True
             results[-1]["answerable"] = verdict

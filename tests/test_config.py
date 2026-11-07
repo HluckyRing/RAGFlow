@@ -88,3 +88,15 @@ def test_fusion_defaults_follow_the_measured_baseline():
     assert config.FUSION_ENABLED is True
     assert config.FUSION_GATE == "intersect"
     assert config.RRF_K == 60
+
+
+# ── 可答性判断的默认值（2026-11-06 实测标定）──
+
+def test_answerability_check_defaults_to_off_because_generation_abstains_itself():
+    """独立判定默认关：它每条提问固定 +0.78 s，而实测「生成那次调用自己就会拒答」
+    （域内 8/8、远域 2/2 正确拒答，正样本 0/36 误拒，见 scripts/measure_inline_abstention.py）。
+
+    要「硬 400 + 不生成」的严格口径才显式打开它。改默认值请连文档一起改。
+    """
+    assert config.ANSWERABILITY_CHECK is False
+    assert config.ANSWERABILITY_MAX_TOKENS == 32
