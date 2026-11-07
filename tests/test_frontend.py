@@ -384,3 +384,19 @@ def test_renderChat_draws_the_refused_tag():
     chat = _source_between("function renderChat", "const QUICK_PROMPTS")
     assert "m.refused" in chat, "刷新后 renderChat 要把拒答标记画出来"
     assert "buildRefusedTag" in chat
+
+
+def test_refused_tag_reports_the_searched_file_count_only():
+    """拒答只报「已检索 N 个文件」的计数，不列文件名 —— 文件名跟「答案出处」绑在一起会误导人。"""
+    src = _source_between("function buildRefusedTag", "function renderChat")
+    assert "searched" in src, "标签要接受查过的文件数"
+    assert "已检索" in src
+    assert "file_name" not in src, "标签里不许出现文件名"
+    assert "textContent" in src and "innerHTML" not in src
+
+
+def test_frontend_reads_the_searched_files_count_defensively():
+    html = _html()
+    assert "d.searched_files" in html, "要接住服务端推的计数"
+    assert "typeof d.searched_files === 'number'" in html, "形状不对时不能硬用"
+    assert "entry.searched_files = searchedFiles" in html, "计数要跟着消息走，刷新后还能显示"

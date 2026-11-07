@@ -617,15 +617,20 @@ function renderSidebar() {
 
 // 拒答标记：只有服务端推的 refused 事件（以及落盘里的 refused 字段）能让它出现。
 // 一律 createElement + textContent，不拼 HTML。
-function buildRefusedTag() {
+// 「已检索 N 个文件」：只报计数、不列文件名 —— 文件名跟「答案出处」绑在一起会误导人。
+function buildRefusedTag(searched) {
     const tag = document.createElement('div');
     tag.className = 'refused-tag';
-    tag.textContent = '⚠️ 知识库里没有能回答这个问题的内容';
+    let text = '⚠️ 知识库里没有能回答这个问题的内容';
+    if (typeof searched === 'number' && searched > 0) {
+        text += `（已检索 ${searched} 个文件）`;
+    }
+    tag.textContent = text;
     return tag;
 }
-function showRefusedTag(host) {
+function showRefusedTag(host, searched) {
     if (host.querySelector('.refused-tag')) return;
-    host.appendChild(buildRefusedTag());
+    host.appendChild(buildRefusedTag(searched));
 }
 
 function renderChat() {
@@ -664,7 +669,7 @@ function renderChat() {
             tag.textContent = '⏹ 已停止生成';
             body.appendChild(tag);
         }
-        if (m.refused) body.appendChild(buildRefusedTag());
+        if (m.refused) body.appendChild(buildRefusedTag(m.searched_files));
         body.appendChild(buildMsgActions(m, i));
         d.appendChild(body);
         el.appendChild(d);
@@ -1246,6 +1251,7 @@ async function sendMsg(opts) {
     let aborted = false;
     let sources = [];           // 服务端推来的来源（P3）：只显示，前端绝不自己推断
     let refused = false;        // 服务端推来的拒答标记：材料里没有答案
+    let searchedFiles = 0;      // 拒答时服务端报的「查过几个文件」（只给计数，不给文件名）
     try {
         const body = { question:text, session_id:S.sid, conv_id:S.activeCid };
         if (typeof target === 'number') body.truncate_to = target;
@@ -1273,8 +1279,10 @@ async function sendMsg(opts) {
                     } else if (d.type==='refused') {
                         // 服务端说这是拒答（材料里没有答案）：只认这个事件，前端绝不自己猜文案
                         refused = true;
+                        // 查过几个文件：只取数字，形状不对就当没有
+                        if (typeof d.searched_files === 'number') searchedFiles = d.searched_files;
                         aib.innerHTML = toMd(full);
-                        showRefusedTag(aib);
+                        showRefusedTag(aib, searchedFiles);
                         scrollDown();
                     } else if (d.type==='token') {
                         full += d.content;
@@ -1301,7 +1309,10 @@ async function sendMsg(opts) {
     if (full.trim()) {
         const entry = { role:'assistant', content:full, time: Date.now()/1000 };
         if (aborted) entry.stopped = true;
-        if (refused) entry.refused = true;
+        if (refused) {
+            entry.refused = true;
+            if (searchedFiles > 0) entry.searched_files = searchedFiles;
+        }
         if (sources.length) entry.sources = sources;   // 跟着消息走，刷新后还能渲染
         c.messages.push(entry);
     }

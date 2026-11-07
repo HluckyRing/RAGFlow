@@ -197,6 +197,42 @@ def test_normal_answer_still_pushes_sources_before_the_first_token(client, monke
     assert saved["sources"] == [{"file_name": "a.txt"}]
 
 
+def test_refusal_reports_how_many_files_were_searched(client, monkeypatch):
+    """拒答不列文件名，但要告诉用户「文件确实看过了」—— 只给计数（按文件名去重，不按页）。"""
+    monkeypatch.setattr(server, "retrieve_and_build_context",
+                        lambda *a, **k: ("背景", [
+                            {"text": "a", "file_name": "a.txt", "section": "第 1 页"},
+                            {"text": "b", "file_name": "a.txt", "section": "第 2 页"},
+                            {"text": "c", "file_name": "b.md"},
+                        ]))
+    monkeypatch.setattr(server, "stream_answer",
+                        _tokens([REFUSAL_MARKER, "材料里没有相关内容。"]))
+    sid, conv_id = _prepare(client)
+
+    resp = client.post("/api/chat", json={"session_id": sid, "conv_id": conv_id,
+                                         "question": "无关问题"})
+
+    events = _events(resp)
+    refused_events = [e for e in events if e["type"] == "refused"]
+    assert refused_events and refused_events[0]["searched_files"] == 2, \
+        "两个不同文件（a.txt 两页只算一个）"
+    saved = server.sessions[sid]["conversations"][conv_id]["messages"][-1]
+    assert saved["searched_files"] == 2, "计数要跟着消息落盘，刷新后还能显示"
+    assert "sources" not in saved, "文件名仍然不许落盘（那是答案出处的语义）"
+
+
+def test_normal_answer_has_no_searched_files_field(client, monkeypatch):
+    """正常回答走 sources，不需要这个计数。"""
+    monkeypatch.setattr(server, "stream_answer", _tokens(["根据《a.txt》，市盈率等于股价除以每股收益。"]))
+    sid, conv_id = _prepare(client)
+
+    client.post("/api/chat", json={"session_id": sid, "conv_id": conv_id,
+                                   "question": "市盈率怎么算"})
+
+    saved = server.sessions[sid]["conversations"][conv_id]["messages"][-1]
+    assert "searched_files" not in saved
+
+
 def test_bare_marker_only_answer_still_marks_refusal(client, monkeypatch):
     """模型只回了标记本身（没有解释）也要算拒答；正文为空就不落一条空消息。"""
     monkeypatch.setattr(server, "stream_answer", _tokens([REFUSAL_MARKER]))

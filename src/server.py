@@ -659,7 +659,8 @@ def _sse_event(payload):
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def _chat_stream(sid, conv_id, question, context, history, sources=None):
+def _chat_stream(sid, conv_id, question, context, history, sources=None,
+                 searched_files=0):
     """同步生成器：把 stream_answer 的 token 转成 SSE，并在结束时落盘。
 
     Starlette 会用 iterate_in_threadpool 迭代它，因此 stream_answer 里等 LLM
@@ -682,6 +683,10 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
     让人以为这些文件就是答案出处。所以 sources 事件**推迟到判定之后**再推：正常回答照旧
     在第一个 token 之前到达（token 本来就被缓冲着），拒答则既不推也不落盘。代价是前端在
     判定完成前看不到来源行 —— 也就是头几十个 token 的延迟，用户无感。
+
+    **但「查过什么」不能完全丢**（2026-11-08）：拒答事件里带 `searched_files`（查过几个不同的
+    文件），前端渲染成「已检索 N 个文件，均未涉及该问题」—— 只给计数、不给文件名，既让用户知道
+    「文件确实被看过了」，又不会把某个文件名跟「答案出处」绑定。计数跟着消息落盘，刷新后还在。
     """
     full_answer = ""
     stopped = False
@@ -709,7 +714,7 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
                 decided = True
                 refused = state
                 if refused:
-                    yield _sse_event({"type": "refused"})
+                    yield _sse_event({"type": "refused", "searched_files": searched_files})
                     pending = strip_refusal_marker(pending)
                 else:
                     event = _sources_event()
@@ -723,7 +728,7 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
             if not decided and pending:
                 if refusal_state(pending):
                     refused = True
-                    yield _sse_event({"type": "refused"})
+                    yield _sse_event({"type": "refused", "searched_files": searched_files})
                     pending = strip_refusal_marker(pending)
                 else:
                     event = _sources_event()
@@ -748,6 +753,8 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
                 entry["stopped"] = True
             if refused:
                 entry["refused"] = True
+                if searched_files:
+                    entry["searched_files"] = searched_files
             if sources and not refused:
                 entry["sources"] = sources
             _append_message(sid, conv_id, entry)
@@ -809,6 +816,10 @@ async def chat(request: Request):
             return JSONResponse({"error": "未找到相关内容"}, status_code=400)
     # 来源只从前端拿到的东西里来（去重后的文件+页），前端不自己推断，引用不可能凭空出现
     sources = source_list(used)
+    # 拒答时**不挂来源**（来源 chip 会让人以为它就是答案出处），改成只报「查过几个文件」。
+    # 按文件名去重，不是按「文件 + 页」—— 用户关心的是「我的文件看了没有」，不是看了几页。
+    searched_files = len({item.get("file_name") for item in (used or [])
+                          if isinstance(item, dict) and item.get("file_name")})
 
     # 检索成功才把提问写进历史（带 truncate_to 时同时覆盖旧轮次），
     # 所以「没检索到内容」的提问依然不会入库。
@@ -816,8 +827,9 @@ async def chat(request: Request):
             _append_message, sid, conv_id, {"role": "user", "content": question}, truncate_to):
         return JSONResponse({"error": "对话不存在"}, status_code=400)
 
-    return StreamingResponse(_chat_stream(sid, conv_id, question, context, history, sources),
-                             media_type="text/event-stream")
+    return StreamingResponse(
+        _chat_stream(sid, conv_id, question, context, history, sources, searched_files),
+        media_type="text/event-stream")
 
 
 if __name__ == "__main__":
