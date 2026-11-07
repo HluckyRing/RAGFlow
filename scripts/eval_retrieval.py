@@ -58,14 +58,28 @@ VALID_KINDS = ("positive", "negative", "partial")
 # - far：与语料零词面重叠的远域提问，考「会不会被阈值外的噪声拉进来」；
 # - adjacent：域内但语料里没有答案，考「看起来像就作答」——产品里真正的答非所问。
 VALID_NEGATIVE_CLASSES = ("far", "adjacent")
-# 部分可答（复合问题）的四种形状。前三种是**一个问句里的多个子问题**，第四种是**跨轮**：
-# - two_parts：两问（2026-11-08 的第一批样本）；
+# 部分可答（复合问题）的形状。前几种是**一个问句里的多个子问题**，后两种是**跨轮**：
+# - two_parts：两问（2026-11-08 第一批）；
 # - three_parts：三问（漏答其中一问的风险随子问题数量上升）；
 # - gap_in_middle：三问、不可答的那问正好在中间（最容易被截断的形状：答完第一问就收尾）；
-# - followup：多轮补问（上一轮答过一部分，本轮追问缺的那半 / 追问同族的那件事）。
-VALID_PARTIAL_SHAPES = ("two_parts", "three_parts", "gap_in_middle", "followup")
-# 只有「一个问句里数得清子问题」的形状能钉死数量；followup 的子问题数不固定（可以整条都不可答）
-SHAPE_PART_COUNT = {"two_parts": 2, "three_parts": 3, "gap_in_middle": 3}
+# - four_parts：四问、一处缺口（子问题再多一问，「漏最后一问」的风险继续上升）；
+# - multi_gap：四问、**两处以上**缺口（缺口不止一处时，模型容易只提第一个缺口就把后面全丢掉）；
+# - followup：多轮补问（上一轮答过一部分，本轮追问缺的那半 / 追问同族的那件事）；
+# - followup_partial：多轮 **+** 部分可答（上一轮答了一半并点明缺口，本轮接着追问）。
+VALID_PARTIAL_SHAPES = ("two_parts", "three_parts", "gap_in_middle", "four_parts",
+                        "multi_gap", "followup", "followup_partial")
+# 只有「一个问句里数得清子问题」的形状能钉死数量；followup* 的子问题数不固定（可以整条都不可答）
+SHAPE_PART_COUNT = {"two_parts": 2, "three_parts": 3, "gap_in_middle": 3,
+                    "four_parts": 4, "multi_gap": 4}
+# 缺口数的**精确**要求（None = 不限制）。缺口位置另有专门校验。
+SHAPE_GAP_COUNT = {"gap_in_middle": 1, "four_parts": 1}
+# 缺口数的**下限**要求：「多缺口」形状要真的多。
+# 注意 `followup_partial` 不在里面：它的缺口在**上一轮**（上一轮答了一半并点明缺哪半），
+# 本轮追问的那半可能恰好是能答的（那正是「别拿上一轮内容凑」要测的东西）。
+# 「上一轮确实点明了缺口」由 `tests/test_eval_retrieval.py` 读 corpus 之外的语料无关断言钉住。
+SHAPE_MIN_GAPS = {"multi_gap": 2}
+# 需要上一轮对话的形状
+SHAPES_NEEDING_HISTORY = ("followup", "followup_partial")
 # 带页标记的语料不放二进制：目录里放这份 spec，评测现场生成 pptx 再走真实 loader 抽文本。
 PPTX_SPEC_NAME = "eval_pptx.json"
 # 软依赖探测（与 loaders 的 HAS_PPTX 一个套路）：缺了要吵，不能静默少一个语料文件。
@@ -224,6 +238,15 @@ def _load_partial_structure(item, i, kind, answer_terms, absent_terms):
         raise ValueError(
             f"第 {i} 条部分可答样本 shape={shape!r} 需要 {SHAPE_PART_COUNT[shape]} 个子问题，"
             f"实际给出 {len(parts)} 个")
+    gaps = sum(1 for part in parts if part["absent_terms"])
+    if shape in SHAPE_GAP_COUNT and gaps != SHAPE_GAP_COUNT[shape]:
+        raise ValueError(
+            f"第 {i} 条部分可答样本 shape={shape!r} 需要正好 {SHAPE_GAP_COUNT[shape]} 处缺口，"
+            f"实际 {gaps} 处（缺口 = 某个子问题只有 absent_terms）")
+    if gaps < SHAPE_MIN_GAPS.get(shape, 0):
+        raise ValueError(
+            f"第 {i} 条部分可答样本 shape={shape!r} 至少要有 "
+            f"{SHAPE_MIN_GAPS[shape]} 处缺口，实际 {gaps} 处")
     if shape == "gap_in_middle" and not (parts[1]["absent_terms"] and not parts[1]["answer_terms"]):
         raise ValueError(
             f"第 {i} 条 gap_in_middle 样本的第 2 个子问题必须是「语料里没有」的那个（缺口在中间）")
@@ -249,12 +272,20 @@ def _load_partial_structure(item, i, kind, answer_terms, absent_terms):
         if role not in ("user", "assistant"):
             raise ValueError(
                 f"第 {i} 条部分可答样本的第 {j} 条历史 role 非法：{role!r}（只能是 user/assistant）")
+        # 历史必须 user 开头、user/assistant 交替：错位的历史会被当上下文原样喂给模型，
+        # 表现成「模型答非所问」，而真正的错在标注 —— 这种案子查起来最费时间。
+        expected_role = "user" if j % 2 else "assistant"
+        if role != expected_role:
+            raise ValueError(
+                f"第 {i} 条部分可答样本的第 {j} 条历史角色错位：应为 {expected_role!r}，实际 {role!r}"
+                f"（历史必须 user 开头、user/assistant 交替）")
         content = str(msg.get("content") or "").strip()
         if not content:
             raise ValueError(f"第 {i} 条部分可答样本的第 {j} 条历史缺少 content")
         history.append({"role": role, "content": content})
-    if shape == "followup" and not history:
-        raise ValueError(f"第 {i} 条 followup 样本必须有 history（多轮补问的上一轮）")
+    if shape in SHAPES_NEEDING_HISTORY and not history:
+        raise ValueError(
+            f"第 {i} 条 {shape} 样本必须有 history（多轮补问的上一轮）")
 
     expect_refused = item.get("expect_refused", False)
     if not isinstance(expect_refused, bool):

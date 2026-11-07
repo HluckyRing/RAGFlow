@@ -917,16 +917,18 @@ def test_load_queries_rejects_compound_fields_on_non_partial_samples(tmp_path, e
 
 
 def test_compound_samples_cover_every_shape(queries):
-    """三种形状必须**都有**样本，否则「按形状拆开看」那张表是空的。"""
+    """每种形状必须**都有**样本，否则「按形状拆开看」那张表是空的。"""
     partials = [q for q in queries if q["kind"] == "partial"]
     shapes = {}
     for query in partials:
         shapes.setdefault(query["shape"], []).append(query["id"])
 
-    for shape in ("two_parts", "three_parts", "gap_in_middle", "followup"):
+    for shape in ("two_parts", "three_parts", "gap_in_middle", "four_parts",
+                  "multi_gap", "followup", "followup_partial"):
         assert len(shapes.get(shape, [])) >= 2, f"形状 {shape} 的样本太少：{shapes.get(shape)}"
     # 多轮补问两个方向都要有：该拒的（追问语料里没有的那半）与该答的（追问同族可答的）
-    followups = [q for q in partials if q["shape"] == "followup"]
+    followups = [q for q in partials
+                 if q["shape"] in ("followup", "followup_partial")]
     assert any(q["expect_refused"] for q in followups), "缺「该拒」的多轮样本"
     assert any(not q["expect_refused"] for q in followups), "缺「该答」的多轮样本"
 
@@ -997,3 +999,140 @@ def test_at_least_one_followup_really_needs_coreference_resolution(queries):
         if resolve_query(query["question"], query["history"]) != query["question"]:
             resolved.append(query["id"])
     assert resolved, "没有一条多轮样本会触发指代消解（追问都自带完整主题）"
+
+
+@pytest.mark.parametrize("item, needle", [
+    # 四问只给了 3 个子问题
+    ({"shape": "four_parts",
+      "parts": [{"text": "甲", "answer_terms": ["a"]},
+                {"text": "乙", "absent_terms": ["b"]},
+                {"text": "丙", "answer_terms": ["a"]}],
+      "answer_terms": ["a", "a"], "absent_terms": ["b"]}, "4 个子问题"),
+    # 四问必须正好一处缺口（两处是 multi_gap 那条路）
+    ({"shape": "four_parts",
+      "parts": [{"text": "甲", "answer_terms": ["a"]},
+                {"text": "乙", "absent_terms": ["b"]},
+                {"text": "丙", "answer_terms": ["a"]},
+                {"text": "丁", "absent_terms": ["b"]}],
+      "answer_terms": ["a", "a"], "absent_terms": ["b", "b"]}, "正好 1 处缺口"),
+    # 「缺口多处」只有一处缺口 —— 那它测不到多缺口
+    ({"shape": "multi_gap",
+      "parts": [{"text": "甲", "answer_terms": ["a"]},
+                {"text": "乙", "absent_terms": ["b"]},
+                {"text": "丙", "answer_terms": ["a"]},
+                {"text": "丁", "answer_terms": ["a"]}],
+      "answer_terms": ["a", "a", "a"], "absent_terms": ["b"]}, "至少要有 2 处缺口"),
+    # 多轮形状没有历史
+    ({"shape": "followup_partial",
+      "parts": [{"text": "甲", "absent_terms": ["b"]}],
+      "answer_terms": [], "absent_terms": ["b"], "expect_refused": True}, "history"),
+    # 历史角色错位（user/user）：喂进模型的历史是错位的，表现成「模型答非所问」
+    ({"shape": "followup",
+      "parts": [{"text": "甲", "answer_terms": ["a"]}],
+      "answer_terms": ["a"], "absent_terms": [],
+      "history": [{"role": "user", "content": "上一轮"},
+                  {"role": "user", "content": "又一轮"}]}, "角色错位"),
+])
+def test_load_queries_rejects_malformed_extended_shapes(tmp_path, item, needle):
+    item = {"question": "x", "kind": "partial", "expect_files": ["a.md"], **item}
+    item.setdefault("answer_terms", [])
+    item.setdefault("absent_terms", [])
+
+    with pytest.raises(ValueError) as excinfo:
+        ev.load_queries(_write_queries(tmp_path, [item]))
+    assert needle in str(excinfo.value)
+
+
+def test_multi_gap_samples_really_have_two_distinguishable_gaps(queries):
+    """「缺口多处」的每一处缺口必须是**不同的主题**。
+
+    两处缺口用同一个 `absent_terms` 词的话，回答里提一次就被判成「两处都点明了」——
+    这样那条样本永远测不到「只提第一个缺口就把后面全丢掉」。
+    """
+    broken = []
+    for query in queries:
+        if query["kind"] != "partial" or query["shape"] != "multi_gap":
+            continue
+        gaps = [part for part in query["parts"] if part["absent_terms"]]
+        if len(gaps) < 2:
+            broken.append((query["id"], "缺口不足 2 处"))
+            continue
+        first = set(gaps[0]["absent_terms"])
+        for other in gaps[1:]:
+            if first & set(other["absent_terms"]):
+                broken.append((query["id"], "两处缺口共用了主题词"))
+    assert broken == [], f"这些「缺口多处」样本的两处缺口分不开：{broken}"
+
+
+def test_followup_partial_samples_say_the_gap_out_loud_in_the_previous_turn(queries):
+    """「多轮 + 部分可答」的前提是**上一轮就已经点明了缺口**。
+
+    上一轮的助手消息里如果没写「没有/未涉及」之类的说法，那就不是「答了一半、本轮追问另一半」，
+    只是两条无关的对话 —— 这种样本量出来的东西没有意义。
+    """
+    from scripts.measure_inline_abstention import ABSENCE_WORDS
+
+    broken = []
+    for query in queries:
+        if query["kind"] != "partial" or query["shape"] != "followup_partial":
+            continue
+        replies = [msg["content"] for msg in query["history"] if msg["role"] == "assistant"]
+        if not any(word in reply for reply in replies for word in ABSENCE_WORDS):
+            broken.append(query["id"])
+    assert broken == [], f"这些「多轮+部分可答」样本的上一轮没说清缺口：{broken}"
+
+
+def test_some_sample_has_a_history_long_enough_to_be_truncated(queries):
+    """`stream_answer` 只取最近 **5 条**历史。要测到这条截断路径，历史必须超过 5 条。
+
+    否则「多轮 4 轮」这种样本跟 2 轮没区别，而线上长对话里恰恰是被截断的那种。
+    """
+    long_histories = [(query["id"], len(query["history"])) for query in queries
+                      if query["kind"] == "partial" and len(query["history"]) > 5]
+    assert long_histories, "没有一条样本的历史超过 5 条，stream_answer 的截断路径没被测到"
+
+
+def test_every_gap_has_a_bare_topic_core(queries):
+    """每处缺口的主题词里必须有一个 **≤3 字**的「裸主题核」。
+
+    第三轮实测踩到的坑（p20 第 2 处缺口）：标注是 `病假天数 / 病假最长 / 病假期限`，
+    模型写的是「材料中没有规定病假的**最长可请期限**」—— 三个词一个都没命中（「病假」与
+    「期限」被「的最长可请」隔开），于是正确回答被判成「只字不提缺口」。
+    裸主题核（`期限` / `境外` / `燃料` / `加密` / `校验`）是「这件事到底是哪件事」的最短标识，
+    模型换多少修饰语都绕不过去。
+
+    唯一的例外是 `病假工资` 这一族：它更短的说法是 `工资`，而 `工资` 在语料里（不能当缺口主题词），
+    所以只能靠 4 字词组 —— 实测 p15/p20 这样够用。例外写在这里，别偷偷放宽别的样本。
+    """
+    exceptions = {"病假工资"}
+    brittle = []
+    for query in queries:
+        if query["kind"] != "partial":
+            continue
+        for part in query["parts"]:
+            terms = part["absent_terms"]
+            if not terms or exceptions & set(terms):
+                continue
+            if not any(len(term) <= 3 for term in terms):
+                brittle.append((query["id"], part["text"], terms))
+    assert brittle == [], f"这些缺口的主题词太长太脆（模型换个修饰语就匹配不上）：{brittle}"
+
+
+def test_bingjia_family_gap_terms_carry_both_spellings(queries):
+    """病假工资族必须同时给「病假期间工资」与「病假期间的工资」。
+
+    实测模型两种都会写（同一轮里 p22 写「病假期间工资如何计算」、另一条写「病假期间的工资」）。
+    这一族没有合法裸核（「工资」在语料里，不能当缺口主题词），所以只能靠写法齐全。
+    """
+    missing = []
+    for query in queries:
+        if query["kind"] != "partial":
+            continue
+        for part in query["parts"]:
+            terms = part["absent_terms"]
+            if "病假工资" not in terms:
+                continue
+            for spelling in ("病假期间工资", "病假期间的工资"):
+                if spelling not in terms:
+                    missing.append((query["id"], part["text"], spelling))
+    assert missing == [], f"病假工资族缺了某种写法：{missing}"
