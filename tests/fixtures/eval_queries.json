@@ -504,72 +504,272 @@
     "id": "p01",
     "question": "年假有几天，病假工资怎么算",
     "kind": "partial",
+    "shape": "two_parts",
+    "expect_refused": false,
     "expect_files": ["02-考勤与假期制度.md"],
+    "parts": [
+      {"text": "年假有几天", "answer_terms": ["每年 5 天"]},
+      {"text": "病假工资怎么算", "absent_terms": ["病假工资", "病假期间工资", "病假工资标准"]}
+    ],
     "answer_terms": ["每年 5 天"],
-    "absent_terms": ["病假工资"],
+    "absent_terms": ["病假工资", "病假期间工资", "病假工资标准"],
     "note": "可答部分：司龄 1-3 年年假 5 天；不可答部分：病假期间的工资标准（语料只写了要证明）"
   },
   {
     "id": "p02",
     "question": "全量备份保留多久？异地机房怎么切换？",
     "kind": "partial",
+    "shape": "two_parts",
+    "expect_refused": false,
     "expect_files": ["04-数据备份与恢复.md"],
+    "parts": [
+      {"text": "全量备份保留多久", "answer_terms": ["保留 30 天"]},
+      {"text": "异地机房怎么切换", "absent_terms": ["异地机房", "异地机房切换", "机房切换"]}
+    ],
     "answer_terms": ["保留 30 天"],
-    "absent_terms": ["异地机房"],
+    "absent_terms": ["异地机房", "异地机房切换", "机房切换"],
     "note": "可答部分：全量备份保留 30 天；不可答部分：异地机房切换（语料只有备份范围/周期/演练）"
   },
   {
     "id": "p03",
     "question": "A 级客户多久响应，违约金怎么算？",
     "kind": "partial",
+    "shape": "two_parts",
+    "expect_refused": false,
     "expect_files": ["03-客户分级与响应时效.md"],
+    "parts": [
+      {"text": "A 级客户多久响应", "answer_terms": ["30 分钟内响应"]},
+      {"text": "违约金怎么算", "absent_terms": ["违约金", "违约条款", "违约金标准"]}
+    ],
     "answer_terms": ["30 分钟内响应"],
-    "absent_terms": ["违约金"],
+    "absent_terms": ["违约金", "违约条款", "违约金标准"],
     "note": "可答部分：A 级客户 30 分钟内响应；不可答部分：违约金条款（语料没有）"
   },
   {
     "id": "p04",
     "question": "出差住宿一线城市限额多少，境外城市呢？",
     "kind": "partial",
+    "shape": "two_parts",
+    "expect_refused": false,
     "expect_files": ["05-费用报销流程.md"],
+    "parts": [
+      {"text": "出差住宿一线城市限额多少", "answer_terms": ["600 元"]},
+      {"text": "境外城市呢", "absent_terms": ["境外城市", "境外标准", "境外住宿标准"]}
+    ],
     "answer_terms": ["600 元"],
-    "absent_terms": ["境外城市"],
+    "absent_terms": ["境外城市", "境外标准", "境外住宿标准"],
     "note": "可答部分：一线城市每晚 600 元；不可答部分：境外城市标准（语料只分一线/二线/其它）"
   },
   {
     "id": "p05",
     "question": "市盈率怎么算，股息率呢？",
     "kind": "partial",
+    "shape": "two_parts",
+    "expect_refused": false,
     "expect_files": ["01-财务指标.md"],
+    "parts": [
+      {"text": "市盈率怎么算", "answer_terms": ["股价除以每股收益"]},
+      {"text": "股息率呢", "absent_terms": ["股息率", "股息", "分红率"]}
+    ],
     "answer_terms": ["股价除以每股收益"],
-    "absent_terms": ["股息率"],
+    "absent_terms": ["股息率", "股息", "分红率"],
     "note": "可答部分：市盈率=股价/每股收益；不可答部分：股息率（语料只写了市盈率/ROE/毛利率）"
   },
   {
     "id": "p06",
     "question": "调休多久要用完，没休完能折成工资吗？",
     "kind": "partial",
+    "shape": "two_parts",
+    "expect_refused": false,
     "expect_files": ["02-考勤与假期制度.md"],
+    "parts": [
+      {"text": "调休多久要用完", "answer_terms": ["6 个月内使用"]},
+      {"text": "没休完能折成工资吗", "absent_terms": ["折成工资", "折现", "折算成工资"]}
+    ],
     "answer_terms": ["6 个月内使用"],
-    "absent_terms": ["折成工资"],
+    "absent_terms": ["折成工资", "折现", "折算成工资"],
     "note": "可答部分：调休 6 个月内使用；不可答部分：未休调休折现（语料只说逾期作废）"
   },
   {
     "id": "p07",
     "question": "恢复演练多久一次，要请哪些人参加？",
     "kind": "partial",
+    "shape": "two_parts",
+    "expect_refused": false,
     "expect_files": ["04-数据备份与恢复.md"],
-    "answer_terms": ["每半年至少组织一次"],
-    "absent_terms": ["请哪些人参加"],
+    "parts": [
+      {"text": "恢复演练多久一次", "answer_terms": ["每半年至少"]},
+      {"text": "要请哪些人参加", "absent_terms": ["参加人员", "哪些人参加", "参会人员"]}
+    ],
+    "answer_terms": ["每半年至少"],
+    "absent_terms": ["参加人员", "哪些人参加", "参会人员"],
     "note": "可答部分：每半年至少一次；不可答部分：参加人员（语料没写）"
   },
   {
     "id": "p08",
     "question": "青花瓷为什么要控制降温速度，窑炉的燃料成本怎么算？",
     "kind": "partial",
+    "shape": "two_parts",
+    "expect_refused": false,
     "expect_files": ["06-长段落与窗口压测.md"],
+    "parts": [
+      {"text": "青花瓷为什么要控制降温速度", "answer_terms": ["产生应力"]},
+      {"text": "窑炉的燃料成本怎么算", "absent_terms": ["燃料成本", "窑炉燃料成本", "燃料费用"]}
+    ],
     "answer_terms": ["产生应力"],
-    "absent_terms": ["燃料成本"],
+    "absent_terms": ["燃料成本", "窑炉燃料成本", "燃料费用"],
     "note": "可答部分：窑温分三段缓慢抬升、降温过快会产生应力；不可答部分：燃料成本（语料没写）"
+  },
+  {
+    "id": "p09",
+    "question": "年假有几天？迟到怎么算？加班可以折算为调休吗？",
+    "kind": "partial",
+    "shape": "three_parts",
+    "expect_refused": false,
+    "expect_files": ["02-考勤与假期制度.md"],
+    "parts": [
+      {"text": "年假有几天", "answer_terms": ["每年 5 天"]},
+      {"text": "迟到怎么算", "answer_terms": ["晚于 09:30", "按半天事假处理"]},
+      {"text": "加班可以折算为调休吗", "answer_terms": ["折算为调休"]}
+    ],
+    "answer_terms": ["每年 5 天", "晚于 09:30", "按半天事假处理", "折算为调休"],
+    "absent_terms": [],
+    "note": "三问全可答，无缺口（02 号文件）：《年假》「司龄 1 至 3 年每年 5 天」、《打卡要求》「迟到超过 60 分钟按半天事假处理」、《加班与调休》「加班时长可以折算为调休」；用来测会不会漏答其中一问"
+  },
+  {
+    "id": "p10",
+    "question": "备份数据用什么加密算法？全量备份保留多久？增量备份保留几天？",
+    "kind": "partial",
+    "shape": "three_parts",
+    "expect_refused": false,
+    "expect_files": ["04-数据备份与恢复.md"],
+    "parts": [
+      {"text": "备份数据用什么加密算法", "absent_terms": ["加密算法", "加密方式", "数据加密"]},
+      {"text": "全量备份保留多久", "answer_terms": ["保留 30 天"]},
+      {"text": "增量备份保留几天", "answer_terms": ["保留 7 天"]}
+    ],
+    "answer_terms": ["保留 30 天", "保留 7 天"],
+    "absent_terms": ["加密算法", "加密方式", "数据加密"],
+    "note": "不可答在**首**位：04 号文件只写备份范围/周期/保留/演练，密钥只要求「额外做一次离线归档」，通篇没有加密要求更没有加密算法；可答两项出自《保留策略》「全量备份保留 30 天」「增量备份保留 7 天」"
+  },
+  {
+    "id": "p11",
+    "question": "C 级客户多久响应？满意度回访多久做一次？工单超时要罚款多少？",
+    "kind": "partial",
+    "shape": "three_parts",
+    "expect_refused": false,
+    "expect_files": ["03-客户分级与响应时效.md"],
+    "parts": [
+      {"text": "C 级客户多久响应", "answer_terms": ["1 个工作日内响应"]},
+      {"text": "满意度回访多久做一次", "answer_terms": ["每季度"]},
+      {"text": "工单超时要罚款多少", "absent_terms": ["罚款", "超时罚款", "处罚"]}
+    ],
+    "answer_terms": ["1 个工作日内响应", "每季度"],
+    "absent_terms": ["罚款", "超时罚款", "处罚"],
+    "note": "不可答在**尾**位：03 号文件《响应时效》有「C 级客户 1 个工作日内响应」、《客户满意度》有「每季度」回访；超时只写「系统自动升级到客户成功经理」和「部门负责人介入复盘」，没有任何罚款条款"
+  },
+  {
+    "id": "p12",
+    "question": "入职满一年的员工有多少天年假？病假期间的工资怎么算？加班能折算成调休吗？",
+    "kind": "partial",
+    "shape": "gap_in_middle",
+    "expect_refused": false,
+    "expect_files": ["02-考勤与假期制度.md"],
+    "parts": [
+      {"text": "入职满一年的员工有多少天年假", "answer_terms": ["每年 5 天"]},
+      {"text": "病假期间的工资怎么算", "absent_terms": ["病假工资", "病假期间工资", "病假工资标准"]},
+      {"text": "加班能折算成调休吗", "answer_terms": ["折算为调休"]}
+    ],
+    "answer_terms": ["每年 5 天", "折算为调休"],
+    "absent_terms": ["病假工资", "病假期间工资", "病假工资标准"],
+    "note": "缺口在中间：02 号文件《年假》有「司龄 1 至 3 年每年 5 天」、《加班与调休》有「加班时长可以折算为调休」；《病假》一节只写要医院证明与诊断/用药材料，没有病假工资口径。用来看模型会不会答完第一问就收尾、把缺口后面那问吞掉"
+  },
+  {
+    "id": "p13",
+    "question": "一线城市出差住宿限额多少？境外城市的住宿标准是多少？发票金额超过 1000 元要附什么？",
+    "kind": "partial",
+    "shape": "gap_in_middle",
+    "expect_refused": false,
+    "expect_files": ["05-费用报销流程.md"],
+    "parts": [
+      {"text": "一线城市出差住宿限额多少", "answer_terms": ["600 元"]},
+      {"text": "境外城市的住宿标准是多少", "absent_terms": ["境外城市", "境外标准", "境外住宿标准"]},
+      {"text": "发票金额超过 1000 元要附什么", "answer_terms": ["合同或采购申请单"]}
+    ],
+    "answer_terms": ["600 元", "合同或采购申请单"],
+    "absent_terms": ["境外城市", "境外标准", "境外住宿标准"],
+    "note": "缺口在中间：05 号文件《报销标准》只分一线/二线/其它三类城市，没有境外标准；两侧可答项出自《报销标准》「一线城市每晚不超过 600 元」与《发票要求》「需附合同或采购申请单」"
+  },
+  {
+    "id": "p14",
+    "question": "窑温分几段抬升？窑炉的燃料成本怎么算？降温过快会有什么后果？",
+    "kind": "partial",
+    "shape": "gap_in_middle",
+    "expect_refused": false,
+    "expect_files": ["06-长段落与窗口压测.md"],
+    "parts": [
+      {"text": "窑温分几段抬升", "answer_terms": ["分三段"]},
+      {"text": "窑炉的燃料成本怎么算", "absent_terms": ["燃料成本", "窑炉燃料成本", "燃料费用"]},
+      {"text": "降温过快会有什么后果", "answer_terms": ["产生应力"]}
+    ],
+    "answer_terms": ["分三段", "产生应力"],
+    "absent_terms": ["燃料成本", "窑炉燃料成本", "燃料费用"],
+    "note": "缺口在中间：06 号文件那段长文写了「窑温通常分三段缓慢抬升」与「降温过快会让器物内部产生应力」，但通篇没有窑炉燃料成本；长段落 + 缺口居中，后半问最容易被窗口切掉"
+  },
+  {
+    "id": "p15",
+    "question": "这个病假工资怎么算？",
+    "kind": "partial",
+    "shape": "followup",
+    "expect_refused": true,
+    "expect_files": ["02-考勤与假期制度.md"],
+    "parts": [
+      {"text": "这个病假工资怎么算", "absent_terms": ["病假工资", "病假期间工资", "病假工资标准"]}
+    ],
+    "answer_terms": [],
+    "absent_terms": ["病假工资", "病假期间工资", "病假工资标准"],
+    "history": [
+      {"role": "user", "content": "年假有几天"},
+      {"role": "assistant", "content": "根据《02-考勤与假期制度.md》，入职满一年的员工享有带薪年假：司龄 1 至 3 年每年 5 天，3 至 5 年每年 7 天，5 年以上每年 10 天；当年未休完的部分最多结转 5 天到次年 3 月 31 日。"},
+      {"role": "user", "content": "病假要什么证明"},
+      {"role": "assistant", "content": "根据《02-考勤与假期制度.md》，病假需提供二级以上医院开具的证明；连续病假超过 3 天的，还需同步提交诊断证明与用药清单。"}
+    ],
+    "note": "指代型追问：本轮问句 10 字（< MAX_COREF_LENGTH=15）且含「这个」，上一轮 user 消息「病假要什么证明」能被 content_phrases 抽出实义片段，resolve_query 会拼上前文。上一轮只答了病假要哪些证明，本轮问病假工资，02 号文件全文没有病假工资口径 —— 正确行为是整条拒答"
+  },
+  {
+    "id": "p16",
+    "question": "逾期提交会扣绩效吗？",
+    "kind": "partial",
+    "shape": "followup",
+    "expect_refused": true,
+    "expect_files": ["05-费用报销流程.md"],
+    "parts": [
+      {"text": "逾期提交会扣绩效吗", "absent_terms": ["扣绩效", "绩效扣减"]}
+    ],
+    "answer_terms": [],
+    "absent_terms": ["扣绩效", "绩效扣减"],
+    "history": [
+      {"role": "user", "content": "费用发生后多久必须提交报销"},
+      {"role": "assistant", "content": "根据《05-费用报销流程.md》，费用发生后 30 天内提交报销，跨年费用最迟在次年 1 月 15 日前提交，逾期不再受理。"}
+    ],
+    "note": "上一轮答了提交时限（30 天内 / 次年 1 月 15 日前），本轮追问逾期后的处罚；05 号文件只写「逾期不再受理」，没有任何绩效扣减规定 —— 正确行为是拒答"
+  },
+  {
+    "id": "p17",
+    "question": "病假需要什么证明？",
+    "kind": "partial",
+    "shape": "followup",
+    "expect_refused": false,
+    "expect_files": ["02-考勤与假期制度.md"],
+    "parts": [
+      {"text": "病假需要什么证明", "answer_terms": ["二级以上医院"]}
+    ],
+    "answer_terms": ["二级以上医院"],
+    "absent_terms": [],
+    "history": [
+      {"role": "user", "content": "年假有几天"},
+      {"role": "assistant", "content": "根据《02-考勤与假期制度.md》，入职满一年的员工享有带薪年假：司龄 1 至 3 年每年 5 天，3 至 5 年每年 7 天，5 年以上每年 10 天。"}
+    ],
+    "note": "同族可答追问（本问全可答、语料无缺口，所以 absent_terms 为空）：上一轮答的是年假天数，本轮问同文件《病假》一节的「病假需提供二级以上医院开具的证明」，语料里确实有答案；用来抓多轮下把上一轮的天数当本轮答案复用 / 答偏"
   }
 ]

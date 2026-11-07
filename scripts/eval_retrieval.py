@@ -58,6 +58,14 @@ VALID_KINDS = ("positive", "negative", "partial")
 # - far：与语料零词面重叠的远域提问，考「会不会被阈值外的噪声拉进来」；
 # - adjacent：域内但语料里没有答案，考「看起来像就作答」——产品里真正的答非所问。
 VALID_NEGATIVE_CLASSES = ("far", "adjacent")
+# 部分可答（复合问题）的四种形状。前三种是**一个问句里的多个子问题**，第四种是**跨轮**：
+# - two_parts：两问（2026-11-08 的第一批样本）；
+# - three_parts：三问（漏答其中一问的风险随子问题数量上升）；
+# - gap_in_middle：三问、不可答的那问正好在中间（最容易被截断的形状：答完第一问就收尾）；
+# - followup：多轮补问（上一轮答过一部分，本轮追问缺的那半 / 追问同族的那件事）。
+VALID_PARTIAL_SHAPES = ("two_parts", "three_parts", "gap_in_middle", "followup")
+# 只有「一个问句里数得清子问题」的形状能钉死数量；followup 的子问题数不固定（可以整条都不可答）
+SHAPE_PART_COUNT = {"two_parts": 2, "three_parts": 3, "gap_in_middle": 3}
 # 带页标记的语料不放二进制：目录里放这份 spec，评测现场生成 pptx 再走真实 loader 抽文本。
 PPTX_SPEC_NAME = "eval_pptx.json"
 # 软依赖探测（与 loaders 的 HAS_PPTX 一个套路）：缺了要吵，不能静默少一个语料文件。
@@ -170,6 +178,91 @@ def load_corpus(corpus_dir):
     return {name: files[name] for name in sorted(files)}
 
 
+def _load_partial_structure(item, i, kind, answer_terms, absent_terms):
+    """读 partial 样本的「形状」：`shape` / `parts` / `history` / `expect_refused`。
+
+    为什么要这份结构（2026-11-08 之后的第二步）：此前 8 条样本只测了「一个问句两问」这一种形状，
+    而产品里复合问题还有三种更难的形状 —— 三问、缺口正好在中间（答完第一问就收尾、把缺口后面
+    那问吞掉）、多轮补问。只有把子问题**按顺序**列出来，才能量出「漏答了可答项」与
+    「缺口后面那一问还活着吗」这两件事；否则只能量到「整条有没有点明缺口」。
+
+    校验只做**结构**（切片是否自洽）；「`answer_terms` 真的在语料里 / `absent_terms` 真的不在
+    语料里」这种**事实**校验放在 `tests/test_eval_retrieval.py`，那里能读到语料。
+    """
+    shape = item.get("shape")
+    # 这套结构只对「复合问题」样本有意义：正/负样本带上它多半是标注写错了地方，
+    # 静默忽略会让后人以为那条样本真的在测形状。
+    if kind != "partial" and (shape or item.get("parts") or item.get("history")
+                              or "expect_refused" in item):
+        raise ValueError(
+            f"第 {i} 条 {kind} 样本不该带 shape/parts/history/expect_refused"
+            f"（那是 partial 的字段）")
+    if shape is not None:
+        shape = str(shape).strip()
+        if shape not in VALID_PARTIAL_SHAPES:
+            raise ValueError(
+                f"第 {i} 条部分可答样本 shape 非法：{shape!r}（只能是 {VALID_PARTIAL_SHAPES}）")
+
+    parts = []
+    for j, part in enumerate(item.get("parts") or [], 1):
+        if not isinstance(part, dict):
+            raise ValueError(f"第 {i} 条部分可答样本的第 {j} 个子问题不是 JSON 对象")
+        text = str(part.get("text") or "").strip()
+        if not text:
+            raise ValueError(f"第 {i} 条部分可答样本的第 {j} 个子问题缺少 text")
+        part_answer = [str(t) for t in (part.get("answer_terms") or [])]
+        part_absent = [str(t) for t in (part.get("absent_terms") or [])]
+        # 每个子问题只能站一边：要么「语料里答得上」，要么「语料里没有」。
+        # 两边都写或都不写都会让分桶无从下手（答不到也不知道该算漏答还是该算缺口）。
+        if bool(part_answer) == bool(part_absent):
+            raise ValueError(
+                f"第 {i} 条部分可答样本的第 {j} 个子问题必须恰好有 answer_terms 或 "
+                f"absent_terms 之一（现在 answer_terms={part_answer}、absent_terms={part_absent}）")
+        parts.append({"text": text, "answer_terms": part_answer, "absent_terms": part_absent})
+
+    if shape in SHAPE_PART_COUNT and len(parts) != SHAPE_PART_COUNT[shape]:
+        raise ValueError(
+            f"第 {i} 条部分可答样本 shape={shape!r} 需要 {SHAPE_PART_COUNT[shape]} 个子问题，"
+            f"实际给出 {len(parts)} 个")
+    if shape == "gap_in_middle" and not (parts[1]["absent_terms"] and not parts[1]["answer_terms"]):
+        raise ValueError(
+            f"第 {i} 条 gap_in_middle 样本的第 2 个子问题必须是「语料里没有」的那个（缺口在中间）")
+
+    if parts:
+        flat_answer = [t for part in parts for t in part["answer_terms"]]
+        flat_absent = [t for part in parts for t in part["absent_terms"]]
+        # 平铺字段是判分脚本实际用的东西，必须与 parts 完全一致 —— 两处各写一份就会漂
+        if flat_answer != answer_terms:
+            raise ValueError(
+                f"第 {i} 条部分可答样本的 answer_terms 与 parts 拍平结果不一致："
+                f"{answer_terms} != {flat_answer}")
+        if flat_absent != absent_terms:
+            raise ValueError(
+                f"第 {i} 条部分可答样本的 absent_terms 与 parts 拍平结果不一致："
+                f"{absent_terms} != {flat_absent}")
+
+    history = []
+    for j, msg in enumerate(item.get("history") or [], 1):
+        if not isinstance(msg, dict):
+            raise ValueError(f"第 {i} 条部分可答样本的第 {j} 条历史不是 JSON 对象")
+        role = str(msg.get("role") or "").strip()
+        if role not in ("user", "assistant"):
+            raise ValueError(
+                f"第 {i} 条部分可答样本的第 {j} 条历史 role 非法：{role!r}（只能是 user/assistant）")
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            raise ValueError(f"第 {i} 条部分可答样本的第 {j} 条历史缺少 content")
+        history.append({"role": role, "content": content})
+    if shape == "followup" and not history:
+        raise ValueError(f"第 {i} 条 followup 样本必须有 history（多轮补问的上一轮）")
+
+    expect_refused = item.get("expect_refused", False)
+    if not isinstance(expect_refused, bool):
+        raise ValueError(
+            f"第 {i} 条部分可答样本 expect_refused 必须是布尔值（现在是 {expect_refused!r}）")
+    return shape, parts, history, expect_refused
+
+
 def load_queries(path):
     """读评测标注并校验。
 
@@ -201,6 +294,8 @@ def load_queries(path):
         # `absent_terms` = 语料里没有的那半个问题的主题词（必须真的不在语料里）。
         answer_terms = [str(t) for t in (item.get("answer_terms") or [])]
         absent_terms = [str(t) for t in (item.get("absent_terms") or [])]
+        shape, parts, history, expect_refused = _load_partial_structure(
+            item, i, kind, answer_terms, absent_terms)
         if kind == "positive":
             if not gold_phrases:
                 raise ValueError(f"第 {i} 条正样本缺少 gold_phrases")
@@ -211,10 +306,18 @@ def load_queries(path):
         elif kind == "partial":
             if not expect_files:
                 raise ValueError(f"第 {i} 条部分可答样本缺少 expect_files")
-            if not answer_terms:
-                raise ValueError(f"第 {i} 条部分可答样本缺少 answer_terms（可答部分的关键事实）")
-            if not absent_terms:
-                raise ValueError(f"第 {i} 条部分可答样本缺少 absent_terms（语料里没有的那半个问题）")
+            if not answer_terms and not expect_refused:
+                raise ValueError(
+                    f"第 {i} 条部分可答样本缺少 answer_terms（可答部分的关键事实）；"
+                    f"如果这条本来就该整条拒答，要显式写 expect_refused: true")
+            if not absent_terms and not (answer_terms and parts
+                                         and all(part["answer_terms"] for part in parts)):
+                # 没有缺口是允许的，**前提**是它确实是一条「每个子问题都答得上」的复合样本
+                # （测「子问题一多会不会漏答其中一问」、或「多轮追问同族可答问题会不会答偏」）。
+                # 否则就是漏标了缺口 —— 缺口的样本才是「部分可答」。
+                raise ValueError(
+                    f"第 {i} 条部分可答样本缺少 absent_terms（语料里没有的那半个问题）；"
+                    f"只有「每个子问题都答得上」的复合样本才可以没有缺口")
             negative_class = None
         elif negative_class not in VALID_NEGATIVE_CLASSES:
             raise ValueError(
@@ -230,6 +333,10 @@ def load_queries(path):
             "gold_phrases": gold_phrases,
             "answer_terms": answer_terms,
             "absent_terms": absent_terms,
+            "shape": shape,
+            "parts": parts,
+            "history": history,
+            "expect_refused": expect_refused,
             "note": str(item.get("note") or ""),
         })
 

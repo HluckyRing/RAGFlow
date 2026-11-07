@@ -819,3 +819,181 @@ def test_saved_hyde_cache_makes_the_second_run_free_and_identical(tmp_path):
     second = ev.cached_generate(boom, ev.load_hyde_cache(str(path)))
 
     assert second("问题A") == "假设：问题A"
+
+
+# ── 复合问题的三种形状（2026-11-08 第二批）：三问 / 缺口在中间 / 多轮补问 ──
+#
+# 三层保险丝，缺一层指标就会静默失效：
+# ① 结构自洽（load_queries 的校验，这里钉住它真的会拦）；
+# ② 标注与语料一致（可答项真的在语料、不可答项真的不在 —— 见上面两条 partial 保险丝，走平铺字段）；
+# ③ 这批样本**真的存在且真的测得到**（形状齐了、子问题超过一个、该拒的样本也有）。
+
+def test_load_queries_carries_compound_shape_fields(tmp_path):
+    """形状字段必须穿过 load_queries —— 它过去只认白名单里的键，多出来的会被静默丢掉。"""
+    path = _write_queries(tmp_path, [
+        {"question": "年假有几天，病假工资怎么算，加班怎么折算调休", "kind": "partial",
+         "shape": "three_parts", "expect_refused": False,
+         "expect_files": ["02-考勤与假期制度.md"],
+         "parts": [
+             {"text": "年假有几天", "answer_terms": ["每年 5 天"]},
+             {"text": "病假工资怎么算", "absent_terms": ["病假工资"]},
+             {"text": "加班怎么折算调休", "answer_terms": ["6 个月内使用"]},
+         ],
+         "answer_terms": ["每年 5 天", "6 个月内使用"], "absent_terms": ["病假工资"],
+         "history": [{"role": "user", "content": "上一轮的问题"}]},
+    ])
+
+    got = ev.load_queries(path)[0]
+
+    assert got["shape"] == "three_parts"
+    assert got["expect_refused"] is False
+    assert got["parts"][1]["absent_terms"] == ["病假工资"]
+    assert got["history"] == [{"role": "user", "content": "上一轮的问题"}]
+
+
+@pytest.mark.parametrize("item, needle", [
+    # shape 拼错
+    ({"shape": "four_parts", "parts": [], "answer_terms": ["a"], "absent_terms": ["b"]}, "shape"),
+    # 平铺字段与 parts 不一致（两处各写一份就会漂）
+    ({"shape": "two_parts",
+      "parts": [{"text": "甲", "answer_terms": ["a"]},
+                {"text": "乙", "absent_terms": ["b"]}],
+      "answer_terms": ["a", "写错了"], "absent_terms": ["b"]}, "拍平"),
+    # 子问题两边都写（不知道该算漏答还是算缺口）
+    ({"shape": "two_parts",
+      "parts": [{"text": "甲", "answer_terms": ["a"], "absent_terms": ["b"]},
+                {"text": "乙", "absent_terms": ["b"]}],
+      "answer_terms": ["a"], "absent_terms": ["b", "b"]}, "恰好有"),
+    # 三问只给了两个子问题
+    ({"shape": "three_parts",
+      "parts": [{"text": "甲", "answer_terms": ["a"]},
+                {"text": "乙", "absent_terms": ["b"]}],
+      "answer_terms": ["a"], "absent_terms": ["b"]}, "3 个子问题"),
+    # 缺口在中间：中间那个必须是「语料里没有」的
+    ({"shape": "gap_in_middle",
+      "parts": [{"text": "甲", "answer_terms": ["a"]},
+                {"text": "乙", "answer_terms": ["a"]},
+                {"text": "丙", "absent_terms": ["b"]}],
+      "answer_terms": ["a", "a"], "absent_terms": ["b"]}, "中间"),
+    # followup 没有 history：多轮样本缺上一轮，等于测了个单轮问题
+    ({"shape": "followup", "parts": [{"text": "甲", "absent_terms": ["b"]}],
+      "answer_terms": [], "absent_terms": ["b"], "expect_refused": True}, "history"),
+    # expect_refused 必须是布尔值（字符串 "false" 会被当成真，方向刚好反）
+    ({"shape": "two_parts",
+      "parts": [{"text": "甲", "answer_terms": ["a"]},
+                {"text": "乙", "absent_terms": ["b"]}],
+      "answer_terms": ["a"], "absent_terms": ["b"], "expect_refused": "false"},
+     "expect_refused"),
+])
+def test_load_queries_rejects_malformed_compound_samples(tmp_path, item, needle):
+    item = {"question": "x", "kind": "partial", "expect_files": ["a.md"], **item}
+    item.setdefault("answer_terms", [])
+    item.setdefault("absent_terms", [])
+
+    with pytest.raises(ValueError) as excinfo:
+        ev.load_queries(_write_queries(tmp_path, [item]))
+    assert needle in str(excinfo.value)
+
+
+@pytest.mark.parametrize("extra", [
+    {"shape": "two_parts"},
+    {"parts": [{"text": "甲", "answer_terms": ["净资产收益率"]}]},
+    {"history": [{"role": "user", "content": "上一轮"}]},
+    {"expect_refused": False},
+])
+def test_load_queries_rejects_compound_fields_on_non_partial_samples(tmp_path, extra):
+    """正/负样本带上 shape/parts/history/expect_refused 多半是标注写错了地方。
+
+    静默忽略会让后人以为那条样本真的在测形状（或者以为自己标了「该拒」）。
+    """
+    path = _write_queries(tmp_path, [
+        {"question": "净资产收益率是什么", "kind": "positive",
+         "expect_files": ["01-财务指标.md"], "gold_phrases": ["净资产收益率"], **extra},
+    ])
+
+    with pytest.raises(ValueError) as excinfo:
+        ev.load_queries(path)
+    assert "partial" in str(excinfo.value)
+
+
+def test_compound_samples_cover_every_shape(queries):
+    """三种形状必须**都有**样本，否则「按形状拆开看」那张表是空的。"""
+    partials = [q for q in queries if q["kind"] == "partial"]
+    shapes = {}
+    for query in partials:
+        shapes.setdefault(query["shape"], []).append(query["id"])
+
+    for shape in ("two_parts", "three_parts", "gap_in_middle", "followup"):
+        assert len(shapes.get(shape, [])) >= 2, f"形状 {shape} 的样本太少：{shapes.get(shape)}"
+    # 多轮补问两个方向都要有：该拒的（追问语料里没有的那半）与该答的（追问同族可答的）
+    followups = [q for q in partials if q["shape"] == "followup"]
+    assert any(q["expect_refused"] for q in followups), "缺「该拒」的多轮样本"
+    assert any(not q["expect_refused"] for q in followups), "缺「该答」的多轮样本"
+
+
+def test_compound_metric_has_samples_with_more_than_one_answerable_part(queries):
+    """「漏答可答项」这个桶只有在**一条样本有多个可答项**时才可能触发。
+
+    全是「一个可答项」的话，那个桶永远是 0 —— 看起来像「从不漏答」，其实是从没测过。
+    """
+    multi = [q["id"] for q in queries if q["kind"] == "partial"
+             and len(q["answer_terms"]) >= 2]
+    assert len(multi) >= 4, f"可答项 ≥2 的样本太少，「漏答可答项」指标测不到：{multi}"
+
+
+def test_compound_parts_follow_the_question_order(queries):
+    """子问题必须按问句里的先后列出来，否则「缺口在中间」和「缺口后一问存活」都是假的。"""
+    broken = []
+    for query in queries:
+        if query["kind"] != "partial" or not query["parts"]:
+            continue
+        cursor = -1
+        for part in query["parts"]:
+            found = query["question"].find(part["text"], cursor + 1)
+            if found < 0:
+                broken.append((query["id"], part["text"]))
+                break
+            cursor = found
+    assert broken == [], f"这些子问题按顺序在问句里找不到：{broken}"
+
+
+def test_gap_in_middle_samples_really_put_the_gap_in_the_middle(queries):
+    wrong = []
+    for query in queries:
+        if query["kind"] != "partial" or query["shape"] != "gap_in_middle":
+            continue
+        parts = query["parts"]
+        if len(parts) != 3 or not parts[1]["absent_terms"]:
+            wrong.append(query["id"])
+        elif not (parts[0]["answer_terms"] and parts[2]["answer_terms"]):
+            wrong.append(query["id"])
+    assert wrong == [], f"这些「缺口在中间」样本其实缺口不在中间：{wrong}"
+
+
+def test_followup_samples_carry_a_usable_history(queries):
+    """多轮样本的历史必须是「user 开头、user/assistant 成对」，否则喂进模型的历史是错位的。"""
+    broken = []
+    for query in queries:
+        if query["kind"] != "partial" or query["shape"] != "followup":
+            continue
+        roles = [msg["role"] for msg in query["history"]]
+        if not roles or roles[0] != "user" or len(roles) % 2:
+            broken.append((query["id"], roles))
+    assert broken == [], f"这些多轮样本的历史不成对：{broken}"
+
+
+def test_at_least_one_followup_really_needs_coreference_resolution(queries):
+    """至少一条多轮样本要**真的**依赖指代消解。
+
+    如果每条追问都自带完整主题，`resolve_query` 那条路根本没被测到 —— 而线上用户
+    恰恰最爱问「这个要多久」。
+    """
+    from src.llm import resolve_query
+
+    resolved = []
+    for query in queries:
+        if query["kind"] != "partial" or query["shape"] != "followup":
+            continue
+        if resolve_query(query["question"], query["history"]) != query["question"]:
+            resolved.append(query["id"])
+    assert resolved, "没有一条多轮样本会触发指代消解（追问都自带完整主题）"
