@@ -53,7 +53,7 @@ DEFAULT_CORPUS = ROOT / "tests" / "fixtures" / "eval_corpus"
 DEFAULT_QUERIES = ROOT / "tests" / "fixtures" / "eval_queries.json"
 
 TEXT_SUFFIXES = (".md", ".txt")
-VALID_KINDS = ("positive", "negative")
+VALID_KINDS = ("positive", "negative", "partial")
 # 负样本的两种口径（见 docs/retrieval-baseline-2026-10-06.md「负样本分两类」）：
 # - far：与语料零词面重叠的远域提问，考「会不会被阈值外的噪声拉进来」；
 # - adjacent：域内但语料里没有答案，考「看起来像就作答」——产品里真正的答非所问。
@@ -196,12 +196,25 @@ def load_queries(path):
         # 页码/工作表标注是可选的：没写 = 这个样本不测 section（不进 section 指标的分母）
         expect_sections = [str(s) for s in (item.get("expect_sections") or [])]
         negative_class = str(item.get("negative_class") or "far").strip().lower()
+        # 部分可答（partial）：一个问句里一半能从语料里答、一半答不了。
+        # `answer_terms` = 可答部分的关键事实（必须真的出现在语料里）；
+        # `absent_terms` = 语料里没有的那半个问题的主题词（必须真的不在语料里）。
+        answer_terms = [str(t) for t in (item.get("answer_terms") or [])]
+        absent_terms = [str(t) for t in (item.get("absent_terms") or [])]
         if kind == "positive":
             if not gold_phrases:
                 raise ValueError(f"第 {i} 条正样本缺少 gold_phrases")
             if not expect_files:
                 raise ValueError(f"第 {i} 条正样本缺少 expect_files")
             # 正样本没有「负样本类别」：留空而不是沿用 far，免得下游按类分组时把它也算进去
+            negative_class = None
+        elif kind == "partial":
+            if not expect_files:
+                raise ValueError(f"第 {i} 条部分可答样本缺少 expect_files")
+            if not answer_terms:
+                raise ValueError(f"第 {i} 条部分可答样本缺少 answer_terms（可答部分的关键事实）")
+            if not absent_terms:
+                raise ValueError(f"第 {i} 条部分可答样本缺少 absent_terms（语料里没有的那半个问题）")
             negative_class = None
         elif negative_class not in VALID_NEGATIVE_CLASSES:
             raise ValueError(
@@ -215,6 +228,8 @@ def load_queries(path):
             "expect_files": expect_files,
             "expect_sections": expect_sections,
             "gold_phrases": gold_phrases,
+            "answer_terms": answer_terms,
+            "absent_terms": absent_terms,
             "note": str(item.get("note") or ""),
         })
 

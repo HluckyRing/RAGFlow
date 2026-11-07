@@ -53,6 +53,39 @@ def looks_like_abstention(answer):
     return head.startswith(REFUSAL_MARKER)
 
 
+# 「这里没有」的常见说法：判「有没有指出缺口」时，主题词之外还得见到这些词之一。
+# 刻意宽松（宁可把「其实没说清楚」算成说了），因为这一步只用来分桶，不当硬门禁。
+ABSENCE_WORDS = (
+    "没有", "没写", "未写", "未提", "没提", "未涉及", "没有涉及", "不涉及",
+    "未说明", "没有说明", "未给出", "没有给出", "无法", "未提供", "没有提供",
+    "不包含", "未包含", "未规定", "没有规定",
+)
+
+
+def classify_partial(answer, answer_terms, absent_terms):
+    """给「部分可答」样本的回答分桶。
+
+    - `refused_all`：整条消息被标成拒答、而且可答的部分**也没答** —— 最糟；
+    - `refused_despite_answer`：整条消息被标成拒答，但正文其实答了可答部分 ——
+      **对用户来说仍是「知识库里没有」**，属于过度拒答（标记语义错了：它该表示「整条答不了」，
+      不是「有一半答不了」）；
+    - `answered_with_gap`：正常作答 + 点明缺什么 —— 理想；
+    - `answered_silently`：答了可答部分，但对缺的那半只字不提 —— 有编造/含糊风险；
+    - `neither`：可答部分没答到、也没提缺口 —— 答偏了。
+    """
+    text = (answer or "").strip()
+    answered = any(term and term in text for term in answer_terms)
+    gap_flagged = (any(term and term in text for term in absent_terms)
+                   and any(word in text for word in ABSENCE_WORDS))
+    if looks_like_abstention(text):
+        return "refused_despite_answer" if answered else "refused_all"
+    if answered and gap_flagged:
+        return "answered_with_gap"
+    if answered:
+        return "answered_silently"
+    return "neither"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="量「让 QA 自己拒答」的质量与延迟（会真实调用大模型）")
@@ -109,11 +142,15 @@ def main(argv=None):
             print(f"[{query['id']}] 生成失败：{str(e)[:80]}")
             continue
         answer = "".join(parts)
-        rows.append({"id": query["id"], "kind": query["kind"],
-                     "class": query.get("negative_class"), "returned": len(hits),
-                     "abstained": looks_like_abstention(answer), "answer": answer,
-                     "seconds": time.perf_counter() - started,
-                     "ttft": first_at, "context_chars": len(context)})
+        row = {"id": query["id"], "kind": query["kind"],
+               "class": query.get("negative_class"), "returned": len(hits),
+               "abstained": looks_like_abstention(answer), "answer": answer,
+               "seconds": time.perf_counter() - started,
+               "ttft": first_at, "context_chars": len(context)}
+        if query["kind"] == "partial":
+            row["bucket"] = classify_partial(
+                answer, query["answer_terms"], query["absent_terms"])
+        rows.append(row)
 
     def group(kind, cls=None):
         return [r for r in rows if r["kind"] == kind and r["returned"]
@@ -122,6 +159,7 @@ def main(argv=None):
     pos = group("positive")
     adj = group("negative", "adjacent")
     far = group("negative", "far")
+    partial = group("partial")
     pos_bad = [r for r in pos if r["abstained"]]
     adj_ok = [r for r in adj if r["abstained"]]
     far_ok = [r for r in far if r["abstained"]]
@@ -133,6 +171,25 @@ def main(argv=None):
     print(f"远域负样本正确拒答 = {len(far_ok)}/{len(far)}")
     print(f"正样本被误拒 = {len(pos_bad)}/{len(pos)}"
           f"{'（' + ', '.join(r['id'] for r in pos_bad) + '）' if pos_bad else ''}")
+
+    if partial:
+        buckets = {}
+        for row in partial:
+            buckets.setdefault(row["bucket"], []).append(row["id"])
+        print()
+        print(f"=== 部分可答（一个问句里一半有答案、一半没有）n={len(partial)} ===")
+        print(f"整段拒答（**过度拒答**）= {len(buckets.get('refused_all', []))}"
+              f"/{len(partial)} {buckets.get('refused_all', [])}")
+        print(f"标成拒答但其实答了可答部分（**过度拒答**）= "
+              f"{len(buckets.get('refused_despite_answer', []))}"
+              f"/{len(partial)} {buckets.get('refused_despite_answer', [])}")
+        print(f"答了可答部分 + 点明缺口 = {len(buckets.get('answered_with_gap', []))}"
+              f"/{len(partial)} {buckets.get('answered_with_gap', [])}")
+        print(f"答了可答部分但只字不提缺口 = {len(buckets.get('answered_silently', []))}"
+              f"/{len(partial)} {buckets.get('answered_silently', [])}")
+        print(f"可答部分也没答到 = {len(buckets.get('neither', []))}"
+              f"/{len(partial)} {buckets.get('neither', [])}")
+
     secs = [r["seconds"] for r in rows if r.get("seconds")]
     ttfts = [r["ttft"] for r in rows if r.get("ttft")]
     if secs:

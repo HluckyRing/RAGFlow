@@ -333,6 +333,7 @@ def queries():
 def test_fixture_has_enough_samples(queries):
     positives = [q for q in queries if q["kind"] == "positive"]
     negatives = [q for q in queries if q["kind"] == "negative"]
+    partials = [q for q in queries if q["kind"] == "partial"]
     assert len(positives) >= 15, "正样本太少，指标没有统计意义"
     # 2026-11-05：负样本从 5 条加到 23 条 —— 5 条撑不起「误召回 0/5」这种结论
     assert len(negatives) >= 15, "负样本太少，误召回率没有统计意义"
@@ -340,6 +341,8 @@ def test_fixture_has_enough_samples(queries):
     assert len(adjacent) >= 5, "缺「域内但无答案」的难负样本，误召回会被系统性低估"
     far = [q for q in negatives if q.get("negative_class") == "far"]
     assert len(far) >= 5, "缺远域负样本，就分不清「模型没乱答」还是「问得太远」"
+    # 2026-11-08：部分可答（一个问句里一半有答案、一半没有）是产品里最常见的形状
+    assert len(partials) >= 6, "缺部分可答样本，就看不出「整段拒答」这种过度拒答"
 
 
 def test_fixture_ids_are_unique(queries):
@@ -436,6 +439,58 @@ def test_every_negative_says_why_it_has_no_answer(queries):
     missing = [q["id"] for q in queries if q["kind"] == "negative" and not q["note"].strip()]
 
     assert missing == [], f"这些负样本没写 note：{missing}"
+
+
+# ── 部分可答样本（2026-11-08）：一个问句里一半有答案、一半没有 ──
+
+def test_load_queries_reads_partial_samples(tmp_path):
+    """partial：`answer_terms` 是可答部分的关键事实，`absent_terms` 是语料里没有的那半个问题。"""
+    path = _write_queries(tmp_path, [
+        {"question": "年假有几天，病假工资怎么算", "kind": "partial",
+         "expect_files": ["02-考勤与假期制度.md"],
+         "answer_terms": ["每年 5 天"], "absent_terms": ["病假工资"]},
+    ])
+
+    got = ev.load_queries(path)
+
+    assert got[0]["kind"] == "partial"
+    assert got[0]["answer_terms"] == ["每年 5 天"]
+    assert got[0]["absent_terms"] == ["病假工资"]
+    assert got[0]["negative_class"] is None
+
+
+@pytest.mark.parametrize("item, needle", [
+    ({"question": "x", "kind": "partial", "expect_files": ["a.md"],
+      "absent_terms": ["y"]}, "answer_terms"),
+    ({"question": "x", "kind": "partial", "expect_files": ["a.md"],
+      "answer_terms": ["z"]}, "absent_terms"),
+    ({"question": "x", "kind": "partial", "answer_terms": ["z"],
+      "absent_terms": ["y"]}, "expect_files"),
+])
+def test_load_queries_rejects_incomplete_partial_samples(tmp_path, item, needle):
+    with pytest.raises(ValueError) as excinfo:
+        ev.load_queries(_write_queries(tmp_path, [item]))
+    assert needle in str(excinfo.value)
+
+
+def test_partial_answer_terms_really_appear_in_corpus(corpus, queries):
+    """可答部分的关键事实必须真的在语料里，否则这条样本永远「答不到」，指标会变成假 0。"""
+    haystack = ev.normalize("\n\n".join(corpus.values()))
+    partials = [q for q in queries if q["kind"] == "partial"]
+
+    missing = [(q["id"], term) for q in partials for term in q["answer_terms"]
+               if ev.normalize(term) not in haystack]
+    assert missing == [], f"这些「可答部分」的事实语料里没有：{missing}"
+
+
+def test_partial_absent_terms_really_are_absent(corpus, queries):
+    """不可答部分的主题词必须真的不在语料里 —— 否则就成了「其实答得上」，分类全废。"""
+    haystack = ev.normalize("\n\n".join(corpus.values()))
+    partials = [q for q in queries if q["kind"] == "partial"]
+
+    present = [(q["id"], term) for q in partials for term in q["absent_terms"]
+               if ev.normalize(term) in haystack]
+    assert present == [], f"这些「不可答部分」的主题词其实在语料里：{present}"
 
 
 # ── 无模型环境下 main 必须安全（输入校验先于加载模型）──

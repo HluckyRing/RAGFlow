@@ -499,5 +499,77 @@
     "expect_files": [],
     "gold_phrases": [],
     "note": "域内无答案：语料只说逾期作废，没说折现"
+  },
+  {
+    "id": "p01",
+    "question": "年假有几天，病假工资怎么算",
+    "kind": "partial",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "answer_terms": ["每年 5 天"],
+    "absent_terms": ["病假工资"],
+    "note": "可答部分：司龄 1-3 年年假 5 天；不可答部分：病假期间的工资标准（语料只写了要证明）"
+  },
+  {
+    "id": "p02",
+    "question": "全量备份保留多久？异地机房怎么切换？",
+    "kind": "partial",
+    "expect_files": ["04-数据备份与恢复.md"],
+    "answer_terms": ["保留 30 天"],
+    "absent_terms": ["异地机房"],
+    "note": "可答部分：全量备份保留 30 天；不可答部分：异地机房切换（语料只有备份范围/周期/演练）"
+  },
+  {
+    "id": "p03",
+    "question": "A 级客户多久响应，违约金怎么算？",
+    "kind": "partial",
+    "expect_files": ["03-客户分级与响应时效.md"],
+    "answer_terms": ["30 分钟内响应"],
+    "absent_terms": ["违约金"],
+    "note": "可答部分：A 级客户 30 分钟内响应；不可答部分：违约金条款（语料没有）"
+  },
+  {
+    "id": "p04",
+    "question": "出差住宿一线城市限额多少，境外城市呢？",
+    "kind": "partial",
+    "expect_files": ["05-费用报销流程.md"],
+    "answer_terms": ["600 元"],
+    "absent_terms": ["境外城市"],
+    "note": "可答部分：一线城市每晚 600 元；不可答部分：境外城市标准（语料只分一线/二线/其它）"
+  },
+  {
+    "id": "p05",
+    "question": "市盈率怎么算，股息率呢？",
+    "kind": "partial",
+    "expect_files": ["01-财务指标.md"],
+    "answer_terms": ["股价除以每股收益"],
+    "absent_terms": ["股息率"],
+    "note": "可答部分：市盈率=股价/每股收益；不可答部分：股息率（语料只写了市盈率/ROE/毛利率）"
+  },
+  {
+    "id": "p06",
+    "question": "调休多久要用完，没休完能折成工资吗？",
+    "kind": "partial",
+    "expect_files": ["02-考勤与假期制度.md"],
+    "answer_terms": ["6 个月内使用"],
+    "absent_terms": ["折成工资"],
+    "note": "可答部分：调休 6 个月内使用；不可答部分：未休调休折现（语料只说逾期作废）"
+  },
+  {
+    "id": "p07",
+    "question": "恢复演练多久一次，要请哪些人参加？",
+    "kind": "partial",
+    "expect_files": ["04-数据备份与恢复.md"],
+    "answer_terms": ["每半年至少组织一次"],
+    "absent_terms": ["请哪些人参加"],
+    "note": "可答部分：每半年至少一次；不可答部分：参加人员（语料没写）"
+  },
+  {
+    "id": "p08",
+    "question": "青花瓷为什么要控制降温速度，窑炉的燃料成本怎么算？",
+    "kind": "partial",
+    "expect_files": ["06-长段落与窗口压测.md"],
+    "answer_terms": ["产生应力"],
+    "absent_terms": ["燃料成本"],
+    "note": "可答部分：窑温分三段缓慢抬升、降温过快会产生应力；不可答部分：燃料成本（语料没写）"
   }
 ]
