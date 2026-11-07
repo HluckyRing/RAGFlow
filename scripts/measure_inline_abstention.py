@@ -17,15 +17,16 @@
 - 域内负样本 8 条：答完必须**拒答**（说没有相关内容），否则就是「答非所问」；
 - 正样本 36 条：**一条都不许**拒答（拒答 = 误杀）。
 
-复合问题的四种形状（2026-11-08 起）
-----------------------------------
-第一批 8 条只测了「一个问句两问」。产品里更难的是另外三种形状，靠 `shape` / `parts` /
+复合问题的形状（2026-11-08 起）
+--------------------------------
+第一批 8 条只测了「一个问句两问」。产品里更难的是别的几种形状，靠 `shape` / `parts` /
 `history` / `expect_refused` 四个字段驱动：
-- `three_parts`：三问 —— 子问题一多，漏答其中一问的概率就上来了；
+- `three_parts` / `four_parts`：三问、四问 —— 子问题一多，漏答其中一问的概率就上来了；
 - `gap_in_middle`：三问、不可答那问在中间 —— 最容易「答完第一问就收尾」，
   用 `post_gap_coverage()` 量**缺口后面那一问**还活着没有；
-- `followup`：多轮补问 —— 先过 `resolve_query` 做指代消解（与线上同一路径），
-  再来判它该拒还是该答。
+- `multi_gap`：四问、两处以上缺口 —— 缺口不止一处时，容易只提第一个就把后面全丢掉；
+- `followup` / `followup_partial`：多轮补问（后者是「上一轮答了一半、本轮接着追问」）——
+  先过 `resolve_query` 做指代消解（与线上同一路径），再来判它该拒还是该答。
 `classify_partial()` 因此从五桶扩到九桶（多了「漏答可答项」两种与「该拒却没写标记 / 直接硬答」两种），
 `summarize_partial()` 按形状拆开算 —— 该答的样本和该拒的样本绝不混进同一个分母。
 
@@ -219,6 +220,28 @@ def plan_search_queries(queries, resolve):
     return [resolve(query["question"], query.get("history") or []) for query in queries]
 
 
+def gap_coverage(answer, parts):
+    """逐处缺口判有没有点明 —— 扁平字段看不见「只点了第一处、把第二处丢了」。
+
+    **这是 `parts` 存在的第二个理由**（第一个是漏答可答项）：`classify_partial` 拿的是**平铺**的
+    `absent_terms`，判据是「任一个主题词出现 + 有个缺席词」——所以「四处两缺口」的样本里，
+    模型只点明第一处缺口，整条消息的桶仍然是 `answered_with_gap`（看着完全达标）。
+    多缺口的漏答率只能按子问题逐处算，这里就是那把尺。
+    """
+    text = (answer or "").strip()
+    gaps = []
+    for part in parts or []:
+        absent_terms = [t for t in (part.get("absent_terms") or []) if t]
+        if not absent_terms:
+            continue
+        gaps.append({"text": str(part.get("text") or ""),
+                     "ok": flags_gap(text, absent_terms)})
+    if not gaps:
+        return None
+    return {"flagged": sum(1 for gap in gaps if gap["ok"]), "total": len(gaps),
+            "unflagged": [gap["text"] for gap in gaps if not gap["ok"]]}
+
+
 def summarize_partial(rows):
     """按形状汇总复合问题的结果。
 
@@ -238,6 +261,10 @@ def summarize_partial(rows):
         covered = sum(int((row.get("coverage") or {}).get("covered") or 0) for row in group)
         total = sum(int((row.get("coverage") or {}).get("total") or 0) for row in group)
         post = [row.get("post_gap") or {} for row in group if row.get("post_gap")]
+        # 「缺口全点明」只对**该答**的样本有意义：该拒的样本正确行为是整条拒答，
+        # 此时模型往往只说「材料里没有涉及」而不复述主题词（那是**对**的），拿它算缺口漏提会冤枉它。
+        gaps = [row.get("gaps") or {} for row in group
+                if row.get("gaps") and not row.get("expect_refused")]
         summary[shape] = {
             "n": len(group),
             "should_answer": len(should_answer),
@@ -259,6 +286,11 @@ def summarize_partial(rows):
             "answer_terms_total": total,
             "post_gap_covered": sum(int(item.get("covered") or 0) for item in post),
             "post_gap_total": sum(int(item.get("total") or 0) for item in post),
+            "gaps_flagged": sum(int(item.get("flagged") or 0) for item in gaps),
+            "gaps_total": sum(int(item.get("total") or 0) for item in gaps),
+            "all_gaps_flagged": [row["id"] for row in group
+                                 if (row.get("gaps") or {}).get("total")
+                                 and (row["gaps"].get("flagged") == row["gaps"].get("total"))],
         }
     return summary
 
@@ -267,7 +299,10 @@ SHAPE_LABELS = {
     "two_parts": "两问",
     "three_parts": "三问",
     "gap_in_middle": "缺口在中间",
+    "four_parts": "四问",
+    "multi_gap": "缺口多处",
     "followup": "多轮补问",
+    "followup_partial": "多轮·部分可答",
 }
 
 
@@ -306,6 +341,9 @@ def print_partial_summary(rows, log=print):
                     f" {stats['answered_without_refusal']}")
         if stats["post_gap_total"]:
             log(f"  缺口后一问存活    = {stats['post_gap_covered']}/{stats['post_gap_total']}")
+        if stats["gaps_total"]:
+            log(f"  缺口全点明        = {stats['gaps_flagged']}/{stats['gaps_total']}"
+                f"（按子问题逐处算，扁平字段看不见漏第二处；该拒的样本不计入）")
     return summary
 
 
@@ -420,6 +458,7 @@ def main(argv=None):
                 "total": sum(1 for part in part_rows if part["answerable"]),
             }
             row["post_gap"] = post_gap_coverage(answer, query.get("parts"))
+            row["gaps"] = gap_coverage(answer, query.get("parts"))
         rows.append(row)
 
     def group(kind, cls=None):

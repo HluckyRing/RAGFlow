@@ -32,7 +32,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.eval_retrieval import DEFAULT_QUERIES, load_queries  # noqa: E402
 from scripts.measure_inline_abstention import (  # noqa: E402
-    classify_partial, part_coverage, post_gap_coverage, print_partial_summary)
+    classify_partial, gap_coverage, part_coverage, post_gap_coverage, print_partial_summary)
 
 
 def rejudge(rows, queries):
@@ -54,15 +54,22 @@ def rejudge(rows, queries):
         answer = row["answer"]
         bucket = classify_partial(answer, query["answer_terms"], query["absent_terms"])
         parts = part_coverage(answer, query.get("parts"))
-        if row.get("bucket") and row["bucket"] != bucket:
+        coverage = {"covered": sum(1 for part in parts
+                                   if part["answerable"] and part["ok"]),
+                    "total": sum(1 for part in parts if part["answerable"])}
+        gaps = gap_coverage(answer, query.get("parts"))
+        # 「与原判不同」要看**四样**：分桶、逐项覆盖、缺口后存活、缺口点明数。
+        # 只看分桶会漏掉「分桶没变但明细变了」的情况 —— 多缺口样本正是这样（扁平桶看不见第二处）。
+        if (row.get("bucket") and row["bucket"] != bucket) \
+                or (row.get("coverage") and row["coverage"] != coverage) \
+                or ("gaps" in row and row["gaps"] != gaps):
             changed.append(row["id"])
         row = {**row,
                "bucket": bucket,
                "parts": parts,
-               "coverage": {"covered": sum(1 for part in parts
-                                           if part["answerable"] and part["ok"]),
-                            "total": sum(1 for part in parts if part["answerable"])},
-               "post_gap": post_gap_coverage(answer, query.get("parts"))}
+               "coverage": coverage,
+               "post_gap": post_gap_coverage(answer, query.get("parts")),
+               "gaps": gaps}
         rejudged.append(row)
     return rejudged, changed
 

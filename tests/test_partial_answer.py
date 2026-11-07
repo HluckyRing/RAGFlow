@@ -261,3 +261,90 @@ def test_gap_flagging_accepts_any_of_several_topic_words():
 
     assert mia.classify_partial(
         answer, ["每半年至少组织一次"], ["请哪些人参加", "参加人员"]) == "answered_with_gap"
+
+
+# ── 多缺口：扁平字段看不见「只点了第一处」 ──
+#
+# `classify_partial` 拿的是**平铺**的 absent_terms，判据是「任一个主题词出现 + 有个缺席词」。
+# 所以「四问两缺口」的样本里模型只点明第一处，整条消息的桶仍然是 answered_with_gap。
+# 多缺口的漏答率必须按子问题逐处算（`gap_coverage`）—— 这是 parts 存在的第二个理由。
+
+MULTI_GAP_PARTS = [
+    {"text": "年假有几天", "answer_terms": ["每年 5 天"], "absent_terms": []},
+    {"text": "病假工资怎么算", "answer_terms": [], "absent_terms": ["病假工资", "病假期间的工资"]},
+    {"text": "补卡一个月能补几次", "answer_terms": ["补卡不超过三次"], "absent_terms": []},
+    {"text": "病假最多能请多久", "answer_terms": [], "absent_terms": ["病假天数", "病假期限"]},
+]
+
+
+def test_flat_bucket_cannot_see_the_dropped_second_gap():
+    """扁平口径会把「只点明一处缺口」判成达标 —— 这条把它的盲区钉成事实，别当成 bug 去改。"""
+    answer = ("年假每年 5 天；每月补卡不超过三次。"
+              "病假工资方面材料里没有涉及。")   # 只点了第一处缺口
+
+    assert mia.classify_partial(
+        answer, ["每年 5 天", "补卡不超过三次"],
+        ["病假工资", "病假期间的工资", "病假天数", "病假期限"]) == "answered_with_gap"
+    assert mia.gap_coverage(answer, MULTI_GAP_PARTS) == {
+        "flagged": 1, "total": 2, "unflagged": ["病假最多能请多久"]}
+
+
+def test_gap_coverage_counts_every_gap():
+    answer = ("年假每年 5 天；每月补卡不超过三次。病假工资材料里没有涉及；"
+              "至于病假期限，材料里也没有规定。")
+
+    assert mia.gap_coverage(answer, MULTI_GAP_PARTS)["flagged"] == 2
+
+
+def test_gap_coverage_is_none_without_any_gap():
+    parts = [{"text": "年假有几天", "answer_terms": ["每年 5 天"], "absent_terms": []}]
+
+    assert mia.gap_coverage("每年 5 天。", parts) is None
+
+
+def test_summarize_partial_aggregates_gap_coverage():
+    rows = [
+        {"id": "p20", "shape": "multi_gap", "bucket": "answered_with_gap",
+         "expect_refused": False, "coverage": {"covered": 2, "total": 2},
+         "gaps": {"flagged": 1, "total": 2, "unflagged": ["病假最多能请多久"]}},
+        {"id": "p21", "shape": "multi_gap", "bucket": "answered_with_gap",
+         "expect_refused": False, "coverage": {"covered": 2, "total": 2},
+         "gaps": {"flagged": 2, "total": 2, "unflagged": []}},
+    ]
+
+    summary = mia.summarize_partial(rows)["multi_gap"]
+
+    assert summary["gaps_flagged"] == 3
+    assert summary["gaps_total"] == 4
+    assert summary["all_gaps_flagged"] == ["p21"], "只点明一处的那条不能算「缺口全点明」"
+
+
+def test_print_partial_summary_reports_gap_coverage():
+    lines = []
+    mia.print_partial_summary(
+        [{"id": "p20", "shape": "multi_gap", "bucket": "answered_with_gap",
+          "expect_refused": False, "coverage": {"covered": 2, "total": 2},
+          "gaps": {"flagged": 1, "total": 2, "unflagged": ["病假最多能请多久"]}}],
+        log=lines.append)
+
+    assert any("缺口全点明        = 1/2" in line for line in lines)
+
+
+def test_summarize_partial_excludes_should_refuse_rows_from_gap_coverage():
+    """该拒的样本正确行为是**整条拒答**：模型往往只说「材料里没有涉及」而不复述主题词。
+
+    拿它算「缺口没点明」会冤枉正确行为（p22 就因此被算成 0/1）。所以缺口全点明只统计该答的样本。
+    """
+    rows = [
+        {"id": "p22", "shape": "followup_partial", "bucket": "refused_all",
+         "expect_refused": True, "coverage": {"covered": 0, "total": 0},
+         "gaps": {"flagged": 0, "total": 1, "unflagged": ["那病假期间的工资到底怎么算"]}},
+        {"id": "p20", "shape": "multi_gap", "bucket": "answered_with_gap",
+         "expect_refused": False, "coverage": {"covered": 2, "total": 2},
+         "gaps": {"flagged": 2, "total": 2, "unflagged": []}},
+    ]
+
+    summary = mia.summarize_partial(rows)
+
+    assert summary["followup_partial"]["gaps_total"] == 0, "该拒的样本不该进缺口分母"
+    assert summary["multi_gap"]["gaps_flagged"] == 2
