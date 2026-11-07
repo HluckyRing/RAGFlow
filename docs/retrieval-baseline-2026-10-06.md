@@ -773,10 +773,26 @@ etrieve_and_build_context 返回非空后加一次廉价判定（deepseek-flash 
 `searched_files=1`（只有备份规范的块进了 context）、无 `sources` 事件；落盘
 `(refused, searched_files, has_sources) = (True, 1, False)`。
 
+### 前端渲染测试（2026-11-08 补，补掉了原来「没有 e2e」这条）
+
+静态守卫（`tests/test_frontend.py`）只能证明「index.html 里有这行」，证明不了「渲染出来是什么样」。
+所以加了 `tests/test_frontend_render.py`：
+
+- 从 `index.html` 里**抽出真实的函数源码**（`buildRefusedTag` / `showRefusedTag`，按花括号配对切），
+- 用 Node 内置 `vm` 跑，配一个极小的 DOM 替身（`createElement` + 节点树 + `querySelector`），
+- 断言：无计数时不出现空括号、有计数时是「（已检索 2 个文件）」、**非数字/undefined 一律不加**、
+  `showRefusedTag` 重复调用不叠第二个标签、以及**拒绝使用 innerHTML**（替身的 setter 直接抛错）。
+
+三条纪律：**不引 npm 依赖、不装 headless 浏览器**（前端本来是零依赖原生 JS，测试不该给它加工具链）；
+本机没有 `node` 时整组 `pytest.skip`（CI 的 ubuntu runner 自带 node，会真跑）；
+切不出函数源码就**大声报错**，绝不返回半截——半截会让断言假通过。
+
+反向对照：把 `buildRefusedTag` 里那句临时改成 `tag.innerHTML = text`，4 条用例全部变红
+（替身抛错），还原后全绿。
+
 ### 还没做
 
-1. **前端没有 e2e 测试**：静态守卫只能保证「代码里有这段」，渲染出来的样子还得人工看一次。
-2. **计数只反映「进了 context 的文件」**：如果某个文件整篇都被闸门挡在外面，它不会计入 ——
+1. **计数只反映「进了 context 的文件」**：如果某个文件整篇都被闸门挡在外面，它不会计入 ——
    想让用户看到「我上传的 5 个文件都看过」，得改成数会话里的文件总数，那是另一个口径
    （会包含完全没被检索命中的文件）。
 

@@ -20,7 +20,7 @@ python -m src.server            # 等价写法
 # 服务运行在 http://localhost:8080
 ```
 
-测试：`pip install -r requirements-dev.txt` 后执行 `pytest tests -v`（覆盖状态隔离、并发保存、旧数据迁移、路径穿越防护）。无 lint/format 配置。
+测试：`pip install -r requirements-dev.txt` 后执行 `pytest tests -v`（覆盖状态隔离、并发保存、旧数据迁移、路径穿越防护）。无 lint/format 配置。 前端那几个纯函数另有**真渲染**测试：`tests/test_frontend_render.py` 用 Node 内置 `vm`跑 `index.html` 里的真实函数源码 + 一个极小 DOM 替身（不引 npm 依赖、不装 headless 浏览器），本机没有 `node` 时整组自动 skip。
 仍建议手动回归：启动服务 → 浏览器打开 `http://localhost:8080` → 上传文件 → 提问。
 
 ## 架构
