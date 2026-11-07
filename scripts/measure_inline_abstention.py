@@ -17,9 +17,22 @@
 - 域内负样本 8 条：答完必须**拒答**（说没有相关内容），否则就是「答非所问」；
 - 正样本 36 条：**一条都不许**拒答（拒答 = 误杀）。
 
+复合问题的四种形状（2026-11-08 起）
+----------------------------------
+第一批 8 条只测了「一个问句两问」。产品里更难的是另外三种形状，靠 `shape` / `parts` /
+`history` / `expect_refused` 四个字段驱动：
+- `three_parts`：三问 —— 子问题一多，漏答其中一问的概率就上来了；
+- `gap_in_middle`：三问、不可答那问在中间 —— 最容易「答完第一问就收尾」，
+  用 `post_gap_coverage()` 量**缺口后面那一问**还活着没有；
+- `followup`：多轮补问 —— 先过 `resolve_query` 做指代消解（与线上同一路径），
+  再来判它该拒还是该答。
+`classify_partial()` 因此从五桶扩到九桶（多了「漏答可答项」两种与「该拒却没写标记 / 直接硬答」两种），
+`summarize_partial()` 按形状拆开算 —— 该答的样本和该拒的样本绝不混进同一个分母。
+
 用法（会真实调用大模型，约 46 次生成）：
     python scripts/measure_inline_abstention.py
     python scripts/measure_inline_abstention.py --json /tmp/inline.json
+    python scripts/measure_inline_abstention.py --fill-hyde   # 缓存里缺的假设文本现场补齐
 """
 import argparse
 import json
@@ -33,7 +46,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.eval_retrieval import (  # noqa: E402
-    DEFAULT_CORPUS, DEFAULT_QUERIES, build_context, load_corpus, load_queries)
+    DEFAULT_CORPUS, DEFAULT_QUERIES, build_context, load_corpus, load_queries, normalize)
 from src.prompts import REFUSAL_MARKER  # noqa: E402
 
 # 判定「是不是拒答」用**结构化标记**，不是文案启发式（2026-11-06）：
@@ -61,29 +74,239 @@ ABSENCE_WORDS = (
     "不包含", "未包含", "未规定", "没有规定",
 )
 
+# 分桶口径（2026-11-08 起）。前半截是「整条被标成拒答」的两种，后半截是正常作答的四种。
+BUCKETS = (
+    "refused_all",             # 标了拒答标记，可答项也一条没答 —— 最糟
+    "refused_despite_answer",  # 标了拒答标记，但正文答了可答项 —— 用户仍看到「知识库里没有」
+    "refused_without_marker",  # 这条本来就答不了：正文说了「材料里没有」，却没写标记（前端不显示拒答标签）
+    "answered_without_refusal",  # 这条本来就答不了：直接硬答/编造，连「没有」都没说
+    "neither",                 # 有可答项，但一条没答到、也没提缺口 —— 答偏了
+    "dropped_part_with_gap",   # 漏答了某个可答项，但确实点明了缺口
+    "dropped_part_silent",     # 漏答了某个可答项，且对缺口只字不提
+    "answered_with_gap",       # 可答项全答到 + 点明缺口 —— 理想
+    "answered_silently",       # 可答项全答到，但对缺口只字不提（样本本身没有缺口时这也算达标）
+)
+# 该答却整条标成拒答 = 过度拒答
+OVER_REFUSAL_BUCKETS = ("refused_all", "refused_despite_answer")
+# 漏答了本可答的子问题
+DROPPED_PART_BUCKETS = ("dropped_part_with_gap", "dropped_part_silent")
+# 可答项全答到（且没被标成拒答）
+FULL_COVERAGE_BUCKETS = ("answered_with_gap", "answered_silently")
+# 该整条拒答的样本里，「行为对、契约也对」的那个桶
+REFUSED_OK_BUCKETS = ("refused_all",)
+
+
+# 判词面命中前要抹掉的**装饰性**字符：Markdown 强调、各种引号、括号。
+# 2026-11-08 实测：模型明明答对了，却写成「保留 **30 天**」「窑温“通常分三段缓慢抬升”」
+# 「需在**加班之日起 6 个月内**使用」—— 这些字符会把锚点切成两半，于是正确回答被判成漏答。
+# 只抹装饰，**不做**同义改写（「可以折算」≠「可折算」仍算不同）：那会从「太脆」滑到「太松」，
+# 而「太松」比「太脆」更危险 —— 它把失败藏起来。
+DECORATION_CHARS = "*_`#>“”‘’「」『』《》〈〉\"'（）()［］[]【】"
+
+
+def _norm(text):
+    """判「回答里有没有这个片段」用的归一化。
+
+    比 `eval_retrieval.normalize`（检索指标用的那套）多一步：抹掉装饰性字符。
+    两套刻意分开 —— 改这里的口径不该影响检索基线里的历史数字。
+    """
+    united = normalize(text or "")
+    return "".join(ch for ch in united if ch not in DECORATION_CHARS)
+
+
+def contains(text, term):
+    """回答里有没有这个片段（两侧归一化后再比）。
+
+    直接 `term in answer` 会在「模型写『每年5天』、标注写『每年 5 天』」时判成漏答 ——
+    这种假失败比漏测更糟（会逼着人去改提示词修一个并不存在的问题），所以空格/全半角先抹平。
+    """
+    needle = _norm(term)
+    return bool(needle) and needle in _norm(text)
+
+
+def flags_gap(text, absent_terms):
+    """有没有指出缺口：主题词出现 **且** 出现「没有/未涉及/不包含…」之一。
+
+    只提到主题词不算 —— 那可能是在编造（「异地机房的切换窗口建议安排在周末」）。
+    """
+    return (any(contains(text, term) for term in (absent_terms or []) if term)
+            and any(word in _norm(text) for word in ABSENCE_WORDS))
+
 
 def classify_partial(answer, answer_terms, absent_terms):
     """给「部分可答」样本的回答分桶。
 
-    - `refused_all`：整条消息被标成拒答、而且可答的部分**也没答** —— 最糟；
-    - `refused_despite_answer`：整条消息被标成拒答，但正文其实答了可答部分 ——
-      **对用户来说仍是「知识库里没有」**，属于过度拒答（标记语义错了：它该表示「整条答不了」，
-      不是「有一半答不了」）；
-    - `answered_with_gap`：正常作答 + 点明缺什么 —— 理想；
-    - `answered_silently`：答了可答部分，但对缺的那半只字不提 —— 有编造/含糊风险；
-    - `neither`：可答部分没答到、也没提缺口 —— 答偏了。
+    2026-11-08 的第一批只分五桶（那时一条样本只有一个可答项）。复合问题扩到「三问」「缺口在
+    中间」之后，一条样本可以有**多个**可答项，于是多出两种真实的失败：
+
+    - `dropped_part_with_gap` / `dropped_part_silent`：缺口点明了（或没点明），但**某个本可以答的
+      子问题被吞了**。「答完第一问就收尾」正是缺口在中间那个形状的死法，五桶口径看不见它。
+    - `refused_without_marker` / `answered_without_refusal`：这条样本本来就一条都答不了
+      （`expect_refused: true`），正确行为是整条拒答。前者是「说了没有但没写标记」——
+      行为对、契约没守，前端不会显示拒答标签；后者是直接硬答。
+
+    判定顺序：先看有没有拒答标记（结构化契约，优先于一切文案判断），再看可答项覆盖，
+    最后看缺口有没有点明。只有单个可答项的样本仍然只会落进原来那五个桶（向后兼容）。
     """
     text = (answer or "").strip()
-    answered = any(term and term in text for term in answer_terms)
-    gap_flagged = (any(term and term in text for term in absent_terms)
-                   and any(word in text for word in ABSENCE_WORDS))
+    answer_terms = [t for t in (answer_terms or []) if t]
+    absent_terms = [t for t in (absent_terms or []) if t]
+    covered = [t for t in answer_terms if contains(text, t)]
+    missing = [t for t in answer_terms if t not in covered]
+    gap_flagged = flags_gap(text, absent_terms)
     if looks_like_abstention(text):
-        return "refused_despite_answer" if answered else "refused_all"
-    if answered and gap_flagged:
-        return "answered_with_gap"
-    if answered:
-        return "answered_silently"
-    return "neither"
+        return "refused_despite_answer" if covered else "refused_all"
+    if not answer_terms:
+        # 这条样本本来就「一条都答不了」，只判它有没有拒、以及拒得合不合契约
+        return "refused_without_marker" if gap_flagged else "answered_without_refusal"
+    if not covered:
+        return "neither"
+    if missing:
+        return "dropped_part_with_gap" if gap_flagged else "dropped_part_silent"
+    return "answered_with_gap" if gap_flagged else "answered_silently"
+
+
+def part_coverage(answer, parts):
+    """逐个子问题判有没有答到：可答项看词面命中，不可答项看有没有点明缺口。
+
+    这是「三问 / 缺口在中间」唯一能量到细节的粒度 —— 整条消息的桶只说明有没有点明缺口，
+    说明不了**第 3 问被吞了**没有。
+    """
+    text = (answer or "").strip()
+    rows = []
+    for part in parts or []:
+        answer_terms = [t for t in (part.get("answer_terms") or []) if t]
+        absent_terms = [t for t in (part.get("absent_terms") or []) if t]
+        if answer_terms:
+            hit = [t for t in answer_terms if contains(text, t)]
+            rows.append({"text": str(part.get("text") or ""), "answerable": True,
+                         "ok": bool(hit), "hit": hit})
+        else:
+            rows.append({"text": str(part.get("text") or ""), "answerable": False,
+                         "ok": flags_gap(text, absent_terms), "hit": []})
+    return rows
+
+
+def post_gap_coverage(answer, parts):
+    """缺口**之后**那些可答子问题还有没有答到 —— 「答完第一问就收尾」的唯一探针。
+
+    「缺口在中间」这个形状之所以要单列，就是因为模型的收尾习惯：可答/不可答/可答 三问里，
+    它很容易在第二问答完「材料里没有」之后就结束，把第三问静默丢掉。整条消息的桶看起来还是
+    `answered_with_gap`（完全达标），只有这个数字会露馅。
+    """
+    rows = part_coverage(answer, parts)
+    after = []
+    seen_gap = False
+    for row in rows:
+        if not row["answerable"]:
+            seen_gap = True
+            continue
+        if seen_gap:
+            after.append(row)
+    if not after:
+        return None
+    return {"covered": sum(1 for row in after if row["ok"]), "total": len(after),
+            "parts": [row["text"] for row in after]}
+
+
+def plan_search_queries(queries, resolve):
+    """把「样本问句」翻译成「检索问句」。
+
+    多轮补问（`shape: "followup"`）必须先做指代消解，走的必须是线上同一条路
+    （`src.llm.resolve_query`，由调用方传进来）—— 抽成纯函数是为了能在单测里确认
+    **history 真的被传进去了**，而不是被静默扔掉（扔掉时一切看起来都正常，只是检索变差）。
+    """
+    return [resolve(query["question"], query.get("history") or []) for query in queries]
+
+
+def summarize_partial(rows):
+    """按形状汇总复合问题的结果。
+
+    纯函数（只吃 `rows`，不碰模型、不读语料），所以能在单测里喂合成行。两种口径分开算：
+
+    - **该答的**（`expect_refused: false`）：过度拒答 / 漏答可答项 / 可答项覆盖率；
+    - **该拒的**（`expect_refused: true`）：真的拒了没有 / 说了没有但没写标记 / 直接硬答。
+    混在一个分母里会让「该拒的拒了」和「该答的拒了」互相抵消成没有意义的数字。
+    """
+    shapes = {}
+    for row in rows:
+        shapes.setdefault(row.get("shape") or "two_parts", []).append(row)
+    summary = {}
+    for shape, group in shapes.items():
+        should_answer = [row for row in group if not row.get("expect_refused")]
+        should_refuse = [row for row in group if row.get("expect_refused")]
+        covered = sum(int((row.get("coverage") or {}).get("covered") or 0) for row in group)
+        total = sum(int((row.get("coverage") or {}).get("total") or 0) for row in group)
+        post = [row.get("post_gap") or {} for row in group if row.get("post_gap")]
+        summary[shape] = {
+            "n": len(group),
+            "should_answer": len(should_answer),
+            "should_refuse": len(should_refuse),
+            "over_refused": [row["id"] for row in should_answer
+                             if row["bucket"] in OVER_REFUSAL_BUCKETS],
+            "dropped_part": [row["id"] for row in group
+                             if row["bucket"] in DROPPED_PART_BUCKETS],
+            "full_coverage": [row["id"] for row in should_answer
+                              if row["bucket"] in FULL_COVERAGE_BUCKETS],
+            "neither": [row["id"] for row in group if row["bucket"] == "neither"],
+            "refused_ok": [row["id"] for row in should_refuse
+                           if row["bucket"] in REFUSED_OK_BUCKETS],
+            "refused_without_marker": [row["id"] for row in should_refuse
+                                       if row["bucket"] == "refused_without_marker"],
+            "answered_without_refusal": [row["id"] for row in should_refuse
+                                         if row["bucket"] == "answered_without_refusal"],
+            "answer_terms_covered": covered,
+            "answer_terms_total": total,
+            "post_gap_covered": sum(int(item.get("covered") or 0) for item in post),
+            "post_gap_total": sum(int(item.get("total") or 0) for item in post),
+        }
+    return summary
+
+
+SHAPE_LABELS = {
+    "two_parts": "两问",
+    "three_parts": "三问",
+    "gap_in_middle": "缺口在中间",
+    "followup": "多轮补问",
+}
+
+
+def print_partial_summary(rows, log=print):
+    """把 `summarize_partial` 的结果按形状打出来；返回同一份汇总，方便调用方落盘。"""
+    summary = summarize_partial(rows)
+    if not summary:
+        return summary
+    log("")
+    log("=== 复合问题的形状（按形状拆开看）===")
+    for shape, stats in summary.items():
+        label = SHAPE_LABELS.get(shape, shape)
+        log(f"[{label}] n={stats['n']}"
+            f"（该答 {stats['should_answer']} / 该拒 {stats['should_refuse']}）")
+        if stats["should_answer"]:
+            log(f"  过度拒答          = {len(stats['over_refused'])}/{stats['should_answer']}"
+                f" {stats['over_refused']}")
+            log(f"  可答项全答到      = {len(stats['full_coverage'])}/{stats['should_answer']}"
+                f" {stats['full_coverage']}")
+        if stats["answer_terms_total"]:
+            rate = stats["answer_terms_covered"] / stats["answer_terms_total"]
+            log(f"  可答项覆盖率      = {stats['answer_terms_covered']}"
+                f"/{stats['answer_terms_total']}（{rate:.0%}）")
+        if stats["dropped_part"]:
+            log(f"  漏答可答项        = {len(stats['dropped_part'])} {stats['dropped_part']}")
+        if stats["neither"]:
+            log(f"  可答项一条没答到  = {len(stats['neither'])} {stats['neither']}")
+        if stats["should_refuse"]:
+            log(f"  该拒·真的拒了     = {len(stats['refused_ok'])}/{stats['should_refuse']}"
+                f" {stats['refused_ok']}")
+            if stats["refused_without_marker"]:
+                log(f"  该拒·说了没有但没写标记 = {len(stats['refused_without_marker'])}"
+                    f" {stats['refused_without_marker']}")
+            if stats["answered_without_refusal"]:
+                log(f"  该拒·直接硬答     = {len(stats['answered_without_refusal'])}"
+                    f" {stats['answered_without_refusal']}")
+        if stats["post_gap_total"]:
+            log(f"  缺口后一问存活    = {stats['post_gap_covered']}/{stats['post_gap_total']}")
+    return summary
 
 
 def main(argv=None):
@@ -95,6 +318,9 @@ def main(argv=None):
                         help="假设文本缓存（不给就每次重新生成，结果不可比）")
     parser.add_argument("--json", default=".agents/inline-abstain.json",
                         help="逐条明细写到这个 JSON")
+    parser.add_argument("--fill-hyde", action="store_true",
+                        help="缓存里缺的假设文本现场生成并写回缓存（会真实调用大模型；"
+                             "不填就退化成「假设文本=原问题」，融合只剩一路，结果不可比）")
     args = parser.parse_args(argv)
 
     import chromadb
@@ -113,28 +339,61 @@ def main(argv=None):
     collection.add(documents=chunks, ids=[f"i{i}" for i in range(len(chunks))],
                    metadatas=[retrieval.chroma_meta(meta) for _, meta in pairs])
 
+    # 检索用的问句与「喂给模型的问句」不是一回事：多轮补问要先过 resolve_query 做指代消解
+    # （和线上 server.chat 一模一样），否则「这个要多久」这种样本连检索都检索不到东西。
+    search_queries = plan_search_queries(queries, llm.resolve_query)
+
     cache_path = Path(args.hyde_cache)
     hyde = (json.loads(cache_path.read_text(encoding="utf-8"))
             if cache_path.exists() else {})
+    real_generate_hyde = retrieval._generate_hyde
+    missing = [q for q in dict.fromkeys(search_queries) if q not in hyde]
+    if missing and args.fill_hyde:
+        for question in missing:
+            try:
+                text = real_generate_hyde(question)
+            except Exception as e:                      # noqa: BLE001
+                print(f"[HyDE] 生成失败（{question[:14]}…）：{str(e)[:80]}")
+                continue
+            # 推理模型的小 max_tokens 会把内容吃光，空结果被 `or question` 悄悄兜成原问题 ——
+            # 那就是「假设文本=原问题」，双路融合退化成一路。缓存里必须留下真生成物。
+            if not text or not text.strip() or text.strip() == question.strip():
+                print(f"[HyDE] 假设文本退化（{question[:14]}…）：为空或等于原问题，不入缓存")
+                continue
+            hyde[question] = text
+        cache_path.write_text(json.dumps(hyde, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+        print(f"已现场补 {len(missing)} 条假设文本到 {cache_path}")
+    elif missing:
+        print(f"[注意] {len(missing)} 条问题没有缓存假设文本，将退化成「假设文本=原问题」："
+              f"{[q[:14] for q in missing]}（加 --fill-hyde 现场补齐，会真实调用大模型）")
     retrieval._generate_hyde = lambda q: hyde.get(q, q)
-    print(f"假设文本缓存：{cache_path}（{len(hyde)} 条；缺的用原问题代替）")
+    degraded = [q for q in search_queries if hyde.get(q, q).strip() == q.strip()]
+    if degraded:
+        print(f"[注意] 这些问题的假设文本等于原问题（融合退化）：{[q[:14] for q in degraded]}")
+    print(f"假设文本缓存：{cache_path}（{len(hyde)} 条；"
+          f"本次命中 {len(search_queries) - len(degraded)}/{len(search_queries)}）")
 
     rows = []
-    for query in queries:
+    for query, search_query in zip(queries, search_queries):
         question = query["question"]
+        history = query.get("history") or []
         _path, hits = retrieval.hyde_retrieve_hits_with_path(
-            question, collection, full_text, use_vector=True, top_k=5, files=files)
+            search_query, collection, full_text, use_vector=True, top_k=5, files=files)
         if not hits:
             rows.append({"id": query["id"], "kind": query["kind"],
                          "class": query.get("negative_class"), "returned": 0,
-                         "abstained": None, "answer": "", "seconds": None})
+                         "abstained": None, "answer": "", "seconds": None,
+                         "shape": query.get("shape"),
+                         "expect_refused": query.get("expect_refused", False),
+                         "search_query": search_query, "history_turns": len(history)})
             continue
         context = build_context(hits)
         started = time.perf_counter()
         first_at = None
         parts = []
         try:
-            for token in llm.stream_answer(question, context, []):
+            for token in llm.stream_answer(question, context, history):
                 if first_at is None:
                     first_at = time.perf_counter() - started
                 parts.append(token)
@@ -146,10 +405,21 @@ def main(argv=None):
                "class": query.get("negative_class"), "returned": len(hits),
                "abstained": looks_like_abstention(answer), "answer": answer,
                "seconds": time.perf_counter() - started,
-               "ttft": first_at, "context_chars": len(context)}
+               "ttft": first_at, "context_chars": len(context),
+               "shape": query.get("shape"),
+               "expect_refused": query.get("expect_refused", False),
+               "search_query": search_query, "history_turns": len(history)}
         if query["kind"] == "partial":
             row["bucket"] = classify_partial(
                 answer, query["answer_terms"], query["absent_terms"])
+            part_rows = part_coverage(answer, query.get("parts"))
+            row["parts"] = part_rows
+            row["coverage"] = {
+                "covered": sum(1 for part in part_rows
+                               if part["answerable"] and part["ok"]),
+                "total": sum(1 for part in part_rows if part["answerable"]),
+            }
+            row["post_gap"] = post_gap_coverage(answer, query.get("parts"))
         rows.append(row)
 
     def group(kind, cls=None):
@@ -177,18 +447,11 @@ def main(argv=None):
         for row in partial:
             buckets.setdefault(row["bucket"], []).append(row["id"])
         print()
-        print(f"=== 部分可答（一个问句里一半有答案、一半没有）n={len(partial)} ===")
-        print(f"整段拒答（**过度拒答**）= {len(buckets.get('refused_all', []))}"
-              f"/{len(partial)} {buckets.get('refused_all', [])}")
-        print(f"标成拒答但其实答了可答部分（**过度拒答**）= "
-              f"{len(buckets.get('refused_despite_answer', []))}"
-              f"/{len(partial)} {buckets.get('refused_despite_answer', [])}")
-        print(f"答了可答部分 + 点明缺口 = {len(buckets.get('answered_with_gap', []))}"
-              f"/{len(partial)} {buckets.get('answered_with_gap', [])}")
-        print(f"答了可答部分但只字不提缺口 = {len(buckets.get('answered_silently', []))}"
-              f"/{len(partial)} {buckets.get('answered_silently', [])}")
-        print(f"可答部分也没答到 = {len(buckets.get('neither', []))}"
-              f"/{len(partial)} {buckets.get('neither', [])}")
+        print(f"=== 部分可答 / 复合问题 n={len(partial)} · 分桶 ===")
+        for bucket in BUCKETS:
+            print(f"  {bucket:26s} = {len(buckets.get(bucket, []))}"
+                  f"/{len(partial)} {buckets.get(bucket, [])}")
+        print_partial_summary(partial)
 
     secs = [r["seconds"] for r in rows if r.get("seconds")]
     ttfts = [r["ttft"] for r in rows if r.get("ttft")]

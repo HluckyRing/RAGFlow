@@ -39,3 +39,225 @@ def test_classify_partial_needs_both_the_topic_and_an_absence_word():
 
 def test_classify_partial_treats_empty_answer_as_refusal():
     assert mia.classify_partial("", ANSWER_TERMS, ABSENT_TERMS) == "refused_all"
+
+
+# ── 复合问题的三种形状（2026-11-08 第二批）：三问 / 缺口在中间 / 多轮补问 ──
+#
+# 五桶口径只回答「整条消息有没有点明缺口」，回答不了「第 3 问被吞了没有」。三个子问题按序列出
+# （`parts`）之后才能逐个子问题判生死，于是多出「漏答可答项」与「该拒却没写标记」两种失败。
+
+GAP_IN_MIDDLE_PARTS = [
+    {"text": "全量备份保留多久", "answer_terms": ["保留 30 天"], "absent_terms": []},
+    {"text": "异地机房怎么切换", "answer_terms": [], "absent_terms": ["异地机房"]},
+    {"text": "恢复演练多久一次", "answer_terms": ["每半年至少组织一次"], "absent_terms": []},
+]
+
+
+def test_classify_partial_flags_a_dropped_answerable_part():
+    """点明了缺口、却把缺口后面那一问吞了 —— 五桶口径会把它判成 `answered_with_gap`（达标）。"""
+    answer = "全量备份保留 30 天。参考背景中没有提到异地机房的切换方式。"
+
+    assert mia.classify_partial(
+        answer, ["保留 30 天", "每半年至少组织一次"], ["异地机房"]) == "dropped_part_with_gap"
+
+
+def test_classify_partial_flags_a_dropped_part_even_without_the_gap():
+    answer = "全量备份保留 30 天，增量备份保留 7 天。"
+
+    assert mia.classify_partial(
+        answer, ["保留 30 天", "每半年至少组织一次"], ["异地机房"]) == "dropped_part_silent"
+
+
+def test_classify_partial_rewards_all_parts_answered_with_the_gap():
+    answer = ("全量备份保留 30 天。恢复演练每半年至少组织一次。"
+              "参考背景中没有提到异地机房的切换方式。")
+
+    assert mia.classify_partial(
+        answer, ["保留 30 天", "每半年至少组织一次"], ["异地机房"]) == "answered_with_gap"
+
+
+@pytest.mark.parametrize("answer, expected", [
+    # 这条样本本来就答不了：说了「材料里没有」却没写标记 —— 行为对、契约没守（前端不显示拒答标签）
+    ("参考背景中没有病假工资的规定。", "refused_without_marker"),
+    ("材料里未涉及病假工资。", "refused_without_marker"),
+    # 直接硬答 —— 该拒没拒
+    ("病假工资通常按正常工资的 60% 发放。", "answered_without_refusal"),
+    # 写了标记：这才是服务端能推 refused 事件、前端能渲染拒答标签的形态
+    (REFUSAL_MARKER + "参考背景中没有病假工资的规定。", "refused_all"),
+])
+def test_classify_partial_judges_samples_that_should_be_refused(answer, expected):
+    """`expect_refused: true` 的样本（可答项为空）只判「拒没拒、拒得合不合契约」。"""
+    assert mia.classify_partial(answer, [], ["病假工资"]) == expected
+
+
+def test_classify_partial_ignores_spacing_differences_in_the_terms():
+    """模型写「每年5天」、标注写「每年 5 天」不该判成漏答 —— 假失败会逼人去修不存在的问题。"""
+    answer = "根据《02-考勤与假期制度.md》，司龄 1 至 3 年每年5天。"
+
+    assert mia.classify_partial(answer, ["每年 5 天"], []) == "answered_silently"
+
+
+# ── 逐个子问题判生死（三问 / 缺口在中间的关键粒度）──
+
+def test_part_coverage_marks_each_part_separately():
+    answer = "全量备份保留 30 天。恢复演练每半年至少组织一次。参考背景没有提到异地机房。"
+
+    rows = mia.part_coverage(answer, GAP_IN_MIDDLE_PARTS)
+
+    assert [row["answerable"] for row in rows] == [True, False, True]
+    assert [row["ok"] for row in rows] == [True, True, True]
+
+
+def test_post_gap_coverage_sees_the_swallowed_third_question():
+    """缺口后面那一问被静默丢掉 —— 整条消息的桶看着仍然「达标」，只有这个数字露馅。"""
+    answer = "全量备份保留 30 天。参考背景中没有提到异地机房的切换方式。"
+
+    assert mia.post_gap_coverage(answer, GAP_IN_MIDDLE_PARTS) == {
+        "covered": 0, "total": 1, "parts": ["恢复演练多久一次"]}
+
+
+def test_post_gap_coverage_counts_all_answerable_parts_after_the_gap():
+    answer = "全量备份保留 30 天。恢复演练每半年至少组织一次。材料里没有提到异地机房。"
+
+    assert mia.post_gap_coverage(answer, GAP_IN_MIDDLE_PARTS)["covered"] == 1
+
+
+def test_post_gap_coverage_is_none_without_a_gap_before_an_answerable_part():
+    parts = [{"text": "甲", "answer_terms": ["保留 30 天"], "absent_terms": []},
+             {"text": "乙", "answer_terms": [], "absent_terms": ["异地机房"]}]
+
+    assert mia.post_gap_coverage("全量备份保留 30 天。", parts) is None
+
+
+# ── 按形状汇总：该答的与该拒的绝不混进同一个分母 ──
+
+def _row(row_id, shape, bucket, answer_terms=1, covered=1, post_gap=None,
+         expect_refused=False):
+    return {"id": row_id, "shape": shape, "bucket": bucket,
+            "expect_refused": expect_refused,
+            "coverage": {"covered": covered, "total": answer_terms},
+            "post_gap": post_gap}
+
+
+def test_summarize_partial_splits_should_answer_and_should_refuse():
+    rows = [
+        _row("p09", "three_parts", "answered_with_gap"),
+        _row("p10", "three_parts", "dropped_part_with_gap", answer_terms=2, covered=1),
+        _row("f01", "followup", "refused_all", answer_terms=0, covered=0, expect_refused=True),
+        _row("f02", "followup", "refused_without_marker", answer_terms=0, covered=0,
+             expect_refused=True),
+        _row("f03", "followup", "answered_without_refusal", answer_terms=0, covered=0,
+             expect_refused=True),
+    ]
+
+    summary = mia.summarize_partial(rows)
+
+    assert summary["three_parts"]["should_answer"] == 2
+    assert summary["three_parts"]["should_refuse"] == 0
+    assert summary["three_parts"]["dropped_part"] == ["p10"]
+    assert summary["three_parts"]["full_coverage"] == ["p09"]
+    assert summary["three_parts"]["answer_terms_covered"] == 2
+    assert summary["three_parts"]["answer_terms_total"] == 3
+    # 该拒的那三条里，只有 refused_all 是「拒了且契约对」；另外两条分别缺标记和硬答
+    assert summary["followup"]["should_refuse"] == 3
+    assert summary["followup"]["refused_ok"] == ["f01"]
+    assert summary["followup"]["refused_without_marker"] == ["f02"]
+    assert summary["followup"]["answered_without_refusal"] == ["f03"]
+    assert summary["followup"]["over_refused"] == []
+
+
+def test_summarize_partial_does_not_count_a_correct_refusal_as_over_refusal():
+    """该拒的样本拒了，不能被算进「过度拒答」—— 那会把正确行为报成失败。"""
+    summary = mia.summarize_partial(
+        [_row("f01", "followup", "refused_all", answer_terms=0, covered=0, expect_refused=True)])
+
+    assert summary["followup"]["over_refused"] == []
+    assert summary["followup"]["refused_ok"] == ["f01"]
+
+
+def test_summarize_partial_aggregates_post_gap_coverage():
+    summary = mia.summarize_partial([
+        _row("p11", "gap_in_middle", "answered_with_gap",
+             post_gap={"covered": 0, "total": 1, "parts": ["恢复演练多久一次"]}),
+        _row("p12", "gap_in_middle", "answered_with_gap",
+             post_gap={"covered": 1, "total": 1, "parts": ["餐补标准"]}),
+    ])
+
+    assert summary["gap_in_middle"]["post_gap_covered"] == 1
+    assert summary["gap_in_middle"]["post_gap_total"] == 2
+
+
+def test_summarize_partial_is_empty_for_no_rows():
+    assert mia.summarize_partial([]) == {}
+
+
+def test_print_partial_summary_labels_shapes_and_post_gap():
+    lines = []
+
+    mia.print_partial_summary(
+        [_row("p11", "gap_in_middle", "answered_with_gap",
+              post_gap={"covered": 0, "total": 1, "parts": ["恢复演练多久一次"]})],
+        log=lines.append)
+
+    text = "\n".join(lines)
+    assert "缺口在中间" in text
+    assert "缺口后一问存活    = 0/1" in text
+
+
+# ── 多轮补问：history 必须真的进 resolve_query，不能静默丢掉 ──
+
+def test_plan_search_queries_passes_history_into_resolution():
+    seen = []
+
+    def resolve(question, history):
+        seen.append((question, history))
+        return "消解后：" + question
+
+    queries = [
+        {"question": "这个要多久", "history": [{"role": "user", "content": "年假有几天"}]},
+        {"question": "市盈率怎么算"},
+    ]
+
+    got = mia.plan_search_queries(queries, resolve)
+
+    assert got == ["消解后：这个要多久", "消解后：市盈率怎么算"]
+    assert seen[0][1] == [{"role": "user", "content": "年假有几天"}]
+    assert seen[1][1] == []
+
+
+def test_matcher_ignores_markdown_emphasis_inside_a_term():
+    """模型把锚点写在 **粗体** 里不该判成漏答（2026-11-08 实测踩到：这条假失败会骗人去改提示词）。"""
+    answer = "根据《04-数据备份与恢复.md》，全量备份保留 **30 天**，增量备份保留 7 天。"
+
+    assert mia.classify_partial(answer, ["保留 30 天"], []) == "answered_silently"
+
+
+def test_matcher_ignores_chinese_quotes_inside_a_term():
+    answer = "材料里写的是：窑温“通常分三段缓慢抬升”，降温过快会让器物内部产生应力。"
+
+    assert mia.classify_partial(answer, ["分三段缓慢抬升", "产生应力"], []) == "answered_silently"
+
+
+def test_matcher_normalises_fullwidth_and_halfwidth_forms():
+    answer = "调休需要在加班之日起 6 个月内使用（逾期作废）。"
+
+    assert mia.classify_partial(answer, ["6 个月内"], []) == "answered_silently"
+
+
+def test_matcher_does_not_paper_over_a_real_paraphrase():
+    """边界：抹装饰可以，**同义改写不行** —— 「可以折算」与「可折算」不是同一个字符串。
+
+    放宽到这一步就是把失败藏起来了：模型少答了原文表述，应当由标注（最短事实核）去适配，
+    而不是让判定器学会脑补。
+    """
+    answer = "工作日加班满 1 小时起算，加班时长可折算为调休。"
+
+    assert mia.classify_partial(answer, ["可以折算为调休"], []) == "neither"
+
+
+def test_gap_flagging_accepts_any_of_several_topic_words():
+    """缺口主题词要允许同义说法：模型写「参加人员」而不是问句里的「请哪些人参加」。"""
+    answer = "恢复演练每半年至少组织一次。关于参加人员：材料里没有涉及。"
+
+    assert mia.classify_partial(
+        answer, ["每半年至少组织一次"], ["请哪些人参加", "参加人员"]) == "answered_with_gap"
