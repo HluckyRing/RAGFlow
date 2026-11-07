@@ -124,6 +124,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .msg:hover .mact,.msg:focus-within .mact{opacity:1}
 .mact:hover{background:var(--hover-bg);color:var(--text-primary)}
 .stopped-tag{font-size:12px;color:var(--text-muted)}
+.refused-tag{font-size:12px;color:var(--text-muted);border-left:2px solid var(--text-muted);padding-left:8px;margin-top:8px}
 .src-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
 .src-label{font-size:12px;color:var(--text-muted)}
 .src-chip{font-size:12px;color:var(--text-primary);background:var(--hover-bg);border-radius:10px;padding:2px 8px}
@@ -614,6 +615,19 @@ function renderSidebar() {
     if (focusInp) { focusInp.focus(); focusInp.select(); }
 }
 
+// 拒答标记：只有服务端推的 refused 事件（以及落盘里的 refused 字段）能让它出现。
+// 一律 createElement + textContent，不拼 HTML。
+function buildRefusedTag() {
+    const tag = document.createElement('div');
+    tag.className = 'refused-tag';
+    tag.textContent = '⚠️ 知识库里没有能回答这个问题的内容';
+    return tag;
+}
+function showRefusedTag(host) {
+    if (host.querySelector('.refused-tag')) return;
+    host.appendChild(buildRefusedTag());
+}
+
 function renderChat() {
     const c = S.convs[S.activeCid];
     if (!c) return;
@@ -650,6 +664,7 @@ function renderChat() {
             tag.textContent = '⏹ 已停止生成';
             body.appendChild(tag);
         }
+        if (m.refused) body.appendChild(buildRefusedTag());
         body.appendChild(buildMsgActions(m, i));
         d.appendChild(body);
         el.appendChild(d);
@@ -1230,6 +1245,7 @@ async function sendMsg(opts) {
     let full = '';
     let aborted = false;
     let sources = [];           // 服务端推来的来源（P3）：只显示，前端绝不自己推断
+    let refused = false;        // 服务端推来的拒答标记：材料里没有答案
     try {
         const body = { question:text, session_id:S.sid, conv_id:S.activeCid };
         if (typeof target === 'number') body.truncate_to = target;
@@ -1254,6 +1270,12 @@ async function sendMsg(opts) {
                     if (d.type==='sources') {
                         // 形状不对就当没有来源，宁可什么都不显示，也不显示错的
                         sources = Array.isArray(d.sources) ? d.sources : [];
+                    } else if (d.type==='refused') {
+                        // 服务端说这是拒答（材料里没有答案）：只认这个事件，前端绝不自己猜文案
+                        refused = true;
+                        aib.innerHTML = toMd(full);
+                        showRefusedTag(aib);
+                        scrollDown();
                     } else if (d.type==='token') {
                         full += d.content;
                         aib.innerHTML = toMd(full);
@@ -1279,6 +1301,7 @@ async function sendMsg(opts) {
     if (full.trim()) {
         const entry = { role:'assistant', content:full, time: Date.now()/1000 };
         if (aborted) entry.stopped = true;
+        if (refused) entry.refused = true;
         if (sources.length) entry.sources = sources;   // 跟着消息走，刷新后还能渲染
         c.messages.push(entry);
     }

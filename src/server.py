@@ -21,7 +21,7 @@ from src.text_utils import strip_surrogates, strip_surrogates_counted
 from src.retrieval import (init_vector_store, sanitize_collection_name, drop_collection,
                            chroma_meta)
 from src.llm import (resolve_query, retrieve_and_build_context, stream_answer,
-                     source_list, LLMStreamError)
+                     source_list, LLMStreamError, refusal_state, strip_refusal_marker)
 
 # session_id -> 状态 dict。与 state 模块的缓存共用同一个对象，改动会被 _save_state 落盘。
 sessions = {}
@@ -673,10 +673,17 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
     sources（见 `llm.source_list`）：在**第一个 token 之前**推一条 sources 事件，
     并跟着 assistant 消息一起落盘 —— 刷新后靠 `message.sources` 重新渲染。一个 token
     都没出来（LLM 直接报错）时不推也不落，免得给一条错误消息挂上引用。
+
+    拒答（2026-11-06）：模型答不出时按 `prompts.REFUSAL_MARKER` 开头输出。**开头要缓冲**
+    到判得出来为止（标记可能被拆在两个 token 里），判成拒答就推一条 `refused` 事件、
+    把标记从正文里去掉，落盘带 `refused: true` —— 前端据此单独渲染，而不是靠事后猜文案。
     """
     full_answer = ""
     stopped = False
     sent_sources = False
+    refused = False
+    decided = False        # 开头到底是拒答还是正常回答，判出来没有
+    pending = ""           # 判定期间攒着的 token（判定完一次性吐出）
     try:
         try:
             for token in stream_answer(question, context, history):
@@ -684,8 +691,33 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
                     if sources:
                         yield _sse_event({"type": "sources", "sources": sources})
                     sent_sources = True
-                full_answer += token
-                yield _sse_event({"type": "token", "content": token})
+                if decided:
+                    full_answer += token
+                    yield _sse_event({"type": "token", "content": token})
+                    continue
+                pending += token
+                state = refusal_state(pending)
+                if state is None:
+                    continue                     # 还看不出来，继续攒
+                decided = True
+                refused = state
+                if refused:
+                    yield _sse_event({"type": "refused"})
+                    pending = strip_refusal_marker(pending)
+                if pending:
+                    full_answer += pending
+                    yield _sse_event({"type": "token", "content": pending})
+                pending = ""
+            # 流结束还没判出来（回答就是标记本身、或比标记还短）→ 按判定结果补发
+            if not decided and pending:
+                if refusal_state(pending):
+                    refused = True
+                    yield _sse_event({"type": "refused"})
+                    pending = strip_refusal_marker(pending)
+                if pending:
+                    full_answer += pending
+                    yield _sse_event({"type": "token", "content": pending})
+                pending = ""
         except LLMStreamError as e:
             logger.warning("流式回答中断，错误文案不写入历史: %s", e)
             # 错误照样推给前端（前端不用改），但绝不写进 messages
@@ -699,6 +731,8 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None):
             entry = {"role": "assistant", "content": full_answer}
             if stopped:
                 entry["stopped"] = True
+            if refused:
+                entry["refused"] = True
             if sources:
                 entry["sources"] = sources
             _append_message(sid, conv_id, entry)

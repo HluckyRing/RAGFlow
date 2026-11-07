@@ -1,5 +1,5 @@
 from src.config import logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH
-from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE
+from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE, REFUSAL_MARKER
 from src.retrieval import hyde_retrieve_hits
 from src.text_utils import content_phrases
 
@@ -169,6 +169,45 @@ def source_list(used):
         out.append(entry)
     return out
 
+
+
+def _normalise_head(text):
+    """去掉开头可能出现的空白与 markdown 强调符号，好让标记匹配稳定。
+
+    模型很爱把标记写成 `**【无答案】**`（放在加粗里）。这里剥掉开头的空白与 `*`/`#`，
+    匹配完再把标记本身删掉，剩下的 `**` 交给 markdown 渲染器去处理即可。
+    """
+    stripped = text.lstrip()
+    while stripped[:1] in ("*", "#"):
+        stripped = stripped[1:].lstrip()
+    return stripped
+
+
+def refusal_state(pending):
+    """看流式输出的开头，判断「是不是拒答」。
+
+    返回 True（拒答）/ False（正常回答）/ None（**还看不出来**，要再攒几个 token）。
+
+    为什么需要三态：标记可能被拆在两个 token 里（`【无答` + `案】`），一拿到第一个 token 就
+    下结论会把拒答误判成正常回答。攒到第一个不属于标记的字符才算「不是拒答」。
+    """
+    head = _normalise_head(pending or "")
+    if not head:
+        return None
+    if head.startswith(REFUSAL_MARKER):
+        return True
+    if REFUSAL_MARKER.startswith(head):
+        return None                     # 还是标记的前缀，继续等
+    return False
+
+
+def strip_refusal_marker(pending):
+    """把开头的拒答标记（连同可能的 markdown 强调符）从文本里去掉。"""
+    head = _normalise_head(pending or "")
+    if not head.startswith(REFUSAL_MARKER):
+        return pending
+    rest = head[len(REFUSAL_MARKER):].lstrip("*").lstrip()
+    return rest
 
 
 class LLMStreamError(RuntimeError):

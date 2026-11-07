@@ -361,3 +361,26 @@ def test_sources_ride_along_with_the_message_and_renderChat_draws_them():
     assert "entry.sources = sources" in html, "来源要跟着消息走，否则刷新就没了"
     chat = _source_between("function renderChat", "const QUICK_PROMPTS")
     assert "buildSources" in chat, "renderChat 要渲染来源行"
+
+
+# ── 拒答（2026-11-06：让生成自己拒答之后，前端要能把它标出来）──
+
+def test_refused_event_is_handled_and_rides_along_with_the_message():
+    """拒答只认服务端推的 refused 事件（以及落盘的 refused 字段），前端不猜文案。"""
+    html = _html()
+    assert "d.type==='refused'" in html, "前端必须处理 refused 事件"
+    assert "let refused = false" in html
+    assert "entry.refused = true" in html, "拒答要跟着消息走，否则刷新就丢了"
+
+
+def test_refused_tag_is_built_with_textContent_only():
+    src = _source_between("function buildRefusedTag", "function renderChat")
+    assert "createElement" in src
+    assert "textContent" in src, "拒答标记要用 textContent 写入"
+    assert "innerHTML" not in src
+
+
+def test_renderChat_draws_the_refused_tag():
+    chat = _source_between("function renderChat", "const QUICK_PROMPTS")
+    assert "m.refused" in chat, "刷新后 renderChat 要把拒答标记画出来"
+    assert "buildRefusedTag" in chat
