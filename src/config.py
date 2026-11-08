@@ -104,6 +104,15 @@ ANSWERABILITY_CHECK = os.getenv("ANSWERABILITY_CHECK", "0").strip().lower() not 
 # 关思考后这点预算不会被 reasoning 吃掉。
 ANSWERABILITY_MAX_TOKENS = int(os.getenv("ANSWERABILITY_MAX_TOKENS", "32"))
 
+# 拆问（query 分解）：复合问句先拆成若干子问题，各自检索再合并 context。
+# 默认 **关**（2026-11-08 第五轮）：闸门 + 拆问会多一次 0.66 s 上下的 LLM 调用，必须先过
+# 延迟线才谈到默认开（与双路融合「误召回 0/5 且中位延迟 ≤1.5 s」同一个约定）。
+# 注意：**关着的时候连闸门都不跑**，一次 API 都不花 —— 行为与改造前逐位一致。
+DECOMPOSE_ENABLED = os.getenv("DECOMPOSE_ENABLED", "0").strip().lower() not in ("0", "false", "no", "")
+# 拆问最多拆几问（再多就不是「一个问题」，而是把整段话贴进来了）
+DECOMPOSE_MAX_PARTS = int(os.getenv("DECOMPOSE_MAX_PARTS", "6"))
+
+
 VECTOR_DB_PATH = resolve_path(os.getenv("VECTOR_DB_PATH"), "chroma_db")
 # 上传原件（不是抽取文本）的存放根目录。原文件预览要读它；同样锚定项目根，
 # 测试/冒烟用 UPLOAD_DIR 指向临时目录，避免落到真实用户数据上。

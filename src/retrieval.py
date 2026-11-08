@@ -343,11 +343,18 @@ def _probe_queries(question, search_query):
     return [search_query]
 
 
-def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, top_k=None, files=None):
+def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, top_k=None, files=None,
+                                 use_hyde=True):
     """同 `hyde_retrieve_hits`，但把「走的哪条路」一起返回：`(PATH_*, hits)`。
 
     负样本的样子（向量全丢、兜底也没命中）返回的仍然是 `PATH_KEYWORD` —— 那条路确实
     跑了，只是没捞出东西。**不要**用这个标签判断「有没有检索到内容」，那要看 hits 是否为空。
+
+    `use_hyde=False` 是**单探针**口径：原问题直接当向量探针，不生成假设文本、也就没有
+    双路融合。给「每问分路检索」用（2026-11-08）—— 复合问句拆成 n 个子问题后，如果每问
+    都再调一次 HyDE，延迟会变成 n 倍（实测一次 HyDE 0.7–1.3 s）；单探针的代价是丢掉
+    `intersect` 闸门的第二票，但它仍然过 `MAX_DISTANCE` 距离闸门，且**只有被拆成 ≥2 问时
+    才走这条路**（单问提问的行为一个字都没变）。
     """
     if top_k is None:
         top_k = TOP_K
@@ -355,7 +362,7 @@ def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, to
     hits = []
     if use_vector and collection is not None:
         # 只有真要查向量库时才值得花一次 API 调用来生成 HyDE
-        search_query = _generate_hyde(question)
+        search_query = _generate_hyde(question) if use_hyde else question
         probes_wanted = _probe_queries(question, search_query)
         try:
             count = collection.count()
@@ -424,14 +431,18 @@ def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, to
     return PATH_VECTOR, hits
 
 
-def hyde_retrieve_hits(question, collection, full_text, use_vector, top_k=None, files=None):
+def hyde_retrieve_hits(question, collection, full_text, use_vector, top_k=None, files=None,
+                       use_hyde=True):
     """检索并带上来源：返回 [(chunk_text, meta), ...]，meta 可能是 None。
 
     meta 来自建索引时写进 Chroma 的 metadatas；老索引（P2 之前建的）没有 metadatas，
     这时 meta 是 None，上层会标注成「未标注」，绝不编造来源。
+
+    `use_hyde=False` = 单探针口径（见 `hyde_retrieve_hits_with_path`）。
     """
     return hyde_retrieve_hits_with_path(
-        question, collection, full_text, use_vector, top_k=top_k, files=files)[1]
+        question, collection, full_text, use_vector, top_k=top_k, files=files,
+        use_hyde=use_hyde)[1]
 
 
 def hyde_retrieve(question, collection, full_text, use_vector, top_k=None, files=None):

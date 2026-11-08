@@ -1,4 +1,5 @@
 from src.config import logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH
+from src.hits_merge import interleave_hits
 from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE, REFUSAL_MARKER
 from src.retrieval import hyde_retrieve_hits
 from src.text_utils import content_phrases
@@ -87,7 +88,43 @@ def _format_source_block(text, meta):
     return f"【来源：{_source_label(meta)}】\n{text}"
 
 
-def retrieve_and_build_context(question, full_text, collection, use_vector, top_k=None, files=None):
+def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose):
+    """取检索块：**单问就照旧走整句**，复合问句才每问分路。
+
+    三条边界都是刻意的：
+    - 拆问只拆出 1 条（绝大多数提问）→ 与改造前逐位一致，不多花一次 embedding，也不掉
+      HyDE 与 `intersect` 闸门；
+    - 分路各问用的是**单探针**口径（不调 HyDE）—— 每问都调 HyDE 会让延迟变成 n 倍；
+      代价是丢掉 `intersect` 的第二票，所以这条路只对**已经拆成 ≥2 问**的提问生效；
+    - 分路一条都没捞到 → 退回整句检索（和今天一样），绝不让一次拆问把问答搞空。
+    """
+    questions = []
+    if decompose is not None:
+        try:
+            questions = [text for text in (decompose(question) or []) if str(text).strip()]
+        except Exception as e:                                  # 拆问自己已经 fail-open 了，这里是双保险
+            logger.warning("拆问抛错，按整句检索: %s", str(e)[:80])
+            questions = []
+    if len(questions) <= 1:
+        return hyde_retrieve_hits(question, collection, full_text, use_vector,
+                                  top_k=top_k, files=files)
+
+    part_hits = []
+    for sub_question in questions:
+        part_hits.append(hyde_retrieve_hits(sub_question, collection, full_text, use_vector,
+                                            top_k=top_k, files=files, use_hyde=False))
+    merged = interleave_hits(part_hits, top_k)
+    if merged:
+        logger.info("每问分路检索：拆成 %d 问，单探针召回 %s 块 → 合并后 %d 块（预算 %d）",
+                    len(questions), [len(hits) for hits in part_hits], len(merged), top_k)
+        return merged
+    logger.warning("每问分路检索一条都没捞到，退回整句检索（拆成 %d 问）", len(questions))
+    return hyde_retrieve_hits(question, collection, full_text, use_vector,
+                              top_k=top_k, files=files)
+
+
+def retrieve_and_build_context(question, full_text, collection, use_vector, top_k=None,
+                               files=None, decompose=None):
     """检索，并按「块边界」装配参考背景，每块带上来源。
 
     两件事叠在一起：
@@ -103,9 +140,12 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
     唯一例外：单块（含来源标签）本身就超过 MAX_CONTEXT_LENGTH（配置互相矛盾，例如把
     MAX_CONTEXT_LENGTH 调得比一个 chunk 还小）。此时只能截断这一块 —— 总比返回空好 ——
     并记一条 WARNING。
+
+    `decompose` 是**可选**的拆问函数（`src.decompose.decompose_question`）：给了它、且它把
+    问句拆成 ≥2 条，就走「每问分路检索」（2026-11-08 实测同预算下覆盖 45.9% → 81.1%）。
+    不给（默认）时行为与改造前完全一致。
     """
-    hits = hyde_retrieve_hits(question, collection, full_text, use_vector,
-                              top_k=top_k, files=files)
+    hits = _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose)
     if not hits:
         return "", []
 

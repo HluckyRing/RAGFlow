@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, Fil
 
 import src.state as state
 import src.answerability as answerability
+import src.config as config
 from src.config import (logger, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, HOST, PORT,
                         UPLOAD_DIR)
 from src.loaders import load_file
@@ -761,6 +762,17 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None,
     yield _sse_event({"type": "done"})
 
 
+def _decomposer():
+    """`DECOMPOSE_ENABLED=1` 时返回拆问函数，否则返回 None（连闸门都不跑、一次 API 不花）。
+
+    抽成函数是为了能在测试里按开关覆盖它，而不用去改全局 config。
+    """
+    if not config.DECOMPOSE_ENABLED:
+        return None
+    import src.decompose as decompose_mod
+    return decompose_mod.decompose_question
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     data = await request.json()
@@ -801,6 +813,7 @@ async def chat(request: Request):
     context, used = await run_in_threadpool(
         retrieve_and_build_context, search_query, _conv_full_text(conv),
         conv["collection"], conv["use_vector"], dynamic_top_k, files,
+        _decomposer(),
     )
     if not context:
         return JSONResponse({"error": "未找到相关内容"}, status_code=400)

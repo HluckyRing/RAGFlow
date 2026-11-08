@@ -74,6 +74,7 @@ if str(ROOT) not in sys.path:
 from scripts.eval_real_corpus import conversations_from_state  # noqa: E402
 from scripts.eval_retrieval import (  # noqa: E402  归一化口径只有一份，别处不要重写
     cached_generate, hyde_self_check, load_hyde_cache, normalize, save_hyde_cache)
+from src.hits_merge import hit_key as _hit_key, interleave_hits as _interleave_hits  # noqa: E402
 from src.pdf_ingestion import split_files  # noqa: E402  与线上同一条切片路径
 
 # 锚点长度区间：低于 8 字的短语在语料里太常见（钉不住一片正文），高于 14 字又会把
@@ -476,41 +477,13 @@ PATH_MIXED = "mixed"
 
 
 def hit_key(hit):
-    """一个检索块的身份：优先 (文件名, 片号)；没有 meta 的老索引退回正文本身。
-
-    去重必须按**块身份**而不是正文：同一片被两个子问题都召回时，正文一模一样，
-    但「两片不同文件里恰好内容相同」也是可能的 —— 那种情况是两块，不能只留一块。
-    """
-    text, meta = hit
-    if isinstance(meta, dict):
-        name, index = meta.get("file_name"), meta.get("chunk_index")
-        if name is not None and index is not None:
-            return (name, index)
-    return text
+    """一个检索块的身份。**口径只有一份**：与线上合并用的是同一个实现（`src/hits_merge.py`）。"""
+    return _hit_key(hit)
 
 
 def interleave_hits(part_hits, budget):
-    """每问轮流取名额，直到装满 `budget` 块。
-
-    先给每个子问题它的第 1 名，再轮流给第 2 名……这样「某一问的第 2 名」永远不会把
-    「另一问的第 1 名」挤掉。某问已经没料时名额自动留给还在出货的那些问，不空转。
-    同一片被两问都召回时只占一个名额（按块身份去重）。
-    """
-    budget = max(0, int(budget or 0))
-    ordered, seen = [], set()
-    depth = max((len(hits or []) for hits in part_hits), default=0)
-    for rank in range(depth):
-        for hits in part_hits:
-            if rank >= len(hits or []):
-                continue
-            key = hit_key(hits[rank])
-            if key in seen:
-                continue
-            seen.add(key)
-            ordered.append(hits[rank])
-            if len(ordered) >= budget:
-                return ordered
-    return ordered
+    """每问轮流取名额。**口径只有一份**：线上 `llm.py` 用的是同一个实现。"""
+    return _interleave_hits(part_hits, budget)
 
 
 def rrf_merge_hits(part_hits, budget, k=None):
