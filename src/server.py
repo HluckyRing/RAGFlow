@@ -809,11 +809,13 @@ async def chat(request: Request):
     # 带上每个文件的正文：检索层要按文件切片，才知道命中的块来自哪个文件（P2）
     files = [(f.get("file_name", ""), f.get("file_text", ""))
              for f in (conv.get("files") or [])]
-    # HyDE 的 LLM 调用 + Chroma 查询 + embedding 推理全是阻塞的
+    # HyDE 的 LLM 调用 + Chroma 查询 + embedding 推理全是阻塞的。
+    # `history` 传进去是为了「多轮 + 复合」：拆问要能补全省略式追问，拆出来的每条子问
+    # 还要再过一遍指代消解（主语常常还留在上一轮里）。
     context, used = await run_in_threadpool(
         retrieve_and_build_context, search_query, _conv_full_text(conv),
         conv["collection"], conv["use_vector"], dynamic_top_k, files,
-        _decomposer(),
+        _decomposer(), history,
     )
     if not context:
         return JSONResponse({"error": "未找到相关内容"}, status_code=400)

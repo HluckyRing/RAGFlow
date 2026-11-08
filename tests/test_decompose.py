@@ -18,11 +18,14 @@ import pytest
 
 import src.decompose as decompose_mod
 from src.decompose import (
+    HISTORY_CHAR_LIMIT,
     MAX_PARTS,
     decompose_question,
+    history_digest,
     looks_compound,
     parse_parts,
 )
+from src.prompts import DECOMPOSE_SYSTEM_PROMPT
 
 
 class FakeClient:
@@ -195,3 +198,58 @@ def test_empty_question_stays_empty(fake_client):
 
     assert decompose_question("") == []
     assert client.calls == []
+
+
+# ── 多轮 + 复合：省略式追问要能被补成可检索的问句 ──
+
+HISTORY = [
+    {"role": "user", "content": "年假有几天？"},
+    {"role": "assistant", "content": "司龄 1 至 3 年每年 5 天。"},
+]
+
+
+def test_history_digest_keeps_only_the_recent_user_and_assistant_turns():
+    history = [{"role": "user", "content": f"第{i}轮"} for i in range(10)]
+    history.append({"role": "system", "content": "系统消息不该进拆问"})
+
+    digest = history_digest(history)
+
+    assert "系统消息" not in digest, "只给 user/assistant，别把系统提示词塞进去"
+    assert digest.splitlines() == [f"用户：第{i}轮" for i in range(6, 10)]
+
+
+def test_history_digest_truncates_each_message():
+    digest = history_digest([{"role": "user", "content": "长" * 500}])
+
+    assert len(digest) <= len("用户：") + HISTORY_CHAR_LIMIT
+
+
+def test_no_history_keeps_the_prompt_byte_identical(fake_client):
+    """没有历史时提示词必须与上一版逐字一致 —— 否则单轮提问的行为会跟着变。"""
+    client = fake_client('["甲", "乙"]')
+
+    decompose_question("甲？乙？")
+
+    messages = client.calls[0]["messages"]
+    assert messages[0]["content"] == DECOMPOSE_SYSTEM_PROMPT
+    assert messages[1]["content"] == "甲？乙？"
+
+
+def test_history_is_passed_in_and_asks_the_model_to_resolve_ellipsis(fake_client):
+    client = fake_client('["年假有几天", "病假有几天"]')
+
+    decompose_question("年假有几天？那病假呢？", history=HISTORY)
+
+    messages = client.calls[0]["messages"]
+    assert "省略式追问" in messages[0]["content"], "规则要写进系统提示词"
+    assert "【上一轮对话】" in messages[1]["content"]
+    assert "用户：年假有几天？" in messages[1]["content"]
+    assert "【本轮问题】" in messages[1]["content"]
+
+
+def test_empty_history_behaves_like_no_history(fake_client):
+    client = fake_client('["甲", "乙"]')
+
+    decompose_question("甲？乙？", history=[])
+
+    assert client.calls[0]["messages"][0]["content"] == DECOMPOSE_SYSTEM_PROMPT

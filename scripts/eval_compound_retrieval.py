@@ -658,6 +658,123 @@ def run_sample_arm(sample, retrieve, budget=5, mode=ROUTE_MERGED, decompose=None
     return record
 
 
+# ── 多轮 + 复合：省略式追问的指代路径 ──
+#
+# 形状：第一轮单独问过一件事，第二轮是一个**复合问句**，其中**前一件是省略式追问**
+# （「那这个规定还有效吗？」—— 主语在上一轮里），后一件自带完整问句。
+# 三个臂只差「谁负责把省略补全」：
+# - `fu_merged`：现状。整句（先过 `resolve_query`）一次检索。
+# - `fu_nohist`：拆问 + 每问分路，但拆问**看不到历史**（上一轮的实现）。
+# - `fu_history`：拆问 + 每问分路，拆问**带历史**，拆出来的每条子问再过一遍 `resolve_query`
+#   （线上 2026-11-08 第七轮的做法）。
+FOLLOWUP_TURN2 = "那这个规定还有效吗？{second}"
+FOLLOWUP_ANSWER_PLACEHOLDER = "（上一轮的回答）"
+
+ROUTE_FOLLOWUP_MERGED = "fu_merged"
+ROUTE_FOLLOWUP_NORESOLVE = "fu_noresolve"
+ROUTE_FOLLOWUP_NOHIST = "fu_nohist"
+ROUTE_FOLLOWUP_HISTORY = "fu_history"
+FOLLOWUP_ROUTE_MODES = (ROUTE_FOLLOWUP_MERGED, ROUTE_FOLLOWUP_NORESOLVE,
+                        ROUTE_FOLLOWUP_NOHIST, ROUTE_FOLLOWUP_HISTORY)
+FOLLOWUP_LABELS = {
+    ROUTE_FOLLOWUP_MERGED: "现状（整句一次检索）",
+    ROUTE_FOLLOWUP_NORESOLVE: "拆问分路（省略式**不消解**：对照臂）",
+    ROUTE_FOLLOWUP_NOHIST: "拆问分路（拆问看不到历史）",
+    ROUTE_FOLLOWUP_HISTORY: "拆问分路（拆问带历史，线上口径）",
+}
+
+
+def make_followup_sample(probe_first, probe_second, sample_id="f"):
+    """造一条「多轮 + 复合」样本：第二轮的前半是省略式追问，后半自带完整问句。
+
+    gold 就是两个探针各自的目标片（**块身份**，逐字可核）：前半覆盖到「上一轮那件事」的
+    正文，后半覆盖到第二件事的正文。前半能不能被检到，取决于指代有没有被补全 —— 这正是
+    要量的东西。
+    """
+    history = [
+        {"role": "user", "content": probe_first.get("sub_question") or ""},
+        {"role": "assistant", "content": FOLLOWUP_ANSWER_PLACEHOLDER},
+    ]
+    parts = []
+    for index, probe in enumerate((probe_first, probe_second)):
+        parts.append({
+            "id": f"{sample_id}/p{index}",
+            "anchor": probe.get("anchor") or "",
+            "sub_question": (probe.get("sub_question") or ""),
+            "target": probe.get("target"),
+            "baseline_top1": bool(probe.get("baseline_top1")),
+            "baseline_kind": probe.get("baseline_kind"),
+            "file_ix": probe.get("file_ix"),
+            "elliptical": index == 0,
+        })
+    return {
+        "id": sample_id,
+        "n_parts": len(parts),
+        "question": FOLLOWUP_TURN2.format(second=probe_second.get("sub_question") or ""),
+        "history": history,
+        "parts": parts,
+    }
+
+
+def build_followup_samples(probes, prefix="f"):
+    """两两配对造多轮样本（复用 `build_samples` 的「每个文件只出一问」轮转）。"""
+    pairs, _skipped = build_samples(probes, 2, prefix=prefix)
+    return [make_followup_sample(pair["parts"][0], pair["parts"][1], sample_id=pair["id"])
+            for pair in pairs]
+
+
+def _followup_record(arm, sample, hits, retrievals, generated=None):
+    """装配与其它臂同形的 record（判覆盖只看块身份）。"""
+    parts = []
+    for part in sample.get("parts") or []:
+        parts.append({
+            "id": part.get("id"),
+            "eligible": bool(part.get("baseline_top1")),
+            "baseline_top1": bool(part.get("baseline_top1")),
+            "baseline_kind": part.get("baseline_kind"),
+            "covered": covered(hits, part.get("target")),
+            "strict": anchor_visible(hits, part.get("anchor")),
+            "same_file_anchor": _same_file_anchor_visible(hits, part.get("target"),
+                                                         part.get("anchor")),
+            "elliptical": bool(part.get("elliptical")),
+        })
+    return {"id": sample.get("id"), "arm": arm, "n_parts": sample.get("n_parts"),
+            "budget": None, "path": "followup", "per_part_paths": [], "hits": len(hits),
+            "retrievals": retrievals, "generated": generated,
+            "decompose_fallback": None, "parts": parts}
+
+
+def run_followup_case(sample, retrieve, decompose_nohist, decompose_history, resolve,
+                      budget=5):
+    """跑一条「多轮 + 复合」样本的三个臂。"""
+    history = sample.get("history") or []
+    question = sample.get("question") or ""
+
+    # ① 现状：整句先消解再一次检索
+    _path, hits = retrieve(resolve(question, history), budget)
+    records = [_followup_record(ROUTE_FOLLOWUP_MERGED, sample, hits, 1)]
+
+    # ②③ 两个拆问臂：只差拆问看不看得到历史；拆出来的每条子问都过一遍 resolve_query
+    for arm, decomposer in ((ROUTE_FOLLOWUP_NOHIST, decompose_nohist),
+                            (ROUTE_FOLLOWUP_HISTORY, decompose_history)):
+        questions = [str(text).strip() for text in (decomposer(question) or [])]
+        questions = [text for text in questions if text]
+        resolved = [resolve(text, history) for text in questions]
+        part_hits = [retrieve(text, budget)[1] for text in resolved]
+        merged = interleave_hits(part_hits, budget)
+        records.append(_followup_record(arm, sample, merged, len(resolved),
+                                       generated=len(resolved)))
+
+    # ④ 对照臂：同样的拆问，但**不做**逐条指代消解 —— 用来证明「是谁把省略补全了」
+    questions = [str(text).strip() for text in (decompose_nohist(question) or [])]
+    questions = [text for text in questions if text]
+    part_hits = [retrieve(text, budget)[1] for text in questions]
+    merged = interleave_hits(part_hits, budget)
+    records.append(_followup_record(ROUTE_FOLLOWUP_NORESOLVE, sample, merged, len(questions),
+                                   generated=len(questions)))
+    return records
+
+
 # ── 汇总 ──
 
 def _rate(hit, total):
@@ -772,7 +889,7 @@ def summarize(results, top_k=5, extra_k=10):
             "overall": _group_stats(records, None, "all", top_k, extra_k)}
 
 
-def summarize_routes(records, budget=5):
+def summarize_routes(records, budget=5, arms=None):
     """按「实验臂 × 子问数量」汇总，另给每个臂一行「全部」。
 
     `n_parts is None` 的那一组是该臂的总体（跨 2/3/4 问合并）。分母与现状口径完全一致：
@@ -783,7 +900,7 @@ def summarize_routes(records, budget=5):
     records = list(records or [])
     groups = []
     sizes = sorted({record.get("n_parts") for record in records if record.get("n_parts")})
-    for arm in ROUTE_MODES:
+    for arm in (arms or ROUTE_MODES):
         rows = [record for record in records if record.get("arm") == arm]
         if not rows:
             continue
@@ -872,6 +989,44 @@ def summarize_routes(records, budget=5):
                 "path_mix": path_mix,
             })
     return groups
+
+
+def _followup_part_stats(records, arm):
+    """把一条多轮样本的两个子问分开算：**省略式那一半**（要靠历史补全）与自带问句那一半。
+
+    整体覆盖率会把「自带问句答对了」混进来，而真正要验的是省略式那一半 —— 它才是
+    指代没补全时唯一会掉的东西。
+    """
+    rows = [part for record in records if record.get("arm") == arm
+            for part in record.get("parts") or [] if part.get("eligible")]
+    elliptical = [part for part in rows if part.get("elliptical")]
+    standalone = [part for part in rows if not part.get("elliptical")]
+    return {
+        "elliptical_covered": sum(1 for part in elliptical if part.get("covered")),
+        "elliptical_eligible": len(elliptical),
+        "standalone_covered": sum(1 for part in standalone if part.get("covered")),
+        "standalone_eligible": len(standalone),
+    }
+
+
+def _print_followup(records, budget):
+    groups = summarize_routes(records, budget=budget, arms=FOLLOWUP_ROUTE_MODES)
+    by_arm = {(group["arm"], group["n_parts"]): group for group in groups}
+    print(f"=== 多轮 + 复合（省略式追问；预算 {budget} 块；分母 = 单问基线命中的子问）===")
+    for arm in FOLLOWUP_ROUTE_MODES:
+        overall = by_arm.get((arm, None))
+        if not overall:
+            continue
+        parts = _followup_part_stats(records, arm)
+        print(f"  {FOLLOWUP_LABELS[arm]}：全部 {_pct(overall['coverage'])}"
+              f"（{overall['covered']}/{overall['parts_eligible']}）"
+              f"｜**省略式那一半** {_pct(_rate(parts['elliptical_covered'], parts['elliptical_eligible']))}"
+              f"（{parts['elliptical_covered']}/{parts['elliptical_eligible']}）"
+              f"｜自带问句那一半 {_pct(_rate(parts['standalone_covered'], parts['standalone_eligible']))}"
+              f"（{parts['standalone_covered']}/{parts['standalone_eligible']}）"
+              f"｜检索 {overall['mean_retrievals']:.2f} 次/样本"
+              if overall["mean_retrievals"] is not None else
+              f"  {FOLLOWUP_LABELS[arm]}：无数据")
 
 
 # ── 落盘安全网 ──
@@ -1078,6 +1233,10 @@ def main(argv=None):
                         help="复合问句怎么拼：qmark（？分隔，默认）/ comma（，）/ runon（还有）")
     parser.add_argument("--decompose-cache", default=None,
                         help="拆问结果缓存 JSON；跑 decompose 臂时必须带上，否则每次比的是大模型随机性")
+    parser.add_argument("--followup", type=int, default=0,
+                        help="额外跑 N 条「多轮 + 复合」（省略式追问）样本的三个臂，默认 0")
+    parser.add_argument("--followup-cache", default=None,
+                        help="多轮样本的拆问缓存（与 --decompose-cache 分开存，避免问句撞车）")
     parser.add_argument("--json", default=None, help="明细落盘（只有 id/命中布尔/距离/路径）")
     parser.add_argument("--hyde", action="store_true",
                         help="走真实 HyDE（花 API 额度；线上口径）；默认不开")
@@ -1156,6 +1315,37 @@ def main(argv=None):
         if not args.decompose_cache:
             print("提示：没带 --decompose-cache，拆问结果不落盘 —— 两轮之间会比到大模型的随机性。")
 
+    # 多轮 + 复合：两个拆问变体（同一个模型、各自一份缓存 —— 同一个问句在两个变体里
+    # 可能拆出不同结果，缓存键必须分开，否则「带不带历史」的对比会被缓存抹平）
+    followup_results = []
+    decompose_nohist = None
+    decompose_with_history = None
+    followup_cache = {}
+    if args.followup:
+        from scripts.eval_decomposition import load_decompose_cache, save_decompose_cache
+        import src.decompose as decompose_mod
+
+        if decompose_mod.client is None:
+            print("错误：--followup 要调大模型拆问，但没有配置 API_KEY。")
+            return 2
+        followup_cache = load_decompose_cache(args.followup_cache) if args.followup_cache else {}
+
+        def _memo(namespace, generate):
+            def call(question, history=None):
+                key = f"{namespace}::{question}"
+                if key not in followup_cache:
+                    followup_cache[key] = list(generate(question, history))
+                return list(followup_cache[key])
+            return call
+
+        decompose_nohist = _memo("nohist",
+                                 lambda question, history: decompose_mod.decompose_question(question))
+        decompose_with_history = _memo(
+            "history",
+            lambda question, history: decompose_mod.decompose_question(question, history=history))
+        if not args.followup_cache:
+            print("提示：没带 --followup-cache，多轮样本的拆问不落盘 —— 两轮之间会比模型随机性。")
+
     # 落盘前的泄漏检查要用到「锚点原文 + 文件名」，这里就地攒一份（只在内存里，
     # 一个字节都不写盘 —— 见 find_leaks 的说明）。
     corpus_needles = [name for conv in conversations for name, _text in conv["files"]]
@@ -1201,6 +1391,29 @@ def main(argv=None):
               f"有 {ranked} 条目标片仍在原始前 10")
 
         conv_results = []
+        # 多轮 + 复合：省略式追问的指代路径（每个对话最多造 --followup 条）
+        if args.followup:
+            from src.llm import resolve_query
+
+            followup_done = 0
+            for sample in build_followup_samples(probes, prefix=f"c{conv_ix}"):
+                if followup_done >= args.followup:
+                    break
+                try:
+                    cases = run_followup_case(
+                        sample, retrieve,
+                        decompose_nohist=decompose_nohist,
+                        decompose_history=lambda question, _history=sample["history"]:
+                            decompose_with_history(question, _history),
+                        resolve=resolve_query, budget=route_budget)
+                except Exception as e:
+                    counts["query_errors"] += 1
+                    print(f"    多轮样本跑失败，跳过：{str(e)[:60]}")
+                    continue
+                followup_results.extend(cases)
+                followup_done += 1
+            if followup_done:
+                print(f"    多轮样本 {followup_done} 条（每问句 1 条省略式追问 + 1 条完整问句）")
         for size in SAMPLE_SIZES:
             samples, skipped = build_samples(probes, size, prefix=f"c{conv_ix}",
                                              join_style=args.join_style)
@@ -1303,6 +1516,12 @@ def main(argv=None):
             print("成本口径：每问多一次 embedding + 一次向量查询（检索次数列已计入）；"
                   "线上还要加一次分解调用的延迟。")
 
+    if followup_results:
+        print()
+        _print_followup(followup_results, route_budget)
+        print("  口径：省略式那一半（「那这个规定还有效吗？」）的主语在上一轮里 —— "
+              "它掉不掉，就是指代有没有被补全。自带问句那一半是对照组。")
+
     if args.json:
         payload = {
             "config": {"seed": args.seed, "top_k": args.top_k, "extra_k": args.extra_k,
@@ -1317,6 +1536,10 @@ def main(argv=None):
             "samples": results,
             "route": {"budget": route_budget, "groups": route_groups,
                       "samples": route_results},
+            "followup": {"budget": route_budget,
+                         "groups": summarize_routes(followup_results, budget=route_budget,
+                                                    arms=FOLLOWUP_ROUTE_MODES),
+                         "samples": followup_results},
         }
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         # 安全网：明细里一旦出现锚点原文或文件名就中止，绝不把语料副本写进任何文件
@@ -1334,6 +1557,10 @@ def main(argv=None):
     if args.decompose_cache and decompose_cache:
         save_decompose_cache(args.decompose_cache, decompose_cache)
         print(f"拆问结果已缓存：{args.decompose_cache}（{len(decompose_cache)} 条）")
+    if args.followup_cache and followup_cache:
+        from scripts.eval_decomposition import save_decompose_cache
+        save_decompose_cache(args.followup_cache, followup_cache)
+        print(f"多轮样本的拆问已缓存：{args.followup_cache}（{len(followup_cache)} 条）")
     return 0
 
 

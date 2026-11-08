@@ -109,3 +109,54 @@ def test_decompose_flag_off_returns_no_decomposer(monkeypatch):
 
     monkeypatch.setattr(config, "DECOMPOSE_ENABLED", True)
     assert callable(server_mod._decomposer())
+
+
+# ── 多轮 + 复合：拆出来的每条子问也要过一遍指代消解 ──
+
+HISTORY = [{"role": "user", "content": "年假有几天？"},
+           {"role": "assistant", "content": "司龄 1 至 3 年每年 5 天。"}]
+
+
+def test_history_reaches_the_decomposer(monkeypatch):
+    seen = {}
+
+    def fake(question, collection, full_text, use_vector, top_k=None, files=None, use_hyde=True):
+        return [_hit("x", 0)]
+
+    def fake_decompose(question, history=None):
+        seen["history"] = history
+        return ["甲子问", "乙子问"]
+
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", fake)
+    llm._retrieve_hits("那这个规定还有效吗？乙问？", None, "", False, 5, None,
+                       fake_decompose, history=HISTORY)
+
+    assert seen["history"] == HISTORY, "拆问要拿到历史，否则省略式追问补不全"
+
+
+def test_each_decomposed_question_gets_coreference_resolution(monkeypatch):
+    """省略式追问被拆成单条后，主语还在上一轮里 —— 每条子问都要过 resolve_query。"""
+    asked = []
+
+    def fake(question, collection, full_text, use_vector, top_k=None, files=None, use_hyde=True):
+        asked.append(question)
+        return [_hit("x", 0)]
+
+    monkeypatch.setattr(llm, "hyde_retrieve_hits", fake)
+    llm._retrieve_hits("那这个规定还有效吗？乙问？", None, "", False, 5, None,
+                       lambda question, history=None: ["那这个规定还有效吗", "乙问"],
+                       history=HISTORY)
+
+    assert asked == ["年假有几天 那这个规定还有效吗", "乙问"], \
+        "第一条子问被 resolve_query 补上了上一轮的实体；第二条不需要消解就别动它"
+
+
+def test_decomposer_that_only_takes_one_argument_still_works(monkeypatch):
+    """历史版本 / 评测替身可能只接受一个参数，不能因此把问答搞崩。"""
+    monkeypatch.setattr(llm, "hyde_retrieve_hits",
+                        lambda *args, **kwargs: [_hit("x", 0)])
+
+    hits = llm._retrieve_hits("甲？乙？", None, "", False, 5, None,
+                              lambda question: ["甲", "乙"], history=HISTORY)
+
+    assert hits

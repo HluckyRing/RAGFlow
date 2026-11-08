@@ -32,6 +32,11 @@ MAX_PARTS = 6
 MIN_PART_CHARS = 2
 MAX_PART_CHARS = 120
 MAX_TOKENS = 300
+# 多轮时喂给模型的历史：只给最近两轮（user/assistant 各一条算一轮），并且每条截断。
+# 目的只有一个 —— 让省略式追问（「那病假呢」「那这个规定还有效吗」）能被补成可检索的问句；
+# 给得越多越容易把不相关的上下文拽进拆问，反而拆歪。
+HISTORY_MESSAGES = 4
+HISTORY_CHAR_LIMIT = 200
 
 # 拆问用的模型客户端：单独取一次，测试可以替换成替身
 client = config.client
@@ -156,11 +161,54 @@ def parse_parts(raw, max_parts=None):
     return parts
 
 
-def decompose_question(question, max_parts=None, use_gate=True):
+def history_digest(history):
+    """把最近几轮压成一段短文，喂给拆问模型（纯函数，便于测试）。
+
+    只取**用户/助手**两类角色的最近 `HISTORY_MESSAGES` 条，每条截到 `HISTORY_CHAR_LIMIT` 字。
+    为什么要给历史：多轮里的省略式追问（「那病假呢？」「那这个规定还有效吗？」）单看本句
+    是检索不到东西的 —— 主语在**上一轮**里。拆问模型拿到历史就能把子问补成独立问句，
+    这比事后按规则拼实体准得多（规则拼出来是「年假 那病假呢」这种半截话）。
+    """
+    lines = []
+    for message in history or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = re.sub(r"\s+", " ", str(message.get("content") or "")).strip()
+        if not content:
+            continue
+        lines.append(("用户：" if role == "user" else "助手：") + content[:HISTORY_CHAR_LIMIT])
+    # 先筛角色再截最近几条：反过来的话，中间夹一条系统消息就会白占一个名额
+    return "\n".join(lines[-HISTORY_MESSAGES:])
+
+
+def _build_messages(question, history):
+    """拆问的 messages：有历史就把历史放在问题前面（没有历史时与上一版逐字相同）。"""
+    digest = history_digest(history)
+    if not digest:
+        return [
+            {"role": "system", "content": DECOMPOSE_SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+        ]
+    system = (DECOMPOSE_SYSTEM_PROMPT
+              + "\n6. 如果某个子问题是省略式追问（例如「那病假呢」「那这个规定还有效吗」），"
+                "结合【上一轮对话】把它补成能单独检索的问句（补的是主语/话题，不要编造限制条件）。")
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"【上一轮对话】\n{digest}\n\n【本轮问题】\n{question}"},
+    ]
+
+
+def decompose_question(question, history=None, max_parts=None, use_gate=True):
     """把 `question` 拆成若干子问题；任何异常都退回 `[question]`。
 
     返回的列表**至少一条**（拆不出东西时就是原问句本身），调用方可以无条件地逐条检索。
     只拆出一条时返回的是**原问句**而不是模型改写过的版本 —— 见模块 docstring。
+
+    `history` 是**不含当前提问**的历史快照（与 `server.chat` 一致）：给了它，省略式追问
+    才能被补成独立子问。没有历史时提示词与上一版逐字相同（可复现）。
     """
     text = (question or "").strip()
     if not text:
@@ -173,10 +221,7 @@ def decompose_question(question, max_parts=None, use_gate=True):
     try:
         response = client.chat.completions.create(
             model=config.MODEL_NAME,
-            messages=[
-                {"role": "system", "content": DECOMPOSE_SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
+            messages=_build_messages(text, history),
             temperature=0,
             max_tokens=MAX_TOKENS,
             # 同 HyDE / 可答性判断：推理模型不关思考会把小预算吃光、content 是空串

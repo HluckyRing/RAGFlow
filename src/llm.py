@@ -88,7 +88,8 @@ def _format_source_block(text, meta):
     return f"【来源：{_source_label(meta)}】\n{text}"
 
 
-def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose):
+def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose,
+                   history=None):
     """取检索块：**单问就照旧走整句**，复合问句才每问分路。
 
     三条边界都是刻意的：
@@ -97,34 +98,52 @@ def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, de
     - 分路各问用的是**单探针**口径（不调 HyDE）—— 每问都调 HyDE 会让延迟变成 n 倍；
       代价是丢掉 `intersect` 的第二票，所以这条路只对**已经拆成 ≥2 问**的提问生效；
     - 分路一条都没捞到 → 退回整句检索（和今天一样），绝不让一次拆问把问答搞空。
+
+    **多轮 + 复合**（2026-11-08 第七轮）：拆问看的是**消解后**的问句，而且拆出来的每一条
+    还要再过一次 `resolve_query` —— 省略式追问被拆成单条时，主语往往还在上一轮里
+    （「那这个规定还有效吗？」）。拆问模型拿到历史会自己补全，这里再兜一层规则，
+    两层都便宜（`resolve_query` 是纯 Python，不花 API）。
     """
     questions = []
     if decompose is not None:
         try:
-            questions = [text for text in (decompose(question) or []) if str(text).strip()]
+            questions = [str(text).strip() for text in (decompose(question, history) or [])]
+        except TypeError:
+            # 兼容只接受一个参数的拆问函数（评测里的替身、以及历史版本）
+            try:
+                questions = [str(text).strip() for text in (decompose(question) or [])]
+            except Exception as e:
+                logger.warning("拆问抛错，按整句检索: %s", str(e)[:80])
+                questions = []
         except Exception as e:                                  # 拆问自己已经 fail-open 了，这里是双保险
             logger.warning("拆问抛错，按整句检索: %s", str(e)[:80])
             questions = []
+        questions = [text for text in questions if text]
     if len(questions) <= 1:
         return hyde_retrieve_hits(question, collection, full_text, use_vector,
                                   top_k=top_k, files=files)
 
+    resolved = [resolve_query(text, history or []) for text in questions]
+    if resolved != questions:
+        logger.info("多轮 + 复合：%d 条子问里有 %d 条做了指代消解",
+                    len(questions), sum(1 for before, after in zip(questions, resolved)
+                                        if before != after))
     part_hits = []
-    for sub_question in questions:
+    for sub_question in resolved:
         part_hits.append(hyde_retrieve_hits(sub_question, collection, full_text, use_vector,
                                             top_k=top_k, files=files, use_hyde=False))
     merged = interleave_hits(part_hits, top_k)
     if merged:
         logger.info("每问分路检索：拆成 %d 问，单探针召回 %s 块 → 合并后 %d 块（预算 %d）",
-                    len(questions), [len(hits) for hits in part_hits], len(merged), top_k)
+                    len(resolved), [len(hits) for hits in part_hits], len(merged), top_k)
         return merged
-    logger.warning("每问分路检索一条都没捞到，退回整句检索（拆成 %d 问）", len(questions))
+    logger.warning("每问分路检索一条都没捞到，退回整句检索（拆成 %d 问）", len(resolved))
     return hyde_retrieve_hits(question, collection, full_text, use_vector,
                               top_k=top_k, files=files)
 
 
 def retrieve_and_build_context(question, full_text, collection, use_vector, top_k=None,
-                               files=None, decompose=None):
+                               files=None, decompose=None, history=None):
     """检索，并按「块边界」装配参考背景，每块带上来源。
 
     两件事叠在一起：
@@ -143,9 +162,11 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
 
     `decompose` 是**可选**的拆问函数（`src.decompose.decompose_question`）：给了它、且它把
     问句拆成 ≥2 条，就走「每问分路检索」（2026-11-08 实测同预算下覆盖 45.9% → 81.1%）。
-    不给（默认）时行为与改造前完全一致。
+    不给（默认）时行为与改造前完全一致。`history` 是**不含当前提问**的历史快照，
+    只用于两件事：拆问时补全省略式追问、以及拆出来的每条子问过一遍 `resolve_query`。
     """
-    hits = _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose)
+    hits = _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose,
+                          history=history)
     if not hits:
         return "", []
 
