@@ -12,12 +12,15 @@
 **有辨识度的短语当锚点**，把锚点包成子问句，再从**不同文件**各取一个子问题拼成复合问句。
 锚点就是那条子问题的「标准答案」——检索到的那块里有没有它，是可以逐字核验的。
 
-量三件事
+量四件事
 --------
 1. **单问基线**：子问题**单独**检索时，目标片在不在 top-1。不在的子问题**不进**合并
    覆盖率的分母 —— 否则等于把「本来就检不到」记到「top_k=5 装不下」账上。
 2. **合并覆盖@k**：复合问句检索出的 top-k 里，每个子问题的目标片在不在（k=5 与 k=10 各一遍）。
 3. **k 的边际收益**：覆盖@5 → 覆盖@10 涨多少，用来回答「top_k=5 够不够」。
+4. **每问分路检索的对照**（`--route`，见下面「分路对照」一节）：同一份 context 预算下，
+   「整句一次检索」与「每问各查一次再拼」谁装得下更多子问题。上一轮实测覆盖@5 = 覆盖@10、
+   未覆盖子问的目标片名次双峰（第 1 附近或 20 名开外），指向的就是这条对照。
 
 为什么两个 k 都跑**完整检索路径**、而不是把 k=10 的结果截前 5 条
 -------------------------------------------------------------
@@ -47,7 +50,9 @@
 
 用法
 ----
-    python scripts/eval_compound_retrieval.py                      # 只打印数字
+    python scripts/eval_compound_retrieval.py                      # 只打印数字（含三臂对照）
+    python scripts/eval_compound_retrieval.py --route off          # 只看原有口径，不跑分路对照
+    python scripts/eval_compound_retrieval.py --route rrf --route-budget 5
     python scripts/eval_compound_retrieval.py --json .agents/x.json
     python scripts/eval_compound_retrieval.py --hyde --hyde-cache .agents/hyde.json
     python scripts/eval_compound_retrieval.py --state-dir /tmp/state --limit-files 5
@@ -237,6 +242,7 @@ def make_sample(probes, sample_id="s"):
             "sub_question": probe.get("sub_question") or "",
             "target": probe.get("target"),
             "baseline_top1": bool(probe.get("baseline_top1")),
+            "baseline_kind": probe.get("baseline_kind"),
             "baseline_rank": probe.get("baseline_rank"),
             "file_ix": probe.get("file_ix"),
         })
@@ -330,8 +336,27 @@ def baseline_hit(hits, target, anchor):
     return anchor_visible([(text, meta)], anchor)
 
 
+def baseline_kind(hits, target, anchor):
+    """单问基线命中的**性质**：`"same_chunk"` / `"anchor_only"` / None。
+
+    为什么要分开：分母（「可用子问」）本身是**同一把检索器**定义的，而 `baseline_hit`
+    还允许「锚点可见」这一条更宽的路 —— 锚点允许在全语料里出现 ≤2 次，所以一条子问
+    可能只是把**另一份文件**里同一句模板话捞到了 top-1，就算「基线命中」。
+    这种子问会让分路臂的数字被抬高（它重新查一次就能再捞到同一块）。
+    所以除了原来的分母，还要能只数「top-1 真是目标片」的严格分母。
+    """
+    if not hits:
+        return None
+    text, meta = hits[0]
+    if hit_match(meta, target) == "same_chunk":
+        return "same_chunk"
+    if anchor_visible([(text, meta)], anchor):
+        return "anchor_only"
+    return None
+
+
 def measure_baseline(probes, retrieve):
-    """给每个探针量一次单问基线（就地写回 `baseline_top1`），返回探针列表。
+    """给每个探针量一次单问基线（就地写回 `baseline_top1` 与 `baseline_kind`）。
 
     检索抛错的探针按「基线未命中」处理（保守：把它排除出合并覆盖率的分母），
     单独一条失败不该带走整轮统计。
@@ -341,9 +366,11 @@ def measure_baseline(probes, retrieve):
             _path, hits = retrieve(probe["sub_question"], 1)
         except Exception as e:                                  # pragma: no cover - 兜底
             probe["baseline_top1"] = False
+            probe["baseline_kind"] = None
             probe["baseline_error"] = str(e)[:80]
             continue
         probe["baseline_top1"] = baseline_hit(hits, probe.get("target"), probe.get("anchor"))
+        probe["baseline_kind"] = baseline_kind(hits, probe.get("target"), probe.get("anchor"))
     return probes
 
 
@@ -391,6 +418,221 @@ def run_sample(sample, retrieve, top_k=5, extra_k=10):
     return record
 
 
+# ── 每问分路检索（对照实验 A/B）──
+#
+# 上一轮量到的结论是「k 不是杠杆」：覆盖@5 与覆盖@10 完全相同，未覆盖子问的目标片名次
+# 是双峰的（第 1 附近或 20 名开外）。名次落在 20 名开外说明**整句一起查的时候那一问
+# 根本没被当回事** —— 一句复合问句被压成一个向量，几个子问题在向量空间里互相拉扯。
+# 于是这里做对照：**同一份 context 预算**下，「整句一次检索」和「每问各查一次再拼」
+# 谁装得下更多子问题。
+#
+# 三臂只在「怎么把预算分给各问」上不同，其余全部相同（同样的样本、同样 k 的召回深度、
+# 同样的距离闸门/融合/兜底路径、同样的分母）：
+#
+# - `merged`：现状。整句一次检索，`budget` 就是 TOP_K。
+# - `interleave`：每问各查 `budget` 条，然后**轮流分名额**（先每问第 1 名、再每问第 2 名…），
+#   截到 `budget` 块。保证「某一问的第 2 名不许把另一问的第 1 名挤掉」。
+# - `rrf`：每问各查 `budget` 条，按名次做 RRF（与线上 `retrieval._rrf_fuse` 同口径）
+#   再截到 `budget` 块。让「被多问同时认可的块」往前排。
+#
+# 两只脚都要站稳，否则这个对照实验会骗人：
+# 1. **上下文预算必须一样** —— 分路臂要是能塞 3 倍块，它赢的是 token 预算不是检索质量；
+# 2. **分母必须一样** —— 都用「单问基线命中的子问题」，否则两臂衡量的是两批子问。
+# 这两条都有测试钉住（tests/test_eval_compound_retrieval.py）。
+#
+# 本轮还有一条硬边界：**拆问用的是 gold 子问题**（样本本来就是由子问题拼出来的）。
+# 所以这里量到的是「分路检索的上界」，线上还需要一个 query 分解步骤（LLM 一次调用），
+# 那一层的质量与成本不在这张表里。
+
+ROUTE_MERGED = "merged"
+ROUTE_INTERLEAVE = "interleave"
+ROUTE_RRF = "rrf"
+ROUTE_MODES = (ROUTE_MERGED, ROUTE_INTERLEAVE, ROUTE_RRF)
+ROUTE_LABELS = {
+    ROUTE_MERGED: "现状（整句一次检索）",
+    ROUTE_INTERLEAVE: "分路 + 轮流分名额",
+    ROUTE_RRF: "分路 + 名次融合（RRF）",
+}
+# 一路走向量、另一路走关键词兜底时的汇总标签：两条路的分数含义完全不同，必须标出来。
+PATH_MIXED = "mixed"
+
+
+def hit_key(hit):
+    """一个检索块的身份：优先 (文件名, 片号)；没有 meta 的老索引退回正文本身。
+
+    去重必须按**块身份**而不是正文：同一片被两个子问题都召回时，正文一模一样，
+    但「两片不同文件里恰好内容相同」也是可能的 —— 那种情况是两块，不能只留一块。
+    """
+    text, meta = hit
+    if isinstance(meta, dict):
+        name, index = meta.get("file_name"), meta.get("chunk_index")
+        if name is not None and index is not None:
+            return (name, index)
+    return text
+
+
+def interleave_hits(part_hits, budget):
+    """每问轮流取名额，直到装满 `budget` 块。
+
+    先给每个子问题它的第 1 名，再轮流给第 2 名……这样「某一问的第 2 名」永远不会把
+    「另一问的第 1 名」挤掉。某问已经没料时名额自动留给还在出货的那些问，不空转。
+    同一片被两问都召回时只占一个名额（按块身份去重）。
+    """
+    budget = max(0, int(budget or 0))
+    ordered, seen = [], set()
+    depth = max((len(hits or []) for hits in part_hits), default=0)
+    for rank in range(depth):
+        for hits in part_hits:
+            if rank >= len(hits or []):
+                continue
+            key = hit_key(hits[rank])
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(hits[rank])
+            if len(ordered) >= budget:
+                return ordered
+    return ordered
+
+
+def rrf_merge_hits(part_hits, budget, k=None):
+    """每问分路召回 → 按名次 RRF 融合 → 截到 `budget` 块。
+
+    与线上 `retrieval._rrf_fuse` **同一套算法**（第 rank 位得 1/(k+rank)，跨路相加，
+    同分按正文排），只是这里要保留块的 meta 以便判覆盖。同口径这件事由
+    `test_rrf_agrees_with_the_online_fusion_rule` 钉住 —— 两边一旦漂开，
+    这个实验比的就是两个不同的检索器。
+    """
+    if k is None:
+        from src.config import RRF_K            # 惰性导入：模块加载阶段不碰配置/模型
+        k = RRF_K
+    budget = max(0, int(budget or 0))
+    scores, hits_by_key, order = {}, {}, {}
+    for ranked in part_hits:
+        for rank, hit in enumerate(ranked or [], 1):
+            key = hit_key(hit)
+            if key not in hits_by_key:
+                hits_by_key[key] = hit
+                order[key] = len(order)
+                scores[key] = 0.0
+            scores[key] += 1.0 / (k + rank)
+    ranked_keys = sorted(hits_by_key,
+                         key=lambda key: (-scores[key], hits_by_key[key][0], order[key]))
+    return [hits_by_key[key] for key in ranked_keys[:budget]]
+
+
+def _same_file_anchor_visible(hits, target, anchor):
+    """锚点原文是不是出现在**同一文件**的某块里（哪怕不是目标片）。
+
+    切片有 `CHUNK_OVERLAP` 重叠，一条事实经常同时落在相邻两片里：身份口径（同片 / 同节）
+    会把「邻居片进了 context」判成没覆盖，可模型手里其实有那句话。这一列把这种
+    「口径盲区」和「真的没进 context」分开 —— 两者在身份口径里长得一模一样。
+    """
+    name = (target or {}).get("file_name")
+    needle = normalize(anchor)
+    if not name or not needle:
+        return False
+    return any(isinstance(meta, dict) and meta.get("file_name") == name
+               and needle in normalize(text) for text, meta in hits or [])
+
+
+def _target_rank_in(hits, target):
+    """目标片在这份 hits 里的名次（1 起），没有就 None。"""
+    for rank, (_text, meta) in enumerate(hits or [], 1):
+        if hit_match(meta, target):
+            return rank
+    return None
+
+
+def _route_path_label(paths):
+    """分路后的汇总路径标签：全向量 → vector；全兜底 → keyword；混着走 → mixed。"""
+    labels = {path for path in paths or [] if path}
+    if not labels:
+        return PATH_MIXED
+    if len(labels) == 1:
+        return next(iter(labels))
+    return PATH_MIXED
+
+
+def route_retrieve(parts, question, retrieve, budget, mode=ROUTE_MERGED):
+    """跑一个实验臂，返回 `(path, hits, diag)`。
+
+    `merged` = 现状：整句一次检索。`interleave` / `rrf` = 每问分路：**每个子问题用
+    自己的问句各检索一次**（不是拿整句去查），再按不同分配口径合成同一份预算的 context。
+    """
+    if mode not in ROUTE_MODES:
+        raise ValueError(f"未知的分路口径：{mode}")
+    parts = list(parts or [])
+    if mode == ROUTE_MERGED or not parts:
+        path, hits = retrieve(question or "", budget)
+        hits = list(hits or [])
+        return path, hits, {"mode": mode, "retrievals": 1, "per_part": [path],
+                            "part_ranks": [None] * len(parts),
+                            "own_hits": [None] * len(parts), "merged": bool(parts)}
+    part_hits, paths = [], []
+    for part in parts:
+        part_path, hits = retrieve(part.get("sub_question") or "", budget)
+        part_hits.append(list(hits or []))
+        paths.append(part_path)
+    if mode == ROUTE_INTERLEAVE:
+        merged = interleave_hits(part_hits, budget)
+    else:
+        merged = rrf_merge_hits(part_hits, budget)
+    return _route_path_label(paths), merged, {
+        "mode": mode,
+        "retrievals": len(parts),
+        "per_part": paths,
+        "part_ranks": [_target_rank_in(hits, part.get("target"))
+                       for part, hits in zip(parts, part_hits)],
+        "own_hits": [len(hits) for hits in part_hits],
+        "merged": False,
+    }
+
+
+def run_sample_arm(sample, retrieve, budget=5, mode=ROUTE_MERGED):
+    """跑一条复合样本的一个实验臂，返回与 `run_sample` 同形的 record。
+
+    刻意与 `run_sample` 用同一套字段名（`parts[].covered` 对应 `covered_top`）、
+    同一套分母（`baseline_top1`），这样两边的数字可以直接放在一张表里比；
+    `test_run_sample_arm_merged_reproduces_the_existing_measurement` 钉住
+    「merged 臂逐位复现老口径」这件事。
+    """
+    record = {
+        "id": sample.get("id"),
+        "arm": mode,
+        "n_parts": sample.get("n_parts"),
+        "budget": budget,
+        "path": None,
+        "per_part_paths": [],
+        "hits": None,
+        "retrievals": 0,
+        "parts": [],
+    }
+    path, hits, diag = route_retrieve(sample.get("parts") or [], sample.get("question") or "",
+                                      retrieve, budget, mode)
+    record["path"] = path
+    record["per_part_paths"] = list(diag["per_part"])
+    record["hits"] = len(hits)
+    record["retrievals"] = diag["retrievals"]
+    for index, part in enumerate(sample.get("parts") or []):
+        record["parts"].append({
+            "id": part.get("id"),
+            "eligible": bool(part.get("baseline_top1")),
+            "baseline_top1": bool(part.get("baseline_top1")),
+            "baseline_kind": part.get("baseline_kind"),
+            "file_ix": part.get("file_ix"),
+            "covered": covered(hits, part.get("target")),
+            "strict": anchor_visible(hits, part.get("anchor")),
+            # 「身份口径没覆盖、但事实在同文件的邻居片里」—— 切片重叠造成的口径盲区
+            "same_file_anchor": _same_file_anchor_visible(hits, part.get("target"),
+                                                         part.get("anchor")),
+            # 这一问**自己**那份召回里目标片排第几（分路臂才有；1 就是第一名）
+            "part_rank": diag["part_ranks"][index] if index < len(diag["part_ranks"]) else None,
+            "own_hits": diag["own_hits"][index] if index < len(diag["own_hits"]) else None,
+        })
+    return record
+
+
 # ── 汇总 ──
 
 def _rate(hit, total):
@@ -424,6 +666,12 @@ def _group_stats(records, n_parts, path, top_k, extra_k):
         return good
 
     all_top, all_extra = _all_covered("covered_top"), _all_covered("covered_extra")
+    # 样本级全覆盖的分母只能是「至少有一个可用子问」的样本：一个可用子问都没有的样本
+    # 按定义不可能算出「全覆盖」，把它们留在分母里等于让它们天然记成失败
+    # （本语料 35 条里有 10 条就是这种）。两臂同口径，不影响对比。
+    samples_with_eligible = sum(
+        1 for record in records
+        if any(part.get("eligible") for part in record.get("parts") or []))
     hits_top = [record.get("hits_top") for record in records if record.get("hits_top") is not None]
     hits_extra = [record.get("hits_extra") for record in records if record.get("hits_extra") is not None]
     # 「被排除的子问」多半不是检索坏，而是锚点本身没把这个子问钉到 top-1：
@@ -459,10 +707,12 @@ def _group_stats(records, n_parts, path, top_k, extra_k):
         f"strict_coverage_at_{top_k}": _rate(strict_top, total_eligible),
         f"strict_covered_at_{extra_k}": strict_extra,
         f"strict_coverage_at_{extra_k}": _rate(strict_extra, total_eligible),
+        "samples_with_eligible": samples_with_eligible,
         f"samples_all_covered_at_{top_k}": all_top,
-        f"samples_all_covered_rate_at_{top_k}": _rate(all_top, len(records)),
+        f"samples_all_covered_rate_at_{top_k}": _rate(all_top, samples_with_eligible),
         f"samples_all_covered_at_{extra_k}": all_extra,
-        f"samples_all_covered_rate_at_{extra_k}": _rate(all_extra, len(records)),
+        f"samples_all_covered_rate_at_{extra_k}": _rate(all_extra, samples_with_eligible),
+
         "samples_path_changed_at_extra_k": sum(
             1 for record in records if record.get("path") != record.get("path_extra")),
     }
@@ -495,6 +745,95 @@ def summarize(results, top_k=5, extra_k=10):
             groups.append(_group_stats(rows, size, path, top_k, extra_k))
     return {"groups": groups,
             "overall": _group_stats(records, None, "all", top_k, extra_k)}
+
+
+def summarize_routes(records, budget=5):
+    """按「实验臂 × 子问数量」汇总，另给每个臂一行「全部」。
+
+    `n_parts is None` 的那一组是该臂的总体（跨 2/3/4 问合并）。分母与现状口径完全一致：
+    **单问基线命中的子问题**（`eligible`），所以两臂放在一张表里比是同一个分母。
+    成本也一起报（每样本的 context 块数、检索次数）—— 分路臂每问都要查一次，
+    赢了覆盖率但没报成本，等于把一个要付钱的方案说成免费的。
+    """
+    records = list(records or [])
+    groups = []
+    sizes = sorted({record.get("n_parts") for record in records if record.get("n_parts")})
+    for arm in ROUTE_MODES:
+        rows = [record for record in records if record.get("arm") == arm]
+        if not rows:
+            continue
+        for size in sizes + [None]:
+            subset = [record for record in rows
+                      if size is None or record.get("n_parts") == size]
+            if not subset:
+                continue
+            parts = [part for record in subset for part in (record.get("parts") or [])]
+            eligible = [part for part in parts if part.get("eligible")]
+            covered = sum(1 for part in eligible if part.get("covered"))
+            strict = sum(1 for part in eligible if part.get("strict"))
+            # 身份口径没覆盖的格子再拆一次：事实在**同文件邻居片**里（切片重叠 → 口径盲区），
+            # 还是压根没进 context。合并成一个数会把这两种完全不同的情况混为一谈。
+            miss_sibling = sum(1 for part in eligible
+                               if not part.get("covered") and part.get("same_file_anchor"))
+            miss_elsewhere = sum(1 for part in eligible
+                                 if not part.get("covered") and not part.get("same_file_anchor"))
+            # 「锚点可见」这列会**跨文件**通胀：锚点允许在全语料里出现 ≤2 次，分路检索每次都
+            # 拿带锚点的问句去查，很容易把另一份文件里的同一句模板话捞进来。它不算覆盖。
+            strict_cross_file = sum(1 for part in eligible
+                                    if part.get("strict") and not part.get("covered")
+                                    and not part.get("same_file_anchor"))
+            # 分母本身也是**同一把检索器**定义的：`baseline_hit` 允许「锚点可见」
+            # 这条更宽的路（锚点可能来自别的文件），那样分路臂会白捡。所以另算一列
+            # 只含「top-1 真是目标片」的严格分母，用来验证结论不是分母吹出来的。
+            strict_denominator = [part for part in eligible
+                                  if part.get("baseline_kind") == "same_chunk"]
+            strict_den_covered = sum(1 for part in strict_denominator if part.get("covered"))
+            # 分路臂的漏格再拆：那一问自己就没召回到目标片，还是召回到了但名额被截掉。
+            part_ranks = [part.get("part_rank") for part in eligible]
+            rank_seen = [rank for rank in part_ranks if rank]
+            all_covered = 0
+            samples_with_eligible = 0
+            for record in subset:
+                usable = [part for part in record.get("parts") or [] if part.get("eligible")]
+                if not usable:
+                    continue                    # 没有可用子问的样本不进样本级分母
+                samples_with_eligible += 1
+                if all(part.get("covered") for part in usable):
+                    all_covered += 1
+            hits = [record.get("hits") for record in subset
+                    if record.get("hits") is not None]
+            retrievals = [record.get("retrievals") for record in subset
+                          if record.get("retrievals") is not None]
+            path_mix = {}
+            for record in subset:
+                path_mix[record.get("path")] = path_mix.get(record.get("path"), 0) + 1
+            groups.append({
+                "arm": arm,
+                "n_parts": size,
+                "samples": len(subset),
+                "parts": len(parts),
+                "parts_eligible": len(eligible),
+                "parts_strict_denominator": len(strict_denominator),
+                "covered_strict_denominator": strict_den_covered,
+                "coverage_strict_denominator": _rate(strict_den_covered,
+                                                     len(strict_denominator)),
+                "covered": covered,
+                "coverage": _rate(covered, len(eligible)),
+                "strict_covered": strict,
+                "strict_coverage": _rate(strict, len(eligible)),
+                "samples_all_covered": all_covered,
+                "samples_with_eligible": samples_with_eligible,
+                "samples_all_covered_rate": _rate(all_covered, samples_with_eligible),
+                "miss_same_file_anchor": miss_sibling,
+                "miss_elsewhere": miss_elsewhere,
+                "strict_cross_file": strict_cross_file,
+                "part_rank_seen": len(rank_seen),
+                "part_rank_median": statistics.median(rank_seen) if rank_seen else None,
+                "mean_hits": statistics.mean(hits) if hits else None,
+                "mean_retrievals": statistics.mean(retrievals) if retrievals else None,
+                "path_mix": path_mix,
+            })
+    return groups
 
 
 # ── 落盘安全网 ──
@@ -533,11 +872,12 @@ def _print_group(stats, top_k, extra_k, indent="  "):
           f"  @{extra_k} = {_pct(stats[f'strict_coverage_at_{extra_k}'])}"
           f"  边际收益 {_pp(stats['strict_gain'])}")
     print(f"{indent}  样本级全覆盖@{top_k} = "
-          f"{stats[f'samples_all_covered_at_{top_k}']}/{stats['samples']}"
+          f"{stats[f'samples_all_covered_at_{top_k}']}/{stats['samples_with_eligible']}"
           f"（{_pct(stats[f'samples_all_covered_rate_at_{top_k}'])}）"
-          f"  @{extra_k} = {stats[f'samples_all_covered_at_{extra_k}']}/{stats['samples']}"
+          f"  @{extra_k} = {stats[f'samples_all_covered_at_{extra_k}']}/{stats['samples_with_eligible']}"
           f"（{_pct(stats[f'samples_all_covered_rate_at_{extra_k}'])}）"
-          f"  路径翻转 {stats['samples_path_changed_at_extra_k']} 条")
+          f"  路径翻转 {stats['samples_path_changed_at_extra_k']} 条"
+          f"（分母只数有可用子问的样本 {stats['samples_with_eligible']}/{stats['samples']}）")
     mean_top = stats["mean_hits_top"]
     mean_extra = stats["mean_hits_extra"]
     print(f"{indent}  每问命中块数均值 @{top_k} = "
@@ -547,6 +887,52 @@ def _print_group(stats, top_k, extra_k, indent="  "):
     print(f"{indent}  没覆盖的子问 {stats['uncovered_rescuable'] + stats['uncovered_out_of_reach']} 条："
           f"目标片在原始排名 {top_k + 1}–{extra_k} 的 {stats['uncovered_rescuable']} 条（调 k 本来能救）"
           f"，更靠后或没召回的 {stats['uncovered_out_of_reach']} 条（调 k 救不回）")
+
+
+def _print_routes(groups, budget):
+    """对照表：每臂 × 子问数量的覆盖率、样本级全覆盖、成本。"""
+    by_key = {(group["arm"], group["n_parts"]): group for group in groups}
+    arms = [arm for arm in ROUTE_MODES if any(group["arm"] == arm for group in groups)]
+    sizes = sorted({group["n_parts"] for group in groups if group["n_parts"] is not None})
+    merged_overall = by_key.get((ROUTE_MERGED, None))
+    print(f"=== 每问分路检索对照（同一 context 预算 {budget} 块；分母 = 单问基线命中的子问）===")
+    for arm in arms:
+        overall = by_key.get((arm, None))
+        if not overall:
+            continue
+        detail = "｜".join(
+            f"{size} 问 {_pct(by_key[(arm, size)]['coverage'])}"
+            for size in sizes if (arm, size) in by_key)
+        delta = ""
+        if merged_overall and arm != ROUTE_MERGED and overall["coverage"] is not None \
+                and merged_overall["coverage"] is not None:
+            delta = f"｜相对现状 {_pp(overall['coverage'] - merged_overall['coverage'])}"
+        print(f"  {ROUTE_LABELS.get(arm, arm)}：全部 {_pct(overall['coverage'])}"
+              f"（{overall['covered']}/{overall['parts_eligible']}）"
+              f"{'｜' + detail if detail else ''}{delta}")
+    print()
+    for arm in arms:
+        overall = by_key.get((arm, None))
+        if not overall:
+            continue
+        mean_hits = overall["mean_hits"]
+        mean_retrievals = overall["mean_retrievals"]
+        print(f"  {ROUTE_LABELS.get(arm, arm)}：样本级全覆盖 "
+              f"{overall['samples_all_covered']}/{overall['samples_with_eligible']}"
+              f"（{_pct(overall['samples_all_covered_rate'])}）"
+              f"；每样本 context "
+              f"{'无数据' if mean_hits is None else f'{mean_hits:.2f}'} 块 / 检索 "
+              f"{'无数据' if mean_retrievals is None else f'{mean_retrievals:.2f}'} 次"
+              f"；路径 {overall['path_mix']}")
+        misses = overall["miss_same_file_anchor"] + overall["miss_elsewhere"]
+        print(f"    身份口径漏掉的 {misses} 处：事实在同文件**邻居片**里 "
+              f"{overall['miss_same_file_anchor']} 处（切片重叠 → 口径盲区）、"
+              f"真的没进 context {overall['miss_elsewhere']} 处。"
+              f"「锚点可见」那列 {_pct(overall['strict_coverage'])} 里有 "
+              f"{overall['strict_cross_file']} 处是**从别的文件**捞到的同一句模板话，不算覆盖")
+        print(f"    稳健性：只数「单问 top-1 真是目标片」的严格分母 {overall['parts_strict_denominator']} 个时，"
+              f"覆盖 {overall['covered_strict_denominator']}/{overall['parts_strict_denominator']}"
+              f"（{_pct(overall['coverage_strict_denominator'])}）")
 
 
 # ── 检索 ──
@@ -637,6 +1023,11 @@ def main(argv=None):
     parser.add_argument("--chunks-per-file", type=int, default=2,
                         help="每个文件最多取几片当探针，默认 2")
     parser.add_argument("--seed", type=int, default=0, help="挑锚点的随机种子（必须可复现）")
+    parser.add_argument("--route", default="all", choices=("all", "off") + ROUTE_MODES,
+                        help="分路检索对照：all=三臂都跑（默认）；off=只跑原有口径；"
+                             "merged/interleave/rrf=只跑某一臂")
+    parser.add_argument("--route-budget", type=int, default=None,
+                        help="分路对照的 context 预算，默认等于 --top-k（两臂必须同预算才可比）")
     parser.add_argument("--json", default=None, help="明细落盘（只有 id/命中布尔/距离/路径）")
     parser.add_argument("--hyde", action="store_true",
                         help="走真实 HyDE（花 API 额度；线上口径）；默认不开")
@@ -695,6 +1086,10 @@ def main(argv=None):
     counts = {"conversations": len(conversations), "files_used": 0, "probes": 0,
               "samples": 0, "anchors_missing": 0, "samples_same_file": 0, "query_errors": 0}
     results = []
+    route_results = []
+    route_budget = args.route_budget if args.route_budget else args.top_k
+    route_modes = ([] if args.route == "off"
+                   else list(ROUTE_MODES) if args.route == "all" else [args.route])
     # 落盘前的泄漏检查要用到「锚点原文 + 文件名」，这里就地攒一份（只在内存里，
     # 一个字节都不写盘 —— 见 find_leaks 的说明）。
     corpus_needles = [name for conv in conversations for name, _text in conv["files"]]
@@ -761,6 +1156,15 @@ def main(argv=None):
                 for part, rank in zip(record["parts"], ranks):
                     part["raw_rank"] = rank
                 conv_results.append(record)
+                # 分路对照：同一条样本、同一份预算，只换「怎么把预算分给各问」。
+                # 放在同一次循环里跑，样本与分母天然对齐（两臂之间不可能挑到不同样本）。
+                for mode in route_modes:
+                    try:
+                        route_results.append(run_sample_arm(sample, retrieve,
+                                                            budget=route_budget, mode=mode))
+                    except Exception as e:           # 单条失败不该带走整轮
+                        counts["query_errors"] += 1
+                        print(f"    分路检索失败（{mode}），跳过：{str(e)[:60]}")
         if conv_results:
             path_counts = {}
             for record in conv_results:
@@ -811,6 +1215,26 @@ def main(argv=None):
         print("提示：这一版是 no-hyde 口径（融合退化为单探针），线上走 HyDE —— "
               "要线上口径请加 --hyde --hyde-cache。")
 
+    route_groups = summarize_routes(route_results, budget=route_budget) if route_results else []
+    if route_groups:
+        print()
+        _print_routes(route_groups, route_budget)
+        merged_group = next((group for group in route_groups
+                             if group["arm"] == ROUTE_MERGED and group["n_parts"] is None), None)
+        if merged_group and route_budget == args.top_k:
+            old_covered = overall[f"covered_at_{args.top_k}"]
+            if merged_group["covered"] != old_covered:
+                print(f"错误：merged 臂覆盖 {merged_group['covered']} 与原有口径 {old_covered} 不一致 —— "
+                      f"两臂不再是同一条检索路径，这张对照表不可信，已中止。")
+                return 2
+            print(f"自检通过：merged 臂逐位复现了原有口径（覆盖@{args.top_k} = "
+                  f"{old_covered}/{overall['parts_eligible']}），三臂可比。")
+        print(f"边界：拆问用的是 gold 子问题（样本本来就由子问题拼出来），所以这张表是"
+              f"「每问分路检索的上界」——线上还需要一次 query 分解，那层的拆错率与延迟不在这里。")
+        if not args.hyde:
+            print("成本口径：每问多一次 embedding + 一次向量查询（检索次数列已计入）；"
+                  "线上还要加一次分解调用的延迟。")
+
     if args.json:
         payload = {
             "config": {"seed": args.seed, "top_k": args.top_k, "extra_k": args.extra_k,
@@ -822,6 +1246,8 @@ def main(argv=None):
             "groups": stats["groups"],
             "overall": overall,
             "samples": results,
+            "route": {"budget": route_budget, "groups": route_groups,
+                      "samples": route_results},
         }
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         # 安全网：明细里一旦出现锚点原文或文件名就中止，绝不把语料副本写进任何文件
