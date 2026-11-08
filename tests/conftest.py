@@ -39,6 +39,20 @@ def _never_load_the_reranker(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_call_the_real_decomposer(monkeypatch):
+    """测试套件绝不许真的去调拆问大模型。
+
+    `DECOMPOSE_ENABLED` 2026-11-08 起默认是 **1**（第九轮定案），而 chat 链路会把它读进来 ——
+    没有这层隔离，`tests/test_chat_flow.py` 里的每条提问都会去连真实的 API（或卡在
+    `example.invalid` 上超时）。要测拆问接线的用例自己在用例里 monkeypatch 开关并注入替身
+    （见 `tests/test_decompose_retrieval.py`），不受这里的默认值影响。
+    """
+    import src.config as config
+
+    monkeypatch.setattr(config, "DECOMPOSE_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_pairs_cache():
     """切片缓存是模块级的：用例之间清一次，免得上一条用例的正文影响这一条。"""
     import src.retrieval as retrieval

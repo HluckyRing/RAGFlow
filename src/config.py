@@ -105,10 +105,13 @@ ANSWERABILITY_CHECK = os.getenv("ANSWERABILITY_CHECK", "0").strip().lower() not 
 ANSWERABILITY_MAX_TOKENS = int(os.getenv("ANSWERABILITY_MAX_TOKENS", "32"))
 
 # 拆问（query 分解）：复合问句先拆成若干子问题，各自检索再合并 context。
-# 默认 **关**（2026-11-08 第五轮）：闸门 + 拆问会多一次 0.66 s 上下的 LLM 调用，必须先过
-# 延迟线才谈到默认开（与双路融合「误召回 0/5 且中位延迟 ≤1.5 s」同一个约定）。
-# 注意：**关着的时候连闸门都不跑**，一次 API 都不花 —— 行为与改造前逐位一致。
-DECOMPOSE_ENABLED = os.getenv("DECOMPOSE_ENABLED", "0").strip().lower() not in ("0", "false", "no", "")
+# **默认开**（2026-11-08 第九轮定案）：判据是跑之前就写死的四道门，实测全部通过 ——
+# ① 复合问「两件事都答到」87.5% → **100.0%**；② 域外复合问 **4/4 正确拒答**；
+# ③ 首字延迟中位 **−0.55 s**、p95 **−1.01 s**（分路省掉的 HyDE 调用比拆问那次更贵）；
+# ④ 零错误、`sources` 22/22 先于首 token、拒答不挂来源、单问不误伤。
+# 关掉也支持（`DECOMPOSE_ENABLED=0`）：那时**连闸门都不跑**，一次 API 都不花，
+# 行为与改造前逐位一致。
+DECOMPOSE_ENABLED = os.getenv("DECOMPOSE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "")
 # 拆问最多拆几问（再多就不是「一个问题」，而是把整段话贴进来了）
 DECOMPOSE_MAX_PARTS = int(os.getenv("DECOMPOSE_MAX_PARTS", "6"))
 
