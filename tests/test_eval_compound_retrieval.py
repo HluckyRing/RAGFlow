@@ -19,6 +19,7 @@ import random
 import pytest
 
 from scripts.eval_compound_retrieval import (
+    ROUTE_DECOMPOSE,
     ROUTE_INTERLEAVE,
     ROUTE_MERGED,
     ROUTE_RRF,
@@ -754,6 +755,122 @@ def test_summarize_sample_level_coverage_skips_samples_without_any_eligible_part
 
     assert overall["samples_with_eligible"] == 1
     assert overall["samples_all_covered_rate"] == 1.0
+
+
+# ── 拆问臂：子问题由模型现场拆（线上唯一可行的形态）──
+
+def test_decompose_arm_retrieves_with_the_model_questions_not_the_gold_ones():
+    sample = make_sample([_probe("A", 0, "甲甲甲甲甲甲甲甲"),
+                          _probe("B", 0, "乙乙乙乙乙乙乙乙")])
+    for part in sample["parts"]:
+        part["baseline_top1"] = True
+    asked = []
+
+    def retrieve(question, k):
+        asked.append(question)
+        return "vector", [_hit("A", 0)]
+
+    route_retrieve(sample["parts"], sample["question"], retrieve, 5, ROUTE_DECOMPOSE,
+                   decompose=lambda question: ["模型拆的问一", "模型拆的问二"])
+
+    assert asked == ["模型拆的问一", "模型拆的问二"], \
+        "拆问臂只许用模型拆出来的问句去检索，不许偷看 gold 子问题"
+
+
+def test_decompose_arm_falls_back_to_the_whole_question_when_not_split():
+    sample = make_sample([_probe("A", 0, "甲甲甲甲甲甲甲甲"),
+                          _probe("B", 0, "乙乙乙乙乙乙乙乙")])
+    asked = []
+
+    def retrieve(question, k):
+        asked.append(question)
+        return "vector", []
+
+    _path, _hits, diag = route_retrieve(sample["parts"], sample["question"], retrieve, 5,
+                                        ROUTE_DECOMPOSE,
+                                        decompose=lambda question: [question])
+
+    assert asked == [sample["question"]], "拆不出来就退回整句，只查一次"
+    assert diag["fallback"] is True and diag["retrievals"] == 1
+
+
+def test_decompose_arm_reports_which_gold_part_no_split_question_could_reach():
+    """拆漏：某条 gold 子问的目标片，任何一条拆出来的问句都没捞到 —— 这是拆问那一步丢的。"""
+    sample = make_sample([_probe("A", 0, "甲甲甲甲甲甲甲甲"),
+                          _probe("B", 0, "乙乙乙乙乙乙乙乙")])
+    for part in sample["parts"]:
+        part["baseline_top1"] = True
+
+    def retrieve(question, k):
+        if "甲" in question:
+            return "vector", [_hit("A", 0)]
+        return "vector", [_hit("C", 0)]              # 第二问拆歪了，捞到别的文件
+
+    record = run_sample_arm(sample, retrieve, budget=5, mode=ROUTE_DECOMPOSE,
+                            decompose=lambda question: ["甲甲甲甲甲甲甲甲的说说", "拆歪了的问句"])
+
+    first, second = record["parts"]
+    assert first["recalled_by_split"] is True
+    assert first["covered"] is True
+    assert second["recalled_by_split"] is False, "第二问的正文一条拆出来的问句都没捞到"
+    assert record["generated"] == 2
+    assert record["decompose_fallback"] is False
+
+
+def test_decompose_arm_needs_a_decomposer():
+    with pytest.raises(ValueError):
+        route_retrieve([{"sub_question": "甲"}], "甲？", lambda q, k: ("vector", []), 5,
+                       ROUTE_DECOMPOSE)
+
+
+def test_over_splitting_past_the_budget_still_fits_the_context():
+    """模型拆过头（问数 > 预算）时，context 不许超预算 —— 代价只能是「有的问一个名额都没有」。"""
+    sample = make_sample([_probe("A", 0, "甲甲甲甲甲甲甲甲"),
+                          _probe("B", 0, "乙乙乙乙乙乙乙乙")])
+    for part in sample["parts"]:
+        part["baseline_top1"] = True
+
+    def retrieve(question, k):
+        return "vector", [_hit("A", 0), _hit("B", 0)]
+
+    record = run_sample_arm(sample, retrieve, budget=2, mode=ROUTE_DECOMPOSE,
+                            decompose=lambda question: [f"第{i}个问句" for i in range(6)])
+
+    assert record["generated"] == 6
+    assert record["retrievals"] == 6, "拆出 6 问就要查 6 次（成本随问数线性涨）"
+    assert record["hits"] == 2, "预算 2 但去重后只有 2 块，绝不超预算"
+
+
+def test_summarize_routes_reports_split_recall_and_fallbacks():
+    def _record(recalled, fallback, generated):
+        return {"id": "s", "arm": ROUTE_DECOMPOSE, "n_parts": 2, "budget": 5,
+                "path": "vector", "hits": 5, "retrievals": generated,
+                "generated": generated, "decompose_fallback": fallback,
+                "per_part_paths": ["vector"] * generated,
+                "parts": [{"id": "p0", "eligible": True, "baseline_top1": True,
+                           "baseline_kind": "same_chunk", "covered": True, "strict": True,
+                           "same_file_anchor": True, "recalled_by_split": recalled},
+                          {"id": "p1", "eligible": False, "baseline_top1": False,
+                           "baseline_kind": None, "covered": False, "strict": False,
+                           "same_file_anchor": False, "recalled_by_split": False}]}
+
+    stats = summarize_routes([_record(True, False, 2), _record(False, True, 1)], budget=5)
+    overall = next(group for group in stats if group["n_parts"] is None)
+
+    assert overall["parts_split_denominator"] == 2, \
+        "拆漏的分母也要是 eligible：本来就检不到的子问不算拆问的锅"
+    assert overall["parts_split_recalled"] == 1
+    assert overall["decompose_fallbacks"] == 1
+    assert overall["mean_generated"] == 1.5
+
+
+def test_compound_question_can_hide_its_boundaries():
+    """qmark 是简单模式（分隔符就是答案）；comma / runon 才逼模型自己找边界。"""
+    pieces = ["年假有几天", "迟到怎么算"]
+
+    assert build_compound_question(pieces, style="qmark") == "年假有几天？迟到怎么算？"
+    assert build_compound_question(pieces, style="comma") == "年假有几天，迟到怎么算？"
+    assert build_compound_question(pieces, style="runon") == "年假有几天还有迟到怎么算？"
 
 
 # ── 出错路径：返回非 0 且是中文提示 ──

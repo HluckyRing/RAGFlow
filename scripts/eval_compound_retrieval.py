@@ -169,13 +169,27 @@ def build_sub_question(anchor):
     return f"材料里「{anchor}」讲的是什么"
 
 
-def build_compound_question(sub_questions):
-    """把子问句用「？」拼成一句复合问句（问句之间的分隔符就是问号，与线上用户写法一致）。"""
+def build_compound_question(sub_questions, style="qmark"):
+    """把子问句拼成一个复合问句。
+
+    三种拼法（`--join-style`），差别就在「边界显不显眼」：
+    - `qmark`（默认）：用「？」拼 —— 与线上用户写法一致，但分隔符本身就是答案，
+      所以它对这个拆问实验是**简单模式**；
+    - `comma`：用「，」拼 —— 中文里最常见的连写方式，问号只剩最后一个；
+    - `runon`：用「还有」拼 —— 没有任何标点提示，模型必须自己找边界。
+    """
     pieces = [str(question).strip().rstrip("？?") for question in sub_questions or []]
     pieces = [piece for piece in pieces if piece]
     if not pieces:
         return ""
+    if style == "comma":
+        return "，".join(pieces) + "？"
+    if style == "runon":
+        return "还有".join(pieces) + "？"
     return "？".join(pieces) + "？"
+
+
+JOIN_STYLES = ("qmark", "comma", "runon")
 
 
 # ── 探针与复合样本 ──
@@ -232,7 +246,7 @@ def validate_sample(sample):
     return True, ""
 
 
-def make_sample(probes, sample_id="s"):
+def make_sample(probes, sample_id="s", join_style="qmark"):
     """把若干探针拼成一条复合样本（子问题必须来自不同文件是**调用方**的责任，这里只搬运）。"""
     parts = []
     for index, probe in enumerate(probes or []):
@@ -249,12 +263,13 @@ def make_sample(probes, sample_id="s"):
     return {
         "id": sample_id,
         "n_parts": len(parts),
-        "question": build_compound_question([part["sub_question"] for part in parts]),
+        "question": build_compound_question([part["sub_question"] for part in parts],
+                                            style=join_style),
         "parts": parts,
     }
 
 
-def build_samples(probes, size, prefix="s"):
+def build_samples(probes, size, prefix="s", join_style="qmark"):
     """把探针组合成「size 问」的复合样本；返回 `(samples, skipped)`。
 
     **每个文件只出一个子问题**：按文件名轮转取探针（第 1 轮每个文件取第 1 片、第 2 轮
@@ -280,7 +295,8 @@ def build_samples(probes, size, prefix="s"):
                 cursor[name] = index + 1
         if len(picked) < size:
             break
-        sample = make_sample(picked, sample_id=f"{prefix}/n{size}/s{len(samples)}")
+        sample = make_sample(picked, sample_id=f"{prefix}/n{size}/s{len(samples)}",
+                             join_style=join_style)
         ok, _reason = validate_sample(sample)
         if not ok:
             skipped += 1
@@ -447,11 +463,13 @@ def run_sample(sample, retrieve, top_k=5, extra_k=10):
 ROUTE_MERGED = "merged"
 ROUTE_INTERLEAVE = "interleave"
 ROUTE_RRF = "rrf"
-ROUTE_MODES = (ROUTE_MERGED, ROUTE_INTERLEAVE, ROUTE_RRF)
+ROUTE_DECOMPOSE = "decompose"
+ROUTE_MODES = (ROUTE_MERGED, ROUTE_INTERLEAVE, ROUTE_RRF, ROUTE_DECOMPOSE)
 ROUTE_LABELS = {
     ROUTE_MERGED: "现状（整句一次检索）",
-    ROUTE_INTERLEAVE: "分路 + 轮流分名额",
-    ROUTE_RRF: "分路 + 名次融合（RRF）",
+    ROUTE_INTERLEAVE: "分路 + 轮流分名额（gold 拆问）",
+    ROUTE_RRF: "分路 + 名次融合（gold 拆问）",
+    ROUTE_DECOMPOSE: "分路 + 轮流分名额（**模型拆问**）",
 }
 # 一路走向量、另一路走关键词兜底时的汇总标签：两条路的分数含义完全不同，必须标出来。
 PATH_MIXED = "mixed"
@@ -554,15 +572,42 @@ def _route_path_label(paths):
     return PATH_MIXED
 
 
-def route_retrieve(parts, question, retrieve, budget, mode=ROUTE_MERGED):
+def route_retrieve(parts, question, retrieve, budget, mode=ROUTE_MERGED, decompose=None):
     """跑一个实验臂，返回 `(path, hits, diag)`。
 
-    `merged` = 现状：整句一次检索。`interleave` / `rrf` = 每问分路：**每个子问题用
-    自己的问句各检索一次**（不是拿整句去查），再按不同分配口径合成同一份预算的 context。
+    `merged` = 现状：整句一次检索。`interleave` / `rrf` = 每问分路（子问题用 **gold**）。
+    `decompose` = 每问分路，但子问题由**模型现场拆**（线上唯一可行的形态）：
+    它跟 `interleave` 的差就是「拆问那一步的损失」，两者用同一套名额分配口径。
     """
     if mode not in ROUTE_MODES:
         raise ValueError(f"未知的分路口径：{mode}")
     parts = list(parts or [])
+    if mode == ROUTE_DECOMPOSE:
+        if decompose is None:
+            raise ValueError("decompose 臂必须注入一个拆问函数")
+        generated = [str(text).strip() for text in (decompose(question or "") or [])]
+        generated = [text for text in generated if text] or [question or ""]
+        part_hits, paths = [], []
+        for text in generated:
+            part_path, hits = retrieve(text, budget)
+            part_hits.append(list(hits or []))
+            paths.append(part_path)
+        merged = interleave_hits(part_hits, budget)
+        # 拆漏：某个 gold 子问的目标片**任何一条**拆出来的问句都没召回到 → 拆分那一步就丢了它。
+        # 这是机械可核的（比的是块身份），不靠「拆出来的问句像不像 gold」这种词面尺子。
+        recalled = [any(covered(hits, part.get("target")) for hits in part_hits)
+                    for part in parts]
+        return _route_path_label(paths), merged, {
+            "mode": mode,
+            "retrievals": len(generated),
+            "per_part": paths,
+            "generated": len(generated),
+            "fallback": len(generated) <= 1,
+            "gold_recalled": recalled,
+            "part_ranks": [None] * len(parts),
+            "own_hits": [None] * len(parts),
+            "merged": False,
+        }
     if mode == ROUTE_MERGED or not parts:
         path, hits = retrieve(question or "", budget)
         hits = list(hits or [])
@@ -589,7 +634,7 @@ def route_retrieve(parts, question, retrieve, budget, mode=ROUTE_MERGED):
     }
 
 
-def run_sample_arm(sample, retrieve, budget=5, mode=ROUTE_MERGED):
+def run_sample_arm(sample, retrieve, budget=5, mode=ROUTE_MERGED, decompose=None):
     """跑一条复合样本的一个实验臂，返回与 `run_sample` 同形的 record。
 
     刻意与 `run_sample` 用同一套字段名（`parts[].covered` 对应 `covered_top`）、
@@ -606,14 +651,18 @@ def run_sample_arm(sample, retrieve, budget=5, mode=ROUTE_MERGED):
         "per_part_paths": [],
         "hits": None,
         "retrievals": 0,
+        "generated": None,
+        "decompose_fallback": None,
         "parts": [],
     }
     path, hits, diag = route_retrieve(sample.get("parts") or [], sample.get("question") or "",
-                                      retrieve, budget, mode)
+                                      retrieve, budget, mode, decompose=decompose)
     record["path"] = path
     record["per_part_paths"] = list(diag["per_part"])
     record["hits"] = len(hits)
     record["retrievals"] = diag["retrievals"]
+    record["generated"] = diag.get("generated")
+    record["decompose_fallback"] = diag.get("fallback")
     for index, part in enumerate(sample.get("parts") or []):
         record["parts"].append({
             "id": part.get("id"),
@@ -626,6 +675,9 @@ def run_sample_arm(sample, retrieve, budget=5, mode=ROUTE_MERGED):
             # 「身份口径没覆盖、但事实在同文件的邻居片里」—— 切片重叠造成的口径盲区
             "same_file_anchor": _same_file_anchor_visible(hits, part.get("target"),
                                                          part.get("anchor")),
+            # 拆问臂专用：这条 gold 子问有没有被**某条拆出来的问句**捞到过（拆漏诊断）
+            "recalled_by_split": (diag["gold_recalled"][index]
+                                  if index < len(diag.get("gold_recalled") or []) else None),
             # 这一问**自己**那份召回里目标片排第几（分路臂才有；1 就是第一名）
             "part_rank": diag["part_ranks"][index] if index < len(diag["part_ranks"]) else None,
             "own_hits": diag["own_hits"][index] if index < len(diag["own_hits"]) else None,
@@ -788,6 +840,14 @@ def summarize_routes(records, budget=5):
             strict_denominator = [part for part in eligible
                                   if part.get("baseline_kind") == "same_chunk"]
             strict_den_covered = sum(1 for part in strict_denominator if part.get("covered"))
+            # 拆问臂专用：**单问检索本来找得到**的 gold 子问里，有多少条拆完之后「任何一条
+            # 拆出来的问句都捞不到」= 拆问那一步丢的。分母必须和覆盖口径一样（eligible），
+            # 否则会把「本来就检不到」记到拆问头上 —— 这正是上一轮踩过的坑。
+            split_rows = [part for part in eligible if part.get("recalled_by_split") is not None]
+            split_recalled = sum(1 for part in split_rows if part.get("recalled_by_split"))
+            fallbacks = sum(1 for record in subset if record.get("decompose_fallback"))
+            generated = [record.get("generated") for record in subset
+                         if record.get("generated") is not None]
             # 分路臂的漏格再拆：那一问自己就没召回到目标片，还是召回到了但名额被截掉。
             part_ranks = [part.get("part_rank") for part in eligible]
             rank_seen = [rank for rank in part_ranks if rank]
@@ -817,6 +877,11 @@ def summarize_routes(records, budget=5):
                 "covered_strict_denominator": strict_den_covered,
                 "coverage_strict_denominator": _rate(strict_den_covered,
                                                      len(strict_denominator)),
+                "parts_split_recalled": split_recalled,
+                "parts_split_denominator": len(split_rows),
+                "split_recall": _rate(split_recalled, len(split_rows)),
+                "decompose_fallbacks": fallbacks,
+                "mean_generated": statistics.mean(generated) if generated else None,
                 "covered": covered,
                 "coverage": _rate(covered, len(eligible)),
                 "strict_covered": strict,
@@ -933,6 +998,14 @@ def _print_routes(groups, budget):
         print(f"    稳健性：只数「单问 top-1 真是目标片」的严格分母 {overall['parts_strict_denominator']} 个时，"
               f"覆盖 {overall['covered_strict_denominator']}/{overall['parts_strict_denominator']}"
               f"（{_pct(overall['coverage_strict_denominator'])}）")
+        if overall["parts_split_denominator"]:
+            mean_generated = overall["mean_generated"]
+            print(f"    拆问：gold 子问被「某条拆出来的问句」捞到 "
+                  f"{overall['parts_split_recalled']}/{overall['parts_split_denominator']}"
+                  f"（{_pct(overall['split_recall'])}，拆漏 "
+                  f"{overall['parts_split_denominator'] - overall['parts_split_recalled']} 条）；"
+                  f"退回整句（只拆出一条）{overall['decompose_fallbacks']}/{overall['samples']} 条；"
+                  f"平均拆出 {'无数据' if mean_generated is None else f'{mean_generated:.2f}'} 问")
 
 
 # ── 检索 ──
@@ -1028,6 +1101,10 @@ def main(argv=None):
                              "merged/interleave/rrf=只跑某一臂")
     parser.add_argument("--route-budget", type=int, default=None,
                         help="分路对照的 context 预算，默认等于 --top-k（两臂必须同预算才可比）")
+    parser.add_argument("--join-style", default="qmark", choices=JOIN_STYLES,
+                        help="复合问句怎么拼：qmark（？分隔，默认）/ comma（，）/ runon（还有）")
+    parser.add_argument("--decompose-cache", default=None,
+                        help="拆问结果缓存 JSON；跑 decompose 臂时必须带上，否则每次比的是大模型随机性")
     parser.add_argument("--json", default=None, help="明细落盘（只有 id/命中布尔/距离/路径）")
     parser.add_argument("--hyde", action="store_true",
                         help="走真实 HyDE（花 API 额度；线上口径）；默认不开")
@@ -1069,7 +1146,7 @@ def main(argv=None):
           f"；CHUNK_SIZE={CHUNK_SIZE}（overlap={CHUNK_OVERLAP}）；MAX_DISTANCE={MAX_DISTANCE}")
     print(f"k：主口径 {args.top_k} / 对照 {args.extra_k}；种子 {args.seed}"
           f"；每个文件最多 {args.chunks_per_file} 片；锚点 {ANCHOR_MIN_LEN}–{ANCHOR_MAX_LEN} 字、"
-          f"全语料最多 {ANCHOR_MAX_CORPUS_HITS} 次")
+          f"全语料最多 {ANCHOR_MAX_CORPUS_HITS} 次；复合问句拼法 {args.join_style}")
     print()
 
     if args.hyde:
@@ -1090,6 +1167,22 @@ def main(argv=None):
     route_budget = args.route_budget if args.route_budget else args.top_k
     route_modes = ([] if args.route == "off"
                    else list(ROUTE_MODES) if args.route == "all" else [args.route])
+    # 拆问臂：只有真的要用它时才装（否则一次 API 都不该花）
+    decompose = None
+    decompose_cache = {}
+    if ROUTE_DECOMPOSE in route_modes:
+        from scripts.eval_decomposition import cached_decompose, load_decompose_cache, save_decompose_cache
+        import src.decompose as decompose_mod
+
+        if decompose_mod.client is None:
+            print("错误：decompose 臂要调大模型，但没有配置 API_KEY。"
+                  "要么补 key，要么用 --route merged,interleave,rrf 里的其他口径。")
+            return 2
+        decompose_cache = load_decompose_cache(args.decompose_cache) if args.decompose_cache else {}
+        decompose = cached_decompose(decompose_mod.decompose_question, decompose_cache)
+        if not args.decompose_cache:
+            print("提示：没带 --decompose-cache，拆问结果不落盘 —— 两轮之间会比到大模型的随机性。")
+
     # 落盘前的泄漏检查要用到「锚点原文 + 文件名」，这里就地攒一份（只在内存里，
     # 一个字节都不写盘 —— 见 find_leaks 的说明）。
     corpus_needles = [name for conv in conversations for name, _text in conv["files"]]
@@ -1136,7 +1229,8 @@ def main(argv=None):
 
         conv_results = []
         for size in SAMPLE_SIZES:
-            samples, skipped = build_samples(probes, size, prefix=f"c{conv_ix}")
+            samples, skipped = build_samples(probes, size, prefix=f"c{conv_ix}",
+                                             join_style=args.join_style)
             counts["samples_same_file"] += skipped
             for sample in samples:
                 try:
@@ -1161,7 +1255,8 @@ def main(argv=None):
                 for mode in route_modes:
                     try:
                         route_results.append(run_sample_arm(sample, retrieve,
-                                                            budget=route_budget, mode=mode))
+                                                            budget=route_budget, mode=mode,
+                                                            decompose=decompose))
                     except Exception as e:           # 单条失败不该带走整轮
                         counts["query_errors"] += 1
                         print(f"    分路检索失败（{mode}），跳过：{str(e)[:60]}")
@@ -1240,6 +1335,7 @@ def main(argv=None):
             "config": {"seed": args.seed, "top_k": args.top_k, "extra_k": args.extra_k,
                        "chunks_per_file": args.chunks_per_file,
                        "limit_files": args.limit_files, "hyde": bool(args.hyde),
+                       "join_style": args.join_style, "route_budget": route_budget,
                        "anchor_len": [ANCHOR_MIN_LEN, ANCHOR_MAX_LEN],
                        "anchor_max_corpus_hits": ANCHOR_MAX_CORPUS_HITS},
             "counts": counts,
@@ -1262,6 +1358,9 @@ def main(argv=None):
     if args.hyde and args.hyde_cache:
         save_hyde_cache(args.hyde_cache, hyde_cache)
         print(f"假设文本已缓存：{args.hyde_cache}（{len(hyde_cache)} 条）")
+    if args.decompose_cache and decompose_cache:
+        save_decompose_cache(args.decompose_cache, decompose_cache)
+        print(f"拆问结果已缓存：{args.decompose_cache}（{len(decompose_cache)} 条）")
     return 0
 
 
