@@ -1,8 +1,10 @@
 from src.config import (logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH,
                         COVERAGE_SAMPLING, COVERAGE_BACKFILL_MAX,
-                        COVERAGE_PER_FILE_CANDIDATES)
+                        COVERAGE_PER_FILE_CANDIDATES, COVERAGE_INTRA_FILE_BLOCKS,
+                        COVERAGE_INTRA_FILE_CANDIDATES)
 from src.coverage import (coverage_report, is_navigational, looks_enumerative, missing_files,
-                          prefer_content, sample_per_file)
+                          blocks_that_fit, pick_target_file, prefer_content, sample_evenly,
+                          sample_per_file)
 from src.hits_merge import interleave_hits
 from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE, REFUSAL_MARKER
 from src.retrieval import hyde_retrieve_hits, per_file_best
@@ -116,13 +118,42 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
 
     budget = int(top_k) if top_k else len(hits or [])
     names = [name for name, _text in files if name]
-    # 先做「内容页在前、导航页在后」的稳定分区，再做按文件轮流取样：
-    # 否则每份文件的代表块很可能就是它的「知识导图」页（第十四轮实测：头部 14 块里 10 块是导图）。
+    picker = backfill or per_file_best
+
+    # 先看这句话是不是「要某一章/某一份文件的内容」——那种需求要的是**文件内部跨节**铺开，
+    # 而不是跨文件代表性。两条路的判据互斥：认出了目标文件就走文件内取样。
+    target = pick_target_file(question, names)
+    if target:
+        inside = prefer_content([(text, meta) for text, meta in hits or []
+                                 if (meta or {}).get("file_name") == target])
+        # 块数按**字符预算**反推（短页多取、长块少取），否则写死的块数要么浪费预算、
+        # 要么被装配截断后只覆盖前半章。
+        blocks = blocks_that_fit(inside, COVERAGE_INTRA_FILE_BLOCKS, MAX_CONTEXT_LENGTH)
+        picked = sample_evenly(inside, blocks)
+        if len(inside) < blocks:
+            # 命中里这份文件的块太少：在**这份文件内部**多取一批候选再按节铺开
+            extra = picker(collection, question, target,
+                           top_k=COVERAGE_INTRA_FILE_CANDIDATES) or []
+            merged = list(inside)
+            seen = {(text, (meta or {}).get("chunk_index")) for text, meta in merged}
+            for text, meta in extra:
+                key = (text, (meta or {}).get("chunk_index"))
+                if key not in seen:
+                    seen.add(key)
+                    merged.append((text, meta))
+            pool = prefer_content(merged)
+            picked = sample_evenly(pool, blocks_that_fit(pool, COVERAGE_INTRA_FILE_BLOCKS,
+                                                         MAX_CONTEXT_LENGTH))
+        logger.info("同文件跨节取样：目标文件「%s」，命中 %d 块 → 按节取 %d 块",
+                    target, len(hits or []), len(picked))
+        return picked
+
+    # 否则按文件轮流取样：枚举 / 汇总型提问要的是跨文件的代表性
+    # 先做「内容页在前、导航页在后」的稳定分区，否则每份文件的代表块很可能就是它的知识导图页。
     ordered = prefer_content(hits)
     sampled = sample_per_file(ordered, budget)
     fresh = missing_files(sampled, names)
 
-    picker = backfill or per_file_best
     filled = []
     for name in fresh[:max(0, COVERAGE_BACKFILL_MAX)]:
         candidates = picker(collection, question, name, top_k=COVERAGE_PER_FILE_CANDIDATES)

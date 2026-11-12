@@ -126,6 +126,13 @@ COVERAGE_BACKFILL_MAX = int(os.getenv("COVERAGE_BACKFILL_MAX", "8"))
 # 每份缺失文件取几个候选再挑「正文页」：一份文件里最像「内容是什么」的那块往往正是它的
 # 目录页，只取 1 个就没有挑的余地（2026-11-12 第十四轮实测：头部 14 块里 10 块是知识导图）。
 COVERAGE_PER_FILE_CANDIDATES = int(os.getenv("COVERAGE_PER_FILE_CANDIDATES", "3"))
+# 同一份文件内部跨节取样：问句点名了章号（「整理第一章的内容」）时，**在这份文件内部**
+# 按页均匀铺开。下面这个数是**上限**，实际取几块由字符预算反推（`coverage.blocks_that_fit`）：
+# PPT 每页才 ~140 字，取 30 页也只有 4k 字符；md 每块 480 字时只装得下 ~15 块。
+# 写死块数的后果是「要么浪费预算、要么被装配截断后只覆盖前半章」。
+COVERAGE_INTRA_FILE_BLOCKS = int(os.getenv("COVERAGE_INTRA_FILE_BLOCKS", "30"))
+# 文件内补位时先取多少个候选（再按节铺开挑）
+COVERAGE_INTRA_FILE_CANDIDATES = int(os.getenv("COVERAGE_INTRA_FILE_CANDIDATES", "40"))
 
 
 VECTOR_DB_PATH = resolve_path(os.getenv("VECTOR_DB_PATH"), "chroma_db")

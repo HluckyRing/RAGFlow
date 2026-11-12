@@ -16,6 +16,11 @@ import pytest
 import src.llm as llm
 from src.coverage import (
     ENUMERATION_MARKERS,
+    blocks_that_fit,
+    chapter_numbers,
+    pick_target_file,
+    sample_evenly,
+    section_order,
     coverage_report,
     file_names_of,
     is_navigational,
@@ -271,3 +276,81 @@ def test_backfill_picks_a_content_candidate_over_a_navigation_one(switch_on):
                                    backfill=backfill)
     assert asked["top_k"] >= 3, "只取 1 个候选就没有挑正文页的余地"
     assert out[0][1]["chunk_index"] == 9
+
+# ── 同一份文件内部跨节取样（2026-11-12 第十六轮）──
+#
+# 真实需求：「帮我整理第一章的内容」——要的是把那一章（64 页）铺开讲，不是跨文件代表性。
+# 这里钉住四件事：章号解析、目标文件定位（歧义就要放弃）、按页均匀铺开、以及
+# 「只在问句点明章号且是枚举/整理类时才走这条路」（否则会毁掉精确事实问答）。
+
+@pytest.mark.parametrize("question,expected", [
+    ("帮我整理第一章的内容", {1}),
+    ("整理第2章", {2}),
+    ("第十二章讲了什么", {12}),
+    ("第 3 章 重点", {3}),
+    ("总结这份材料", set()),
+    ("", set()),
+])
+def test_chapter_numbers(question, expected):
+    assert chapter_numbers(question) == expected
+
+
+def test_pick_target_file_uses_the_chapter_number():
+    names = ["01-第1章_操作系统引论.md", "02-第2章_进程的描述与控制.md"]
+    assert pick_target_file("帮我整理第一章的内容", names) == "01-第1章_操作系统引论.md"
+    assert pick_target_file("整理第2章", names) == "02-第2章_进程的描述与控制.md"
+
+
+def test_pick_target_file_gives_up_on_no_match_or_ambiguity():
+    """定位错了会答成另一章，比不取样更糟 —— 找不到或有歧义都必须放弃。"""
+    names = ["第1章_甲.md", "第1章_乙.md"]
+    assert pick_target_file("整理第1章", names) is None, "两个文件都自称第1章，不许瞎猜"
+    assert pick_target_file("整理第9章", names) is None
+    assert pick_target_file("总结一下", ["第1章_甲.md"]) is None, "没提章号就不定位"
+
+
+def test_section_order_parses_page_numbers_and_falls_back_to_chunk_index():
+    assert section_order({"section": "第 12 页", "chunk_index": 11}) == (0, 12, 11)
+    assert section_order({"section": None, "chunk_index": 7}) == (1, 7, 0)
+
+
+def test_sample_evenly_spreads_across_the_whole_file():
+    """12 段取 4 块要铺满首尾，不是抓前 4 段。"""
+    hits = [(f"正文{i}", {"section": f"第 {i} 页", "chunk_index": i}) for i in range(1, 13)]
+    picked = sample_evenly(hits, 4)
+    assert [meta["chunk_index"] for _t, meta in picked] == [1, 4, 7, 10]
+    assert sample_evenly(hits, 20) == hits, "块数够就原样按节序返回"
+    assert sample_evenly([], 5) == []
+
+
+def test_intra_file_sampling_only_returns_blocks_of_the_target_file(switch_on):
+    """点名第一章时，不许再把别的文件的块塞进来（那正是之前拒答的原因）。"""
+    same_file = [("第1章正文 " + str(i), {"file_name": "01-第1章_甲.md", "section": f"第 {i} 页",
+                                        "chunk_index": i}) for i in range(1, 21)]
+    other = [("别的内容", {"file_name": "02-第2章_乙.md", "section": "第 1 页", "chunk_index": 0})]
+    out = llm.ensure_file_coverage(
+        "帮我整理第一章的内容", None,
+        [("01-第1章_甲.md", "正文"), ("02-第2章_乙.md", "正文")],
+        other + same_file, 39, backfill=lambda *a, **k: [])
+    assert out, "必须挑出块来"
+    assert {meta["file_name"] for _t, meta in out} == {"01-第1章_甲.md"}
+    assert len(out) <= llm.COVERAGE_INTRA_FILE_BLOCKS, "块数不超过上限（上限内再按字符预算反推）"
+
+
+def test_intra_file_sampling_does_not_trigger_without_a_chapter_mention(switch_on):
+    """没点名章号就走原来的跨文件路 —— 精确事实问答不许被铺开取样毁掉。"""
+    same_file = [("第1章正文 " + str(i), {"file_name": "01-第1章_甲.md", "section": f"第 {i} 页",
+                                        "chunk_index": i}) for i in range(1, 6)]
+    files = [("01-第1章_甲.md", "正文"), ("02-第2章_乙.md", "正文")]
+    out = llm.ensure_file_coverage("列出所有的实验", None, files, same_file, 5,
+                                   backfill=lambda *a, **k: [])
+    assert len(out) == len(same_file)
+
+def test_blocks_that_fit_adapts_to_chunk_length():
+    """块数按字符预算反推：短页多取、长块少取，写死块数两头都会错。"""
+    short = [("x" * 140, {}) for _ in range(60)]
+    long_chunks = [("x" * 480, {}) for _ in range(60)]
+    assert blocks_that_fit(short, 30, 8000) == 30, "PPT 短页应当取满上限"
+    assert blocks_that_fit(long_chunks, 30, 8000) == 15, "480 字的长块只装得下 ~15 块"
+    assert blocks_that_fit(short, 30, 1000) >= 1
+    assert blocks_that_fit([], 30, 8000) == 0

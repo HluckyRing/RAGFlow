@@ -137,3 +137,105 @@ def prefer_content(hits):
     for item in hits or []:
         (navigation if is_navigational(item[0]) else content).append(item)
     return content + navigation
+
+
+# ── 同一份文件内部跨节取样（2026-11-12 第十六轮）──
+#
+# 真实需求来自真实日志：「帮我整理第一章的内容」。这句话要的不是「跨文件的代表性」，
+# 而是**把那一章（同一份文件里的 64 页）铺开讲**。文件级取样对它完全无效 —— 实测两臂都拒答，
+# 因为第 1 章的正文块在检索结果里只剩几个，其余名额被别的文件占满。
+#
+# 两个关键设计：
+# 1. **先定位是哪一份文件**：只认问句里的章号（「第一章」「第2章」），再拿章号去文件名里找。
+#    不做「问问句像不像某个文件名」那种模糊匹配 —— 匹配错了会答成另一章，比不取样更糟。
+# 2. **按节均匀铺开**，不是「取最相关的 k 块」：整理 / 摘要要覆盖整章，按相关度取必然抓头几条。
+#    又因为装配阶段还有 `MAX_CONTEXT_LENGTH` 的字数上限（约 12 块），取样块数按**装配预算**
+#    定而不是按检索预算定 —— 取 39 块再被截成 14 块，等于只覆盖了前四分之一章。
+
+_CHINESE_NUMBERS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8,
+                    "九": 9, "十": 10, "十一": 11, "十二": 12, "十三": 13, "十四": 14,
+                    "十五": 15, "十六": 16, "十七": 17, "十八": 18, "十九": 19, "二十": 20}
+_CHAPTER_MENTION_RE = re.compile(r"第\s*([0-9]{1,2}|[一二三四五六七八九十]{1,3})\s*章")
+_SECTION_PAGE_RE = re.compile(r"第\s*([0-9]{1,4})\s*页")
+
+
+def chapter_numbers(question):
+    """问句里提到的章号（「第一章」→ 1、「第2章」→ 2）。没提到就是空集合。"""
+    numbers = set()
+    for raw in _CHAPTER_MENTION_RE.findall(str(question or "")):
+        if raw.isdigit():
+            numbers.add(int(raw))
+        else:
+            value = _CHINESE_NUMBERS.get(raw)
+            if value:
+                numbers.add(value)
+    return numbers
+
+
+def pick_target_file(question, file_names):
+    """问句指向哪一份文件：用**章号**去文件名里找。
+
+    只认章号这一条硬信号，返回唯一匹配；找不到或有歧义都返回 `None`
+    —— 定位错了会答成另一章，比不取样更糟。
+    """
+    numbers = chapter_numbers(question)
+    if not numbers:
+        return None
+    matched = []
+    for name in file_names or []:
+        for number in numbers:
+            if any(f"第{number}{sep}章" in name for sep in ("", " ")) or \
+                    any(f"第{sep}{number}章" in name for sep in (" ",)):
+                matched.append(name)
+                break
+    return matched[0] if len(matched) == 1 else None
+
+
+def section_order(meta):
+    """排序键：能解析出「第 N 页」就按页号，否则退回 chunk_index（保证稳定）。"""
+    meta = meta or {}
+    match = _SECTION_PAGE_RE.search(str(meta.get("section") or ""))
+    if match:
+        return (0, int(match.group(1)), int(meta.get("chunk_index") or 0))
+    return (1, int(meta.get("chunk_index") or 0), 0)
+
+
+def sample_evenly(hits, blocks):
+    """在**同一份文件内部**按节均匀取样：`blocks` 块铺满整份文件的节区间。
+
+    为什么均匀而不是按相似度：整理 / 摘要类需求要覆盖整章；按相关度取必然抓头几条、
+    尾部整段丢掉。返回顺序按节号升序（装配进 context 也是这个顺序）。
+    """
+    ordered = sorted(hits or [], key=lambda item: section_order(item[1]))
+    if not blocks or blocks <= 0 or len(ordered) <= blocks:
+        return ordered
+    step = len(ordered) / float(blocks)
+    picked, seen = [], set()
+    for index in range(blocks):
+        item = ordered[int(index * step)]
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        picked.append(item)
+    return picked
+
+
+# 每块进 context 时还要带一行「【来源：文件名 · 第 N 页】」，估算字数时得把它算进去。
+SOURCE_LABEL_OVERHEAD = 40
+
+
+def blocks_that_fit(hits, max_blocks, max_chars=8000):
+    """按**字符预算**反推能取几块：短页多取、长块少取。
+
+    为什么不能写死块数：同一套代码在 PPT（每页 ~140 字）与 md（每块 480 字）上，
+    「12 块」分别是 1.7k 与 5.8k 字符 —— 写死要么浪费预算、要么被装配截断后只覆盖前半段。
+    """
+    items = list(hits or [])
+    if not items:
+        return 0
+    average = sum(len(text or "") for text, _meta in items) / float(len(items))
+    per_block = average + SOURCE_LABEL_OVERHEAD
+    if per_block <= 0:
+        return max(1, int(max_blocks or 1))
+    fits = int(max_chars // per_block)
+    return max(1, min(int(max_blocks or 1), fits))
