@@ -115,6 +115,15 @@ DECOMPOSE_ENABLED = os.getenv("DECOMPOSE_ENABLED", "1").strip().lower() not in (
 # 拆问最多拆几问（再多就不是「一个问题」，而是把整段话贴进来了）
 DECOMPOSE_MAX_PARTS = int(os.getenv("DECOMPOSE_MAX_PARTS", "6"))
 
+# 跨文件取样：枚举 / 汇总型提问（「列出所有的实验」「主要内容是什么」）不要静默漏掉整份文件。
+# **默认关**（2026-11-12 第十二轮）：真实日志里 13 份文件的语料装配后只覆盖 12 份，缺的那份
+# 是检索排序没捞到 —— 这个开关就是补这一刀。但它改的是**检索结果本身**（多一次限定在缺失
+# 文件内的补位查询），按本项目的约定，新行为默认关、过了门再谈默认开。
+# 关着时行为与改造前逐位一致：连 `looks_enumerative` 都不跑，一次查询都不多花。
+COVERAGE_SAMPLING = os.getenv("COVERAGE_SAMPLING", "0").strip().lower() not in ("0", "false", "no", "")
+# 最多给几份缺失文件补位（每份多一次查询）。文件很多时不能让这一次提问变成 n 次检索。
+COVERAGE_BACKFILL_MAX = int(os.getenv("COVERAGE_BACKFILL_MAX", "8"))
+
 
 VECTOR_DB_PATH = resolve_path(os.getenv("VECTOR_DB_PATH"), "chroma_db")
 # 上传原件（不是抽取文本）的存放根目录。原文件预览要读它；同样锚定项目根，

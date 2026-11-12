@@ -1,7 +1,9 @@
-from src.config import logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH
+from src.config import (logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH,
+                        COVERAGE_SAMPLING, COVERAGE_BACKFILL_MAX)
+from src.coverage import coverage_report, looks_enumerative, missing_files, sample_per_file
 from src.hits_merge import interleave_hits
 from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE, REFUSAL_MARKER
-from src.retrieval import hyde_retrieve_hits
+from src.retrieval import hyde_retrieve_hits, per_file_best
 from src.text_utils import content_phrases
 
 # 指代词。刻意不收裸「这」「那」：它们太常见（「这是什么」并不需要指代消解），
@@ -88,6 +90,56 @@ def _format_source_block(text, meta):
     return f"【来源：{_source_label(meta)}】\n{text}"
 
 
+def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None):
+    """枚举 / 汇总型提问：在**同一个块预算**内保证每份文件都有代表块。
+
+    为什么需要它（2026-11-12 第十二轮实测）：13 份文件的语料里，真实用户问「该知识库的
+    主要内容是什么」时，装配后的 context 只覆盖 12 份 —— 缺的那一份是「按相关度排序 +
+    `MAX_DISTANCE` 距离闸门」筛掉的，而且**没有任何提示**。这类提问要的是跨文件的代表性
+    取样，不是「最相关的 k 块」。
+
+    三条边界（都有测试钉住）：
+
+    - 开关关着 / 只有一份文件 / 问句不像枚举 → **原样返回**，一次查询都不多花；
+    - **块预算不变**：补位块排最前，总数仍截到 `top_k` —— 靠取样取胜，不靠塞更多 token；
+    - 补位只针对**缺的那几份**，且最多 `COVERAGE_BACKFILL_MAX` 份 —— 不能让一次提问变成
+      n 次检索。
+
+    返回顺序：先补位块（保证装配阶段不会先被字符上限截掉），再是按文件轮流取样的结果。
+    """
+    if not COVERAGE_SAMPLING or not files or len(files) < 2:
+        return hits
+    if not looks_enumerative(question):
+        return hits
+
+    budget = int(top_k) if top_k else len(hits or [])
+    names = [name for name, _text in files if name]
+    sampled = sample_per_file(hits, budget)
+    fresh = missing_files(sampled, names)
+
+    picker = backfill or per_file_best
+    filled = []
+    for name in fresh[:max(0, COVERAGE_BACKFILL_MAX)]:
+        filled.extend(picker(collection, question, name, top_k=1))
+
+    if filled or fresh:
+        report = coverage_report(list(filled) + list(sampled), names)
+        logger.info("跨文件取样：%d 份文件里覆盖 %d 份（补位 %d 块%s）",
+                    len(names), report["covered"], len(filled),
+                    ("，仍缺 " + "、".join(report["missing"])) if report["missing"] else "")
+
+    merged, seen = [], set()
+    for text, meta in list(filled) + list(sampled):
+        key = (text, (meta or {}).get("file_name"), (meta or {}).get("chunk_index"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append((text, meta))
+        if budget and len(merged) >= budget:
+            break
+    return merged
+
+
 def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose,
                    history=None):
     """取检索块：**单问就照旧走整句**，复合问句才每问分路。
@@ -120,8 +172,11 @@ def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, de
             questions = []
         questions = [text for text in questions if text]
     if len(questions) <= 1:
-        return hyde_retrieve_hits(question, collection, full_text, use_vector,
+        hits = hyde_retrieve_hits(question, collection, full_text, use_vector,
                                   top_k=top_k, files=files)
+        # 跨文件取样只作用在「整句检索」这条路上：拆问已经按子问分路，各自的预算由
+        # `interleave_hits` 管，两套取样叠在一起会把预算切碎两次。
+        return ensure_file_coverage(question, collection, files, hits, top_k)
 
     resolved = [resolve_query(text, history or []) for text in questions]
     if resolved != questions:

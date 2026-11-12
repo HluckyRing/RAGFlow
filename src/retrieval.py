@@ -445,6 +445,32 @@ def hyde_retrieve_hits(question, collection, full_text, use_vector, top_k=None, 
         use_hyde=use_hyde)[1]
 
 
+def per_file_best(collection, query_text, file_name, top_k=1):
+    """在**指定文件内部**取最相关的块 —— 跨文件取样的补位用（2026-11-12 第十二轮）。
+
+    与主检索刻意不同的两点，都是为「覆盖」而不是「精度」：
+
+    - 用 `where={"file_name": ...}` 把候选限定到这一份文件，所以取回来的必定是它的块；
+    - **不过 `MAX_DISTANCE` 距离闸门**。枚举 / 汇总型提问里，「离问句远」的那份文件正是要被
+      补进来的那一个；距离闸门会继续把边缘但必要的那份挡在外面，补位就白做了。
+
+    任何失败都返回 `[]` 并记 WARNING：补位是锦上添花，绝不许把一次正常问答搞崩。
+    """
+    if collection is None or not file_name:
+        return []
+    try:
+        results = collection.query(query_texts=[str(query_text)],
+                                   n_results=max(1, int(top_k)),
+                                   where={"file_name": file_name})
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("跨文件取样补位查询失败（%s）：%s", file_name, str(e)[:80])
+        return []
+    docs = (results.get("documents") or [[]])[0]
+    metas = (results.get("metadatas") or [[]])[0]
+    return [(doc, metas[index] if index < len(metas) else None)
+            for index, doc in enumerate(docs or [])]
+
+
 def hyde_retrieve(question, collection, full_text, use_vector, top_k=None, files=None):
     """兼容旧签名：只返回文本列表（老调用方与老测试不用改）。"""
     return [text for text, _ in hyde_retrieve_hits(
