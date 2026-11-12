@@ -166,6 +166,9 @@ JSON 数组契约）→ `parse_parts()` 兼容围栏/编号/项目符号/每行�
 
 - 本地 `main` = `bc64931`，**领先 `origin/main`（`a9bcd25`）12 个提交**，本轮全部**未推送**；
   工作区只有刻意的 `?? .agents/`；全量 `pytest tests -q` → **606 passed**（起点 533）。
+  > **2026-11-09 补记**：上句是**归档当时**的事实，这批提交**归档后已推送**；现远端
+  > `origin/main` = `6a63b7c`（其后另有 `c6eb9d8` README 英文摘要、`6a63b7c` 社交预览图两个
+  > 纯文档提交）。以仓库根 `MEMORY.md` 的「现状」为准。
 - 基线文档 **1649 行**；`AGENTS.md` / `CLAUDE.md` 均 **179 行**，仍只差 4 行工具相关文本
   （每轮用 `git diff --no-index -U0` 校验，差异必须正好 8 行）。
 - 线上默认：`DECOMPOSE_ENABLED=1`（`src/config.py` + `.env.example` 已同步）；关掉仍完全可用，
