@@ -50,6 +50,10 @@ from scripts.eval_retrieval import (  # noqa: E402
     DEFAULT_CORPUS, DEFAULT_QUERIES, build_context, load_corpus, load_queries, normalize)
 from src.prompts import REFUSAL_MARKER  # noqa: E402
 
+# 两臂共用的检索预算：拆问臂「每问各查 top_k 条再轮流分名额到 top_k 块」，
+# 整句臂就是「一次查 top_k 条」。预算不一样的话，比的是 token 不是检索质量。
+TOP_K = 5
+
 # 判定「是不是拒答」用**结构化标记**，不是文案启发式（2026-11-06）：
 # 提示词要求模型答不出时以 `REFUSAL_MARKER` 开头，服务端据此推 refused 事件；
 # 这里量的是同一件事，所以用同一套契约 —— 顺带也量了「模型到底听不听话」。
@@ -210,6 +214,28 @@ def post_gap_coverage(answer, parts):
             "parts": [row["text"] for row in after]}
 
 
+def pick_hits(question, whole, decomposed=None, decompose=None):
+    """取 context 用的检索块：**整句**或**每问分路**，两臂只差这一个开关。
+
+    为什么要有这一层：第六轮把拆问接进线上之后，「复合问答得全不全」就只能在**生成侧**量，
+    而这个脚本原来直接调 `hyde_retrieve_hits_with_path` —— 它压根没有拆问这条路，于是
+    「装下之后答没答全」在线上口径下是空白。
+
+    三条纪律：
+
+    - **不在这里重新实现拆问逻辑**：`decomposed` 是线上 `llm._retrieve_hits` 的薄包装，
+      「拆出 1 条就退回整句 / 分路全空退回整句 / 每条子问过 `resolve_query`」全部由那一份
+      实现决定。判断写两份必然漂，漂了评测数字就不再说明线上行为。
+    - **两臂除开这个开关以外完全相同**：同一个 `top_k`、同一份装配（`build_context`）、
+      同一批样本、同一份 HyDE 缓存。
+    - `decompose=None` 时**连 `decomposed` 都不看一眼** —— 关着就是改造前的行为，
+      一次多余调用都不许有。
+    """
+    if decompose is None or decomposed is None:
+        return whole(question)
+    return decomposed(question)
+
+
 def plan_search_queries(queries, resolve):
     """把「样本问句」翻译成「检索问句」。
 
@@ -359,6 +385,12 @@ def main(argv=None):
     parser.add_argument("--fill-hyde", action="store_true",
                         help="缓存里缺的假设文本现场生成并写回缓存（会真实调用大模型；"
                              "不填就退化成「假设文本=原问题」，融合只剩一路，结果不可比）")
+    parser.add_argument("--decompose", action="store_true",
+                        help="检索走线上的「每问分路」（= DECOMPOSE_ENABLED 开的口径）；"
+                             "不给就是整句一次检索（改造前口径）。两臂只差这一个开关")
+    parser.add_argument("--decompose-cache", default=".agents/inline-decompose-cache.json",
+                        help="拆问结果缓存；对比两轮/两臂时必须指向同一个文件，"
+                             "否则拆出来的子问会变，比的是模型随机性")
     args = parser.parse_args(argv)
 
     import chromadb
@@ -412,14 +444,41 @@ def main(argv=None):
     print(f"假设文本缓存：{cache_path}（{len(hyde)} 条；"
           f"本次命中 {len(search_queries) - len(degraded)}/{len(search_queries)}）")
 
+    # 拆问臂：只有真要跑它时才装（否则一次 API 都不该花）
+    decompose = None
+    decompose_cache = {}
+    save_cache = None
+    if args.decompose:
+        from scripts.eval_decomposition import (cached_decompose, load_decompose_cache,
+                                                save_decompose_cache)
+        import src.decompose as decompose_mod
+
+        if decompose_mod.client is None:
+            print("错误：--decompose 要调拆问大模型，但没有配置 API_KEY。"
+                  "要么补 key，要么去掉 --decompose 跑整句口径。")
+            return 2
+        decompose_cache = load_decompose_cache(args.decompose_cache)
+        decompose = cached_decompose(decompose_mod.decompose_question, decompose_cache)
+        save_cache = save_decompose_cache
+        print(f"检索口径：**每问分路**（线上拆问；缓存 {args.decompose_cache}）")
+    else:
+        print("检索口径：**整句一次检索**（改造前口径；加 --decompose 走每问分路）")
+
+    arm_label = "decompose" if args.decompose else "whole"
     rows = []
     for query, search_query in zip(queries, search_queries):
         question = query["question"]
         history = query.get("history") or []
-        _path, hits = retrieval.hyde_retrieve_hits_with_path(
-            search_query, collection, full_text, use_vector=True, top_k=5, files=files)
+        hits = pick_hits(
+            search_query,
+            whole=lambda q: retrieval.hyde_retrieve_hits(
+                q, collection, full_text, use_vector=True, top_k=TOP_K, files=files),
+            decomposed=(lambda q, _history=history: llm._retrieve_hits(  # noqa: SLF001
+                q, collection, full_text, True, TOP_K, files, decompose, history=_history))
+            if decompose is not None else None,
+            decompose=decompose)
         if not hits:
-            rows.append({"id": query["id"], "kind": query["kind"],
+            rows.append({"id": query["id"], "kind": query["kind"], "arm": arm_label,
                          "class": query.get("negative_class"), "returned": 0,
                          "abstained": None, "answer": "", "seconds": None,
                          "shape": query.get("shape"),
@@ -439,7 +498,7 @@ def main(argv=None):
             print(f"[{query['id']}] 生成失败：{str(e)[:80]}")
             continue
         answer = "".join(parts)
-        row = {"id": query["id"], "kind": query["kind"],
+        row = {"id": query["id"], "kind": query["kind"], "arm": arm_label,
                "class": query.get("negative_class"), "returned": len(hits),
                "abstained": looks_like_abstention(answer), "answer": answer,
                "seconds": time.perf_counter() - started,
@@ -503,7 +562,10 @@ def main(argv=None):
 
     Path(args.json).write_text(json.dumps(rows, ensure_ascii=False, indent=2),
                                encoding="utf-8")
-    print(f"明细已写入 {args.json}")
+    print(f"明细已写入 {args.json}（检索口径：{arm_label}）")
+    if save_cache is not None and decompose_cache:
+        save_cache(args.decompose_cache, decompose_cache)
+        print(f"拆问结果已缓存：{args.decompose_cache}（{len(decompose_cache)} 条）")
     return 0
 
 

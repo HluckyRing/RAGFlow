@@ -1648,6 +1648,106 @@ $env:PORT=8098; $env:STATE_DIR=.agents/dd-off-state; $env:DECOMPOSE_ENABLED=0; p
 .venv/Scripts/python.exe .agents/decide_decompose_default.py
 ```
 
+## 生成侧：装下之后到底答没答全（2026-11-12 第十一轮）
+
+### 为什么补这一刀
+
+第十轮把「问句来源」换成了真实写法，但量到的是**检索覆盖**——只说明目标片有没有进 context。
+「进 context 之后模型答没答全、有没有点名缺口」一直是空白：`eval_compound_retrieval.py`
+量不到生成侧，而 `measure_inline_abstention.py` 那条路**直接调
+`retrieval.hyde_retrieve_hits_with_path`，压根没有拆问这条路**。于是 `DECOMPOSE_ENABLED=1`
+上线之后，「拆问让复合问答得更全」这件事在线上口径下没有任何证据。
+
+### 做法
+
+给 `measure_inline_abstention.py` 加 `--decompose`，两臂**只差这一个开关**：
+
+- 装一个新函数 `pick_hits(question, whole, decomposed, decompose)`：`decompose=None` 时连
+  `decomposed` 都不看一眼（关着就是改造前行为，一次多余调用都没有）；
+- `decomposed` 是**线上 `llm._retrieve_hits` 的薄包装**——「拆出 1 条退回整句」「分路全空
+  退回整句」「每条子问再过 `resolve_query`」全部由那一份实现决定。**不在这层重写拆问逻辑**：
+  判断写两份必然漂，漂了评测数字就不再说明线上行为；
+- 两条臂共用同一个 `TOP_K`、同一份装配（`build_context`）、同一批样本、同一份 HyDE 缓存
+  （整句臂现场补齐 20 条假设文本，20/20 命中），拆问结果落 `--decompose-cache`；
+- 生成侧 gold 人工标：20 条真实写法复合问 / **42 个子问**，每个子问一个「最短事实核」。
+  校验是机器做的：线索必须唯一定位到目标片、事实核（或同义写法）必须真的出现在那片里、
+  **主核不许出现在同一样本其它子问的目标片里**（否则「答了 A 没答 B」会被判成 B 也答到了）。
+
+一条容易踩的标注约束：`load_queries` 要求**平铺 `answer_terms` 等于 `parts` 拍平结果**，
+所以同义词不能只加在 `parts` 里；而平铺字段在 `classify_partial` 里是「全命中」语义，
+塞同义词会把「答对了」判成漏答。**结论：每个子问只放一个事实核**，同义写法只在自查时用。
+
+### 实测（真实语料 4 文件 / 324 块，预算 5，no-hyde 外的一切照线上）
+
+| 口径 | 可答项覆盖率 | **可答项全答到** | 整条拒答 | context 块数（中位） | 首 token 中位 |
+| --- | --- | --- | --- | --- | --- |
+| 整句一次检索（改造前） | 28/42（66.7%） | **7/20（35.0%）** | 3/20 | **2**（1–4） | 2.91 s |
+| 每问分路（拆问臂） | 40/42（**95.2%**） | **18/20（90.0%）** | 1/20 | **5**（5–5） | 2.25 s |
+
+拆问本身：20 条全部拆开（退回整句 0 条），16 条拆成 2 问、4 条拆成 3 问，平均 2.20 问。
+
+### 四条结论
+
+1. **生成侧的缺口是检索造成的，不是模型不肯答**。逐条读原文：整句臂的漏答几乎全部长这样——
+   模型明确写「参考背景里没有涉及文件目录/抖动/缺页率…」。它不是在偷懒，是**那半个问题
+   压根没进 context**。三个整条拒答（r15/r18/r20）同理，拒得对。
+2. **整句臂连预算都填不满**：context 块数中位只有 **2**（1–4），而预算就是 5 —— 复合问句的
+   向量离任何单一片都远，被 `MAX_DISTANCE` 先一步砍掉。拆问臂每问单探针检索，稳定拿满 5 块。
+   所以拆问赢的不只是「名额分配更均匀」，还有**「预算根本没被用上」这一层**。
+3. **答全率才是用户看见的那个数**：覆盖率从 66.7% → 95.2%，但更锋利的是
+   「一条复合问里每个子问都答到」从 **35% → 90%**。前者会被「只答对一半」的样本稀释。
+4. **剩下的 2 处漏答是真的，不是量尺**：r03 把「最佳置换算法淘汰哪一页」整问丢了（模型自己
+   写了「先说明能回答的两问」）；r15 的「置换算法好坏拿什么衡量」目标片没被检回来。
+   两条都不是判词问题，已逐条读原文确认。
+
+### 这一轮修的三处量尺（改标注不重跑，靠 `--json` 里的回答原文离线重算）
+
+| 样本 | 原事实核 | 改成 | 为什么 |
+| --- | --- | --- | --- |
+| r05 四条准则里「别让人白等」是哪条 | `让权等待` | `有限等待` | **假阳性**：模型正确答「有限等待」并顺带列出全部四条，旧核被顺带命中 |
+| r07 访问矩阵行和列 | `行代表域` | `域` | 假阴性：模型写「行对应域（用户/主体）」，措辞不同不算同义 |
+| r03 索引结点为什么少读磁盘 | `磁盘访问` | `盘块` | 假阴性：模型写「调入的盘块数下降」 |
+
+修完两臂各 +1 子问（整句 27→28、拆问 39→40）。**判词比模型脆这件事又重演了一次**——
+所以本节所有数字都是「修完后」的，且两臂用同一份标注一起重算。
+
+### 这个实验量不到什么
+
+- **这是线上口径对照，不是单变量消融**：关着时走 HyDE + 双路融合，开着时子问走单探针
+  （不调 HyDE）—— 这正是产品里的两种真实行为，但不是「只改拆问」的干净对照。
+- **20 条样本 / 42 个子问**，单语料、单 seed、单模型；一条样本就是 2.5pp，别读物差。
+- 装配用的是 `build_context`（两臂相同），**不是**线上 `retrieve_and_build_context` 的
+  按块边界装配 —— 为了隔离变量刻意固定了装配，线上还多一层。
+- gold 事实核是**一个子问一个词**：同义改写仍然可能被误判成漏答（本轮已修三处）。
+  要彻底解决得让判定支持「同义组」，那是改量尺，得配测试与历史口径说明。
+- 仍没测：多轮 + 复合的生成侧（`--followup` 那条路没接进这个脚本）、缺口点明率
+  （本轮样本全部可答，`absent_terms` 为空）、并发下的生成侧。
+
+### 怎么复现
+
+```bash
+# 语料与 gold（gold 依赖本地 state/，不入库）
+.venv/Scripts/python.exe .agents/build_cc_corpus.py      # -> .agents/cc-corpus/*.md
+.venv/Scripts/python.exe .agents/make_inline_gold.py     # -> .agents/cc-inline-queries.json
+
+# 整句臂（先跑它：会把 20 条 HyDE 假设文本写进缓存）
+.venv/Scripts/python.exe scripts/measure_inline_abstention.py \
+    --corpus .agents/cc-corpus --queries .agents/cc-inline-queries.json \
+    --hyde-cache .agents/cc-inline-hyde.json --fill-hyde \
+    --json .agents/cc-inline-whole.json
+
+# 拆问臂：同一份语料/样本/预算/HyDE 缓存，只加 --decompose
+.venv/Scripts/python.exe scripts/measure_inline_abstention.py \
+    --corpus .agents/cc-corpus --queries .agents/cc-inline-queries.json \
+    --hyde-cache .agents/cc-inline-hyde.json --decompose \
+    --decompose-cache .agents/cc-inline-decompose-cache.json \
+    --json .agents/cc-inline-decompose.json
+
+# 改标注后离线重算（不花 API）
+.venv/Scripts/python.exe .agents/judge_inline_run.py \
+    .agents/cc-inline-decompose.json .agents/cc-inline-queries.json
+```
+
 ## 真实写法的复合问句：模板问句把拆问测成了送分题（2026-11-09 第十轮）
 
 ### 为什么非补这一刀
