@@ -380,6 +380,9 @@ def main(argv=None):
     parser.add_argument("--queries", default=str(DEFAULT_QUERIES))
     parser.add_argument("--hyde-cache", default=".agents/hyde-cache.json",
                         help="假设文本缓存（不给就每次重新生成，结果不可比）")
+    parser.add_argument("--top-k", type=int, default=TOP_K,
+                        help="检索预算（块）。默认 5 是历史口径；量「枚举/汇总型」时应当对齐"
+                             "线上 dynamic_top_k=max(10, 文件数×3)，否则比的是预算不是取样")
     parser.add_argument("--json", default=".agents/inline-abstain.json",
                         help="逐条明细写到这个 JSON")
     parser.add_argument("--fill-hyde", action="store_true",
@@ -469,12 +472,16 @@ def main(argv=None):
     for query, search_query in zip(queries, search_queries):
         question = query["question"]
         history = query.get("history") or []
+        # 整句臂也走**线上同一个入口**（`llm._retrieve_hits` 内部 = `hyde_retrieve_hits` +
+        # 跨文件取样）：未开取样时与改造前逐位一致，而 `COVERAGE_SAMPLING` 这类线上开关
+        # 才能被这个脚本量到 —— 原来直接调 `hyde_retrieve_hits` 会把线上入口外面那层整个跳过。
+        top_k = args.top_k
         hits = pick_hits(
             search_query,
-            whole=lambda q: retrieval.hyde_retrieve_hits(
-                q, collection, full_text, use_vector=True, top_k=TOP_K, files=files),
+            whole=lambda q: llm._retrieve_hits(  # noqa: SLF001
+                q, collection, full_text, True, top_k, files, None, history=history),
             decomposed=(lambda q, _history=history: llm._retrieve_hits(  # noqa: SLF001
-                q, collection, full_text, True, TOP_K, files, decompose, history=_history))
+                q, collection, full_text, True, top_k, files, decompose, history=_history))
             if decompose is not None else None,
             decompose=decompose)
         if not hits:

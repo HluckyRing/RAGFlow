@@ -7,6 +7,8 @@
 
 所以这里钉住：认标记、认 markdown 加粗、**不**把正文中间出现的标记当拒答、空回答算拒答。
 """
+import json
+
 import pytest
 
 from scripts import measure_inline_abstention as mia
@@ -80,3 +82,60 @@ def test_pick_hits_falls_back_to_whole_when_no_decomposed_backend():
 def test_top_k_is_shared_by_both_arms():
     """两臂预算必须一样：拆问臂「每问各查 top_k 再分名额到 top_k」，整句臂一次 top_k。"""
     assert mia.TOP_K == 5, "改预算会同时改变两臂；改之前先想清楚这条实验还比什么"
+
+# ── 整句臂必须走线上入口 + 预算可对齐（2026-11-12 第十三轮的质量门）──
+#
+# 两条都是「量错了会得出假结论」的地方：
+# 1. 整句臂原来直接调 `hyde_retrieve_hits`，绕过了线上入口外面的跨文件取样那一层 ——
+#    于是 `COVERAGE_SAMPLING` 这类线上开关根本量不到；
+# 2. 预算写死 5 而线上是 `dynamic_top_k=max(10, 文件数×3)`：拿 5 去量 5 文件的语料，
+#    会把「预算不够」误当成「取样的收益」（实测就是这样造出过 9/15 → 15/15 的假胜利）。
+
+def test_whole_arm_goes_through_the_production_entry(tmp_path, monkeypatch):
+    """整句臂必须调用 `llm._retrieve_hits`（线上入口），否则线上开关量不到。"""
+    calls = []
+
+    def fake_retrieve(question, collection, full_text, use_vector, top_k, files, decompose,
+                      history=None):
+        calls.append({"top_k": top_k, "decompose": decompose})
+        return []
+
+    import src.llm as llm_mod
+    import src.retrieval as retrieval_mod
+
+    monkeypatch.setattr(llm_mod, "_retrieve_hits", fake_retrieve)
+    # `main` 会把 `retrieval._generate_hyde` 换成本地缓存查表——那是模块级全局，
+    # 不还原就会污染后面的 HyDE 测试（实测挂了 4 条 test_retrieval）。
+    monkeypatch.setattr(retrieval_mod, "_generate_hyde", retrieval_mod._generate_hyde)
+
+    class _TinyEmbedding:
+        """替身向量：这个用例只验「走没走线上入口、预算传没传下去」，
+        不需要真的加载 embedding 模型（真加载会让整个套件从 21 s 变 71 s）。"""
+
+        def __call__(self, input):                      # noqa: A002 - Chroma 的签名
+            return [[0.0, 1.0] for _ in input]
+
+        def name(self):
+            return "tiny-test-embedding"
+
+    monkeypatch.setattr(retrieval_mod, "_get_embedding_fn", lambda: _TinyEmbedding())
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.md").write_text("甲材料：实验一讲模拟退火。", encoding="utf-8")
+    queries = tmp_path / "q.json"
+    queries.write_text(json.dumps([{
+        "id": "s1", "kind": "partial", "question": "有哪些内容",
+        "expect_files": ["a.md"], "answer_terms": ["模拟退火", "实验一"], "absent_terms": [],
+        "parts": [{"text": "提到模拟退火", "answer_terms": ["模拟退火"]},
+                  {"text": "提到实验一", "answer_terms": ["实验一"]}],
+    }], ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "out.json"
+
+    code = mia.main(["--corpus", str(corpus), "--queries", str(queries),
+                     "--hyde-cache", str(tmp_path / "hyde.json"),
+                     "--json", str(out), "--top-k", "15"])
+    assert code == 0
+    assert calls, "整句臂没有走线上入口"
+    assert calls[0]["top_k"] == 15, "--top-k 必须传下去（不然比的是预算不是取样）"
+    assert calls[0]["decompose"] is None
