@@ -37,14 +37,19 @@ from scripts.eval_compound_retrieval import (
     hit_match,
     hit_key,
     interleave_hits,
+    load_question_samples,
     make_sample,
     measure_baseline,
     pick_anchor,
+    probes_from_questions,
+    question_leaks,
+    resolve_needle,
     rrf_merge_hits,
     route_retrieve,
     run_sample,
     run_sample_arm,
     sample_files,
+    samples_from_questions,
     summarize,
     summarize_routes,
     validate_sample,
@@ -900,3 +905,150 @@ def test_main_rejects_a_state_dir_without_any_file(tmp_path, capsys):
 
     assert code == 2, "0 个可测对话不许静默跑出 0 个样本"
     assert "带文件的对话" in out
+
+
+# ── 手写复合问句（真实写法）：换的是问句来源，gold 的定位与组装必须同样硬 ──
+#
+# 模板口径的问题是「子问题逐字含锚点」——等于把答案用词预先塞进问句。手写口径把这两件事
+# 拆开：`ask` 是 gold 拆分，`needle` 只用来定位目标块。下面钉住的就是这个分离，以及
+# 「定位不准必须响亮报错」——gold 标错会让整张覆盖表失真。
+
+def _fake_pairs():
+    """三片假语料，meta 形状与 `split_files` 一致（下游只认 file_name/chunk_index/section）。
+
+    注意：同一文件的两片必须**内容不重叠**，否则任何线索都会命中两片、
+    断言到的是夹具的毛病而不是被测函数的毛病。
+    """
+    return [
+        (FILE_A, {"file_name": "a.txt", "chunk_index": 0, "section": "一"}),
+        (FILE_B, {"file_name": "b.txt", "chunk_index": 0, "section": "一"}),
+        ("值班室的电话表贴在门口墙上。", {"file_name": "a.txt", "chunk_index": 1, "section": "二"}),
+    ]
+
+
+def _questions(*parts, qid="q1", question="这两件事我都记混了，分别是什么？"):
+    return [{"id": qid, "question": question,
+             "parts": [{"ask": ask, "file": name, "needle": needle}
+                       for ask, name, needle in parts]}]
+
+
+def test_resolve_needle_returns_the_unique_chunk():
+    _gix, chunk, meta = resolve_needle(_fake_pairs(), "a.txt", "停止作业并上报值班室")
+    assert "上报值班室" in chunk
+    assert meta["file_name"] == "a.txt" and meta["chunk_index"] == 0
+
+
+def test_resolve_needle_ignores_whitespace_and_fullwidth_punctuation():
+    """比对走 `normalize`：正文里的换行/全角标点不该让线索「找不到」。"""
+    pairs = [(FILE_B.replace("，", "，\n"), {"file_name": "b.txt", "chunk_index": 0})]
+    _gix, chunk, _meta = resolve_needle(pairs, "b.txt", "折旧与人工分开列示")
+    assert "折旧" in chunk
+
+
+def test_resolve_needle_missing_raises_loudly():
+    with pytest.raises(ValueError) as excinfo:
+        resolve_needle(_fake_pairs(), "a.txt", "这句话根本不在语料里")
+    assert "找不到" in str(excinfo.value)
+
+
+def test_resolve_needle_ambiguous_raises_and_reports_chunk_indexes():
+    """线索太泛 → 报错并报出片号；静默取第一个会让 gold 悄悄标错。"""
+    pairs = _fake_pairs() + [("又说了一遍上报值班室。",
+                              {"file_name": "a.txt", "chunk_index": 2})]
+    with pytest.raises(ValueError) as excinfo:
+        resolve_needle(pairs, "a.txt", "上报值班室")
+    message = str(excinfo.value)
+    assert "命中 2 块" in message
+    assert "0、2" in message, "要报出到底命中了哪几片，否则没法改线索"
+
+
+def test_probes_from_questions_keeps_ask_and_needle_apart():
+    """`sub_question` 用 gold 拆分（ask），`anchor` 用定位线索（needle）—— 两者不许串。"""
+    questions = _questions(("进入作业区之前要完成什么", "a.txt", "完成确认"),
+                           ("人工成本包含哪两部分", "b.txt", "基本工资与绩效奖励"))
+    probes = probes_from_questions(questions, _fake_pairs(), {"a.txt": 0, "b.txt": 1})
+    assert [p["sub_question"] for p in probes] == ["进入作业区之前要完成什么",
+                                                   "人工成本包含哪两部分"]
+    assert [p["anchor"] for p in probes] == ["完成确认", "基本工资与绩效奖励"]
+    assert [p["file_ix"] for p in probes] == [0, 1]
+
+
+def test_samples_from_questions_keeps_the_handwritten_question():
+    """回归钉子：question 必须是**手写原话**，绝不能被拼装回模板句。"""
+    questions = _questions(("进入作业区之前要完成什么", "a.txt", "完成确认"),
+                           ("人工成本包含哪两部分", "b.txt", "基本工资与绩效奖励"))
+    probes = probes_from_questions(questions, _fake_pairs(), {"a.txt": 0, "b.txt": 1})
+    samples = samples_from_questions(questions, probes)
+
+    assert samples[0]["question"] == questions[0]["question"]
+    assert samples[0]["question"] != build_compound_question(["进入作业区之前要完成什么",
+                                                              "人工成本包含哪两部分"])
+    assert [part["id"] for part in samples[0]["parts"]] == ["q1/p0", "q1/p1"]
+    assert samples[0]["n_parts"] == 2
+
+
+def test_questions_mode_feeds_baseline_into_parts():
+    """单问基线要真的落到 part 上，否则「可用子问」分母会变成 0、覆盖率凭空满分。"""
+    questions = _questions(("进入作业区之前要完成什么", "a.txt", "完成确认"),
+                           ("人工成本包含哪两部分", "b.txt", "基本工资与绩效奖励"))
+    pairs = _fake_pairs()
+    probes = probes_from_questions(questions, pairs, {"a.txt": 0, "b.txt": 1})
+
+    def retrieve(question, _k):
+        if "作业区" in question:
+            return "vector", [(FILE_A, pairs[0][1])]
+        return "vector", [("无关内容", {"file_name": "b.txt", "chunk_index": 9})]
+
+    measure_baseline(probes, retrieve)
+    samples = samples_from_questions(questions, probes)
+    assert [part["baseline_top1"] for part in samples[0]["parts"]] == [True, False]
+
+
+def test_question_leaks_flags_the_template_smell():
+    """问句里逐字含线索 = 模板句的老毛病，必须能被数出来。"""
+    clean = [{"id": "c", "question": "这两件事怎么区分？",
+              "parts": [{"ask": "x", "file": "a.txt", "needle": "上报值班室"}]}]
+    dirty = [{"id": "d", "question": "材料里「上报值班室」讲的是什么？",
+              "parts": [{"ask": "x", "file": "a.txt", "needle": "上报值班室"}]}]
+    assert question_leaks(clean) == []
+    assert question_leaks(dirty) == [("d", "上报值班室")]
+
+
+def test_load_question_samples_accepts_a_valid_file_and_rejects_broken_shapes(tmp_path):
+    path = tmp_path / "q.json"
+    good = {"samples": [{"id": "g", "question": "问？", "parts": [
+        {"ask": "a", "file": "x.txt", "needle": "n"},
+        {"ask": "b", "file": "y.txt", "needle": "m"}]}]}
+    path.write_text(json.dumps(good, ensure_ascii=False), encoding="utf-8")
+    assert load_question_samples(path)[0]["id"] == "g"
+
+    broken_payloads = [
+        {"samples": []},                                       # 空集：跑出来只会是一张空表
+        {"nope": 1},                                           # 形状不对
+        {"samples": [{"id": "g", "question": "问？", "parts": [
+            {"ask": "a", "file": "x.txt", "needle": "n"}]}]},  # 只有 1 个子问
+        {"samples": [{"id": "g", "question": "问？", "parts": [
+            {"ask": "", "file": "x.txt", "needle": "n"},
+            {"ask": "b", "file": "y.txt", "needle": "m"}]}]},  # 缺 ask
+        {"samples": [{"id": "", "question": "问？", "parts": [
+            {"ask": "a", "file": "x.txt", "needle": "n"},
+            {"ask": "b", "file": "y.txt", "needle": "m"}]}]},  # 缺 id
+    ]
+    for payload in broken_payloads:
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_question_samples(path)
+
+
+def test_main_exits_two_on_unreadable_questions_file(tmp_path, capsys):
+    """问句集读不进来 → 退出码 2，不要落到「0 条样本」的假结论上。"""
+    from scripts import eval_compound_retrieval as ecr
+
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps({"samples": []}, ensure_ascii=False), encoding="utf-8")
+
+    code = ecr.main(["--questions", str(path)])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert "手写问句集读不进来" in out

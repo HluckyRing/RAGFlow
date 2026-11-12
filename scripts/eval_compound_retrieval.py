@@ -306,6 +306,115 @@ def build_samples(probes, size, prefix="s", join_style="qmark"):
     return samples, skipped
 
 
+# ── 手写复合问句（真实写法）──
+#
+# 模板问句（`build_sub_question`）有一个结构性问题：子问题里**逐字含锚点**，而锚点就是从
+# 目标正文里截出来的窗口 —— 等于把答案用词预先塞进了问句，量出来的覆盖率因此系统性偏高
+# （2026-11-08 那轮分路 81.1% 就是这个口径）。这里换一个问句来源：`question` 由人手写
+# （省略、指代、语序跳跃都有），`parts` 只给 gold 拆分与**定位线索**（needle）——
+# 线索只用来定位目标块和算「锚点是否可见」，**绝不进问句**。
+#
+# 线索定位必须唯一：找不到（语料变了）或命中多块（线索太泛）都直接报错，不许静默跳过。
+# gold 标错会让整张覆盖表失真，这类错误必须响亮。
+
+def load_question_samples(path):
+    """读手写问句集：`{"samples": [{"id", "question", "parts": [{"ask", "file", "needle"}]}]}`。
+
+    形状不对就抛错（main 里转成退出码 2），不要出现「0 条样本跑出一张空表」那种假结论。
+    """
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    samples = raw.get("samples") if isinstance(raw, dict) else raw
+    if not isinstance(samples, list) or not samples:
+        raise ValueError(f"{path} 里没有 samples")
+    for sample in samples:
+        if not isinstance(sample, dict) or not sample.get("id") or not sample.get("question"):
+            raise ValueError(f"{path}：样本缺 id/question：{sample!r}")
+        parts = sample.get("parts")
+        if not isinstance(parts, list) or len(parts) < 2:
+            raise ValueError(f"{path}：{sample.get('id')} 的 parts 少于 2 个")
+        for part in parts:
+            for key in ("ask", "file", "needle"):
+                if not isinstance(part, dict) or not str(part.get(key) or "").strip():
+                    raise ValueError(f"{path}：{sample.get('id')} 的 part 缺 {key}")
+    return samples
+
+
+def resolve_needle(pairs, file_name, needle):
+    """把「事实线索」定位到**唯一**一块：返回 `(全局下标, 正文, meta)`。"""
+    wanted = normalize(needle)
+    hits = [(index, chunk, meta) for index, (chunk, meta) in enumerate(pairs or [])
+            if (meta or {}).get("file_name") == file_name and wanted in normalize(chunk)]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        raise ValueError(f"线索「{needle}」在文件「{file_name}」里找不到 —— 语料变了？")
+    indexes = "、".join(str((meta or {}).get("chunk_index")) for _i, _c, meta in hits)
+    raise ValueError(f"线索「{needle}」在文件「{file_name}」里命中 {len(hits)} 块"
+                     f"（片号 {indexes}）—— 线索太泛，换一句更独特的原文")
+
+
+def probes_from_questions(samples, pairs, file_ix):
+    """手写样本 → 探针（字段与 `build_probes` 一致，下游一行都不用改）。"""
+    probes = []
+    for sample in samples or []:
+        for index, part in enumerate(sample.get("parts") or []):
+            _gix, chunk, meta = resolve_needle(pairs, part["file"], part["needle"])
+            name = (meta or {}).get("file_name") or part["file"]
+            probes.append({
+                "sample_id": sample.get("id"),
+                "part_ix": index,
+                "file": name,
+                "file_ix": (file_ix or {}).get(name),
+                "anchor": part["needle"],
+                "sub_question": part["ask"],
+                "target": meta,
+                "chunk": chunk,
+            })
+    return probes
+
+
+def samples_from_questions(samples, probes):
+    """探针按手写样本的原始分组装回样本；`question` 用手写原话，**不再拼装**。"""
+    by_key = {(probe.get("sample_id"), probe.get("part_ix")): probe for probe in probes or []}
+    built = []
+    for sample in samples or []:
+        parts = []
+        for index, part in enumerate(sample.get("parts") or []):
+            probe = by_key[(sample.get("id"), index)]
+            parts.append({
+                "id": f"{sample.get('id')}/p{index}",
+                "anchor": probe.get("anchor"),
+                "sub_question": probe.get("sub_question"),
+                "target": probe.get("target"),
+                "baseline_top1": probe.get("baseline_top1"),
+                "baseline_kind": probe.get("baseline_kind"),
+                "baseline_rank": probe.get("baseline_rank"),
+                "file_ix": probe.get("file_ix"),
+            })
+        built.append({
+            "id": sample.get("id"),
+            "n_parts": len(parts),
+            "question": sample.get("question"),
+            "parts": parts,
+        })
+    return built
+
+
+def question_leaks(samples):
+    """问句里**逐字含线索**的条数 —— 这正是模板句的老毛病，手写集里必须为 0。
+
+    返回 `[(样本 id, 线索), ...]`，由调用方打印，不在这里静默吞掉。
+    """
+    leaks = []
+    for sample in samples or []:
+        question = normalize(sample.get("question"))
+        for part in sample.get("parts") or []:
+            needle = normalize(part.get("needle"))
+            if needle and needle in question:
+                leaks.append((sample.get("id"), part.get("needle")))
+    return leaks
+
+
 # ── 覆盖判定（口径见模块 docstring，改它必须改测试）──
 
 def hit_match(hit_meta, target):
@@ -1231,6 +1340,9 @@ def main(argv=None):
                         help="分路对照的 context 预算，默认等于 --top-k（两臂必须同预算才可比）")
     parser.add_argument("--join-style", default="qmark", choices=JOIN_STYLES,
                         help="复合问句怎么拼：qmark（？分隔，默认）/ comma（，）/ runon（还有）")
+    parser.add_argument("--questions", default=None,
+                        help="手写复合问句集 JSON（真实写法）：给了它就用里面的 question 原文，"
+                             "不再由锚点拼装问句，也不再按 SAMPLE_SIZES 切样本")
     parser.add_argument("--decompose-cache", default=None,
                         help="拆问结果缓存 JSON；跑 decompose 臂时必须带上，否则每次比的是大模型随机性")
     parser.add_argument("--followup", type=int, default=0,
@@ -1243,6 +1355,23 @@ def main(argv=None):
     parser.add_argument("--hyde-cache", default=None,
                         help="假设文本缓存 JSON；对比两轮开关时必须带上，否则比的是模型随机性")
     args = parser.parse_args(argv)
+
+    # 手写问句集（真实写法）：在碰语料之前先读，读不进来就别假装能跑。
+    question_samples = None
+    if args.questions:
+        try:
+            question_samples = load_question_samples(args.questions)
+        except (OSError, ValueError) as e:
+            print(f"错误：手写问句集读不进来：{e}")
+            return 2
+        leaks = question_leaks(question_samples)
+        print(f"手写问句集：{args.questions}（{len(question_samples)} 条，"
+              f"{sum(len(s['parts']) for s in question_samples)} 个子问；"
+              f"question 用原话，不由锚点拼装）")
+        if leaks:
+            print(f"  警告：{len(leaks)} 处问句里逐字含线索 —— 这正是模板句的老毛病，"
+                  f"会让覆盖率虚高：{leaks[:3]}")
+        print()
 
     from src import state as state_mod
 
@@ -1365,11 +1494,27 @@ def main(argv=None):
                        metadatas=[retrieval.chroma_meta(meta) for _chunk, meta in pairs])
         count = collection.count()
 
-        probes, missing = build_probes(files, rng, chunks_per_file=args.chunks_per_file)
-        counts["anchors_missing"] += missing
         file_ix = {name: index for index, (name, _text) in enumerate(files)}
         # chunk id → meta：目标片名次诊断要用它把 Chroma 回来的 id 换回 (文件, 片号)
         id_to_meta = {f"c{index}": meta for index, (_chunk, meta) in enumerate(pairs)}
+        # 手写问句集：整条样本必须落在同一个对话的文件里（跨对话拼不出检索口径）
+        conv_questions = None
+        if question_samples is not None:
+            present = {name for name, _text in files}
+            conv_questions = [sample for sample in question_samples
+                              if all(part["file"] in present for part in sample["parts"])]
+            if not conv_questions:
+                print(f"[对话#{conv_ix}] 手写问句集没有整条落在本对话的文件里，跳过")
+                continue
+            try:
+                probes = probes_from_questions(conv_questions, pairs, file_ix)
+            except ValueError as e:                  # gold 定位失败必须响亮
+                print(f"错误：手写问句集的线索定位失败：{e}")
+                return 2
+            missing = 0
+        else:
+            probes, missing = build_probes(files, rng, chunks_per_file=args.chunks_per_file)
+            counts["anchors_missing"] += missing
         for probe in probes:
             probe["file_ix"] = file_ix.get(((probe.get("target") or {}).get("file_name")))
         counts["probes"] += len(probes)
@@ -1414,10 +1559,27 @@ def main(argv=None):
                 followup_done += 1
             if followup_done:
                 print(f"    多轮样本 {followup_done} 条（每问句 1 条省略式追问 + 1 条完整问句）")
-        for size in SAMPLE_SIZES:
-            samples, skipped = build_samples(probes, size, prefix=f"c{conv_ix}",
-                                             join_style=args.join_style)
-            counts["samples_same_file"] += skipped
+        if conv_questions is not None:
+            samples = samples_from_questions(conv_questions, probes)
+            for sample in samples:
+                # 手写问句**不套** `validate_sample`：那条「子问题不许挤在同一文件」是给
+                # 轮转拼样本用的（量的是单文件装不装得下），真实提问里同一章问两件事很常见。
+                # 这里只守住实验前提：一条复合问必须真的跨至少两个文件。
+                names = {((part.get("target") or {}).get("file_name"))
+                         for part in sample.get("parts") or []}
+                if len({name for name in names if name}) < 2:
+                    print(f"错误：手写样本 {sample.get('id')} 的子问题全在同一个文件，"
+                          f"不算复合检索样本")
+                    return 2
+            sample_batches = [samples]
+        else:
+            sample_batches = []
+            for size in SAMPLE_SIZES:
+                samples, skipped = build_samples(probes, size, prefix=f"c{conv_ix}",
+                                                 join_style=args.join_style)
+                counts["samples_same_file"] += skipped
+                sample_batches.append(samples)
+        for samples in sample_batches:
             for sample in samples:
                 try:
                     record = run_sample(sample, retrieve,
@@ -1477,7 +1639,7 @@ def main(argv=None):
           f"{'无数据' if median_rank is None else f'{median_rank:.1f}'}）"
           f"—— 这部分是「排序没排上来」，不是「锚点根本没把正文召回来」")
     print()
-    print("按子问数量（每条样本的子问题来自不同文件）：")
+    print("按子问数量（模板口径每条样本的子问必来自不同文件；手写问句口径不强制）：")
     for group in stats["groups"]:
         if group["path"] == "all":
             _print_group(group, args.top_k, args.extra_k)
