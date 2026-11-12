@@ -18,6 +18,7 @@ context 只覆盖 12 份，用户和模型都不知道少了一份。这类提�
 用相似度排序必然把「问句字面更像」的那几份排在前面，把边缘但必要的那几份挤掉。
 """
 from collections import OrderedDict
+import re
 
 # 「枚举 / 汇总」措辞。宁可漏判（少补一次位，行为退回今天）也不要误判（多花一次查询）——
 # 但它本身不改变答案正确性，所以误判的代价只是一次检索。
@@ -90,3 +91,49 @@ def coverage_report(hits, file_names):
         "missing": missing_files(hits, total),
         "blocks": len(hits or []),
     }
+
+
+# ── 导航页 / 行政页（2026-11-12 第十四轮实测出来的真病根）──
+#
+# 枚举 / 汇总型提问检索到的头部块里，绝大多数是**结构页而不是内容页**：
+#   · 「第N章知识导图 第1章 | 操作系统引论 第2章 | 进程的描述与控制 …」——每章都有一页，
+#     跟任何「讲的是什么 / 主要内容」的提问都极像，于是把正文页全挤掉；
+#   · 「内容导航： 1.1 … 1.2 …」——目录页；
+#   · 「第一次作业 1 简答题 2 3 4 … 标黄色为本次作业」——作业编号页，一个字的信息都没有。
+# 模型拿到这些只能复述「材料只给了章节名」，于是「覆盖变全」并不等于「答得更全」。
+#
+# 这里刻意**只降权不删除**：小语料里那页可能就是唯一的答案（例如「有哪些题型」的题型清单
+# 就长在提纲页上），删干净会让原本能答的变成答不出。顺序永远是「内容页在前、导航页在后」。
+NAVIGATION_MARKERS = (
+    "知识导图", "内容导航", "第一次作业", "第二次作业", "第三次作业", "第四次作业",
+    "标黄色为本次作业", "学习进步", "学而时习之", "课程思政小讲堂",
+)
+# 「第1章 | 第2章 | …」这种把章节名排成一张表的页面：同一块里出现 ≥5 个「第N章」几乎只有导图页
+CHAPTER_LIST_MIN = 5
+_CHAPTER_RE = re.compile(r"第\s*[0-9一二三四五六七八九十]{1,3}\s*章")
+
+
+def is_navigational(text):
+    """这一块是不是导航 / 行政页（目录、知识导图、作业编号页）。
+
+    两条判据：命中 `NAVIGATION_MARKERS`，或同一块里把章节名排成表（≥5 个「第N章」）。
+    只用于**排序**，不用于删除 —— 见本节开头那段的说明。
+    """
+    body = str(text or "")
+    if not body.strip():
+        return False
+    if any(marker in body for marker in NAVIGATION_MARKERS):
+        return True
+    return len(_CHAPTER_RE.findall(body)) >= CHAPTER_LIST_MIN
+
+
+def prefer_content(hits):
+    """稳定重排：内容页在前、导航页在后（各自保持原有相对顺序）。
+
+    为什么是「稳定分区」而不是打分排序：块之间原本的名次是检索器给的，唯一该动的信息是
+    「这块是不是结构页」。多打一层分就会引入新的口径，评测与线上都要跟着重校。
+    """
+    content, navigation = [], []
+    for item in hits or []:
+        (navigation if is_navigational(item[0]) else content).append(item)
+    return content + navigation

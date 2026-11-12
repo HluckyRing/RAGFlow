@@ -123,6 +123,9 @@ DECOMPOSE_MAX_PARTS = int(os.getenv("DECOMPOSE_MAX_PARTS", "6"))
 COVERAGE_SAMPLING = os.getenv("COVERAGE_SAMPLING", "0").strip().lower() not in ("0", "false", "no", "")
 # 最多给几份缺失文件补位（每份多一次查询）。文件很多时不能让这一次提问变成 n 次检索。
 COVERAGE_BACKFILL_MAX = int(os.getenv("COVERAGE_BACKFILL_MAX", "8"))
+# 每份缺失文件取几个候选再挑「正文页」：一份文件里最像「内容是什么」的那块往往正是它的
+# 目录页，只取 1 个就没有挑的余地（2026-11-12 第十四轮实测：头部 14 块里 10 块是知识导图）。
+COVERAGE_PER_FILE_CANDIDATES = int(os.getenv("COVERAGE_PER_FILE_CANDIDATES", "3"))
 
 
 VECTOR_DB_PATH = resolve_path(os.getenv("VECTOR_DB_PATH"), "chroma_db")

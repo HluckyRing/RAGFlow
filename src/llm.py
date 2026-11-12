@@ -1,6 +1,8 @@
 from src.config import (logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH,
-                        COVERAGE_SAMPLING, COVERAGE_BACKFILL_MAX)
-from src.coverage import coverage_report, looks_enumerative, missing_files, sample_per_file
+                        COVERAGE_SAMPLING, COVERAGE_BACKFILL_MAX,
+                        COVERAGE_PER_FILE_CANDIDATES)
+from src.coverage import (coverage_report, is_navigational, looks_enumerative, missing_files,
+                          prefer_content, sample_per_file)
 from src.hits_merge import interleave_hits
 from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE, REFUSAL_MARKER
 from src.retrieval import hyde_retrieve_hits, per_file_best
@@ -114,13 +116,19 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
 
     budget = int(top_k) if top_k else len(hits or [])
     names = [name for name, _text in files if name]
-    sampled = sample_per_file(hits, budget)
+    # 先做「内容页在前、导航页在后」的稳定分区，再做按文件轮流取样：
+    # 否则每份文件的代表块很可能就是它的「知识导图」页（第十四轮实测：头部 14 块里 10 块是导图）。
+    ordered = prefer_content(hits)
+    sampled = sample_per_file(ordered, budget)
     fresh = missing_files(sampled, names)
 
     picker = backfill or per_file_best
     filled = []
     for name in fresh[:max(0, COVERAGE_BACKFILL_MAX)]:
-        filled.extend(picker(collection, question, name, top_k=1))
+        candidates = picker(collection, question, name, top_k=COVERAGE_PER_FILE_CANDIDATES)
+        # 补位也要挑内容页：一份文件里最像「内容是什么」的那块往往正是它的目录页。
+        content = [item for item in candidates or [] if not is_navigational(item[0])]
+        filled.extend((content or candidates or [])[:1])
 
     if filled or fresh:
         report = coverage_report(list(filled) + list(sampled), names)
