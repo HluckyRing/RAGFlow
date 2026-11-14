@@ -469,6 +469,32 @@ def test_intra_file_switch_alone_leaves_cross_file_questions_untouched(monkeypat
     assert calls == []
 
 
+def test_intra_file_sampling_backfills_when_the_target_file_has_no_hits(monkeypatch):
+    """整句检索走关键词兜底时，命中块**没有 metadatas** —— 目标文件一块都认不出来也必须补位。
+
+    2026-11-14 扩 gold 时踩到的真 bug：`blocks_that_fit([])` 是 0，`len(inside) < blocks`
+    （0 < 0）不成立，于是直接返回空列表 → 模型拿到空 context → 空回答（q-ch2 就是这样）。
+    """
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", True)
+    keyword_hits = [("关键词兜底块一", None), ("关键词兜底块二", None)]
+    body = [(f"第2章正文{i}", {"file_name": "02-第2章_乙.md", "section": f"第 {i} 页",
+                              "chunk_index": i}) for i in range(1, 21)]
+    asked = {}
+
+    def backfill(_collection, _question, name, top_k=1):
+        asked["name"], asked["top_k"] = name, top_k
+        return body
+
+    out = llm.ensure_file_coverage("帮我整理第2章的内容", None,
+                                   [("02-第2章_乙.md", "正文")], keyword_hits, 39,
+                                   backfill=backfill)
+    assert asked["name"] == "02-第2章_乙.md"
+    assert asked["top_k"] == llm.COVERAGE_INTRA_FILE_CANDIDATES
+    assert out, "目标文件没有命中时要靠文件内补位，不能返回空 context"
+    assert {meta["file_name"] for _t, meta in out} == {"02-第2章_乙.md"}
+
+
 def test_intra_file_sampling_works_on_a_single_file_corpus(monkeypatch):
     """只有一份文件时也能「整理第一章」：跨文件那套才需要 ≥2 份文件。"""
     monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)

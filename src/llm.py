@@ -141,8 +141,13 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
         # 要么被装配截断后只覆盖前半章。
         blocks = blocks_that_fit(inside, COVERAGE_INTRA_FILE_BLOCKS, MAX_CONTEXT_LENGTH)
         picked = sample_evenly(inside, blocks)
-        if len(inside) < blocks:
-            # 命中里这份文件的块太少：在**这份文件内部**多取一批候选再按节铺开
+        if not inside or len(inside) < blocks:
+            # 命中里这份文件的块太少（甚至一块都没有）：在**这份文件内部**多取一批候选再按节铺开。
+            #
+            # 「一块都没有」是真实会发生的（2026-11-14 扩 gold 时踩到）：整句检索走
+            # **关键词兜底**时回来的块**没有 metadatas**，于是 `inside` 为空、`blocks_that_fit([])`
+            # 又是 0，`len(inside) < blocks` 这个判断（0 < 0）不成立 → 直接返回空列表 → 模型拿到
+            # 空 context → 空回答。所以这里必须显式判 `not inside`。
             extra = picker(collection, question, target,
                            top_k=COVERAGE_INTRA_FILE_CANDIDATES) or []
             merged = list(inside)
