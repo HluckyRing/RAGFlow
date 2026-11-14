@@ -14,6 +14,8 @@
 import pytest
 
 import src.llm as llm
+from scripts.eval_retrieval import normalize
+
 from src.coverage import (
     ENUMERATION_MARKERS,
     blocks_that_fit,
@@ -21,6 +23,7 @@ from src.coverage import (
     pick_target_file,
     sample_evenly,
     section_order,
+    structural_texts,
     coverage_report,
     file_names_of,
     is_navigational,
@@ -354,3 +357,57 @@ def test_blocks_that_fit_adapts_to_chunk_length():
     assert blocks_that_fit(long_chunks, 30, 8000) == 15, "480 字的长块只装得下 ~15 块"
     assert blocks_that_fit(short, 30, 1000) >= 1
     assert blocks_that_fit([], 30, 8000) == 0
+
+# ── 语言无关的结构页检测（2026-11-12 第十七轮）──
+#
+# 措辞表换语言就失效，但结构页有一条**语言无关**的特征：同一张目录/知识导图会在每份文件里
+# 几乎逐字重复。这里钉住：跨 ≥3 份文件的近重复才算结构页；同文件内重复、只跨 2 份文件、
+# 以及唯一的正文块都不许误伤 —— 而且要能在**完全没有中文措辞**的语料上生效。
+
+EN_TOC = ("Table of contents Chapter 1 Introduction Chapter 2 Processes "
+          "Chapter 3 Scheduling Chapter 4 Synchronization Chapter 5 Memory")
+EN_BODY = "The scheduler picks the next process from the ready queue using its priority."
+
+
+def test_structural_texts_flags_near_duplicates_across_three_files():
+    hits = [(EN_TOC + " v1", {"file_name": "a.md"}),
+            (EN_TOC + " v2", {"file_name": "b.md"}),
+            (EN_TOC + " v3", {"file_name": "c.md"}),
+            (EN_BODY, {"file_name": "d.md"})]
+    flagged = structural_texts(hits)
+    assert len(flagged) == 3, "三份文件里的目录页都要被抓出来"
+    assert normalize(EN_BODY) not in flagged
+
+
+def test_structural_texts_needs_at_least_three_files():
+    """只跨两份文件的重复可能是正常引用（同一句话被两处引用），不能当结构页。"""
+    hits = [(EN_TOC, {"file_name": "a.md"}), (EN_TOC, {"file_name": "b.md"}),
+            (EN_BODY, {"file_name": "c.md"})]
+    assert structural_texts(hits) == set()
+
+
+def test_structural_texts_ignores_repeats_within_one_file():
+    """同一份文件里的页眉页脚会重复，那不是结构页。"""
+    hits = [(EN_TOC, {"file_name": "a.md"}), (EN_TOC, {"file_name": "a.md"}),
+            (EN_TOC, {"file_name": "b.md"}), (EN_BODY, {"file_name": "c.md"})]
+    assert structural_texts(hits) == set()
+
+
+def test_is_navigational_prefers_the_language_independent_signal():
+    """英文目录页：中文措辞表一个字都命中不了，靠跨文件近重复仍要判成结构页。"""
+    hits = [(EN_TOC + " v1", {"file_name": "a.md"}),
+            (EN_TOC + " v2", {"file_name": "b.md"}),
+            (EN_TOC + " v3", {"file_name": "c.md"})]
+    flagged = structural_texts(hits)
+    assert is_navigational(EN_TOC + " v1", flagged) is True
+    assert is_navigational(EN_TOC + " v1") is False, "没有结构信号时措辞表认不出来（这正是要被替代的）"
+
+
+def test_prefer_content_puts_english_structural_pages_last():
+    hits = [(EN_TOC + " v1", {"file_name": "a.md"}),
+            (EN_TOC + " v2", {"file_name": "b.md"}),
+            (EN_TOC + " v3", {"file_name": "c.md"}),
+            (EN_BODY, {"file_name": "d.md"})]
+    ordered = prefer_content(hits)
+    assert ordered[0][0] == EN_BODY, "正文必须排到结构页前面"
+    assert [meta["file_name"] for _t, meta in ordered[-3:]] == ["a.md", "b.md", "c.md"]

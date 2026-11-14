@@ -153,6 +153,13 @@ def main(argv=None):
           f" —— 这就是拆问在真实流量上的机会")
     print(f"枚举 / 汇总措辞的提问 {stats['enumeration']} 条"
           f"（这类要的是跨全部文件取样，不是按子问分路）")
+    # 闸门靠措辞判断意图，换语言/换语料可能整片失效 —— 失效是 fail-safe 的（退回改造前行为），
+    # 但**必须看得见**：HyDE 当年就是静默失效、很久没人发现。
+    if stats["questions"] and hit_count == 0:
+        print("  [警告] 复合问闸门在整批真实提问上 **0 触发** —— 若提问语言与 "
+              "`GATE_PACK` 不匹配，拆问会静默不生效（行为退回改造前，但别以为它在工作）")
+    if stats["questions"] and stats["enumeration"] == 0:
+        print("  [警告] 枚举/汇总闸门同样 0 触发 —— 覆盖取样永远不会被激活")
     print()
     for row in gate_rows:
         mark = "复合" if row["gate"] else "单问"

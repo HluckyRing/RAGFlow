@@ -42,15 +42,14 @@ HISTORY_CHAR_LIMIT = 200
 client = config.client
 
 # ── 廉价闸门 ──
-# 这些连接词出现时，一句里几乎必然有两件事（「年假有几天还有迟到怎么算」）
-COMPOUND_MARKERS = ("还有", "以及", "另外", "顺便", "同时", "并且", "再问", "顺便问")
-# 中文里的「问」很多只能靠疑问词认出来（逗号连写时没有问号）。
-# 「呢」是**省略式追问**的信号（「一线城市限额多少，境外城市呢？」）—— 2026-11-08 实测：
-# 不收它就会漏判 2/18 条复合样本，而收它只多 0~1 条单问误判（误判只白花一次调用，
-# 漏判是整套功能对那条提问静默失效，所以宁可多问）。
-QUESTION_WORDS = ("多少", "几", "怎么", "什么", "多久", "多长", "多大", "哪些", "哪个",
-                  "哪里", "何时", "是否", "能不能", "可不可以", "要不要", "如何",
-                  "为什么", "谁", "吗", "呢")
+# 措辞表在 `src/gates/`（默认 zh）：闸门靠措辞判断意图，换语言就失效，所以外置成可插拔的包，
+# 并在调用点打触发率日志 —— 失效必须看得见。
+import src.config as _config
+from src.gates import load_pack as _load_pack
+
+_gates = _load_pack(_config.GATE_PACK, logger=_config.logger)
+COMPOUND_MARKERS = _gates.compound_markers
+QUESTION_WORDS = _gates.question_words
 _SEGMENT_SPLIT_RE = re.compile(r"[，,；;、]")
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*$")
 _BULLET_RE = re.compile(r"^\s*(?:[-*•·]|\d+\s*[.、)）]|\(\d+\))\s*")
@@ -213,8 +212,13 @@ def decompose_question(question, history=None, max_parts=None, use_gate=True):
     text = (question or "").strip()
     if not text:
         return []
-    if use_gate and not looks_compound(text):
-        return [text]
+    if use_gate:
+        # 触发率要能量出来：闸门靠措辞表判断意图，换语言/换语料可能整片失效，
+        # 而失效是静默的（功能悄悄不生效）。固定前缀方便日志里数 hit/miss。
+        if not looks_compound(text):
+            logger.info("闸门 compound=miss pack=%s", _gates.name)
+            return [text]
+        logger.info("闸门 compound=hit pack=%s", _gates.name)
     if client is None:
         logger.warning("未配置 API_KEY，跳过拆问，按原问题检索")
         return [text]

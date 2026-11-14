@@ -23,9 +23,14 @@ from src.retrieval import (init_vector_store, sanitize_collection_name, drop_col
                            chroma_meta)
 from src.llm import (resolve_query, retrieve_and_build_context, stream_answer,
                      source_list, LLMStreamError, refusal_state, strip_refusal_marker)
+from src.security import SlidingWindowLimiter
 
 # session_id -> 状态 dict。与 state 模块的缓存共用同一个对象，改动会被 _save_state 落盘。
 sessions = {}
+
+# /api/chat 限流：每问一次都要花钱调大模型。按**客户端 IP** 计数 —— session_id 是
+# 客户端自己生成的，换一个就绕过了。0 表示关闭。
+_chat_limiter = SlidingWindowLimiter(config.CHAT_RATE_LIMIT, config.CHAT_RATE_WINDOW)
 _sessions_lock = threading.Lock()
 
 _INDEX_PATH = os.path.join(os.path.dirname(__file__), "templates", "index.html")
@@ -782,6 +787,15 @@ async def chat(request: Request):
     truncate_to = data.get("truncate_to")
     if not question or not session_id:
         return JSONResponse({"error": "缺少参数"}, status_code=400)
+
+    # 限流放在最前面（早于任何检索/落盘/模型调用）：被刷时连 embedding 都不该跑
+    client_key = request.client.host if request.client else "unknown"
+    if not _chat_limiter.allow(client_key):
+        wait = max(1, int(_chat_limiter.retry_after(client_key)))
+        return JSONResponse(
+            {"error": f"请求过于频繁，请 {wait} 秒后再试"
+                      f"（每 {int(config.CHAT_RATE_WINDOW)} 秒最多 {config.CHAT_RATE_LIMIT} 次提问）"},
+            status_code=429, headers={"Retry-After": str(wait)})
     if truncate_to is not None and (isinstance(truncate_to, bool) or not isinstance(truncate_to, int)):
         return JSONResponse({"error": "truncate_to 必须是整数"}, status_code=400)
 
@@ -849,5 +863,9 @@ async def chat(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
+
+    from src.security import ensure_startup_safe
+
+    ensure_startup_safe(HOST, config.AUTH_TOKEN)
     logger.info("RAGFlow 启动: http://%s:%d", HOST, PORT)
     uvicorn.run(app, host=HOST, port=PORT)

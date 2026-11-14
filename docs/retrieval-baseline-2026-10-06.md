@@ -2106,6 +2106,80 @@ $env:COVERAGE_SAMPLING=1
 .venv/Scripts/python.exe .agents/measure_intra_cost.py  # 代价
 ```
 
+## 两条小风险的加固：启动 fail-closed + 闸门措辞表可插拔（2026-11-12 第十七轮）
+
+这两条不是检索质量，是**工程安全**与**可维护性**；但都属于「不安全或失效可以悄悄发生」
+那一类，性质与当年的 HyDE 静默失效相同，所以单独成节。
+
+### 风险一：服务没有鉴权
+
+现状：14 个路由、**零鉴权 / 零 CORS / 零限流**，唯一护栏是「默认只绑回环」。一旦照
+`AGENTS.md` 改成 `HOST=0.0.0.0`，护栏整个消失，而且**不报错不提示**：任何人可读全部对话、
+上传文件、删除会话，`/api/chat` 还能无限刷 —— 每次提问都是真金白银。
+
+改法（最小档，fail-closed）：
+
+1. `src/security.py::startup_error()` —— **对外监听（非回环）且未设 `AUTH_TOKEN` → 拒绝启动**
+   （退出码 2，中文说明给两个选项：改回回环 / 设 token）。本机回环 + 空 token **保持零摩擦**，
+   与改造前一模一样。两个启动入口（`server.py` / `src/server.py`）共用同一个出口。
+2. `/api/chat` 滑动窗口限流：按**客户端 IP** 计数（`session_id` 是客户端自己生成的，
+   换一个就绕过），默认 `CHAT_RATE_LIMIT=20 / CHAT_RATE_WINDOW=60s`，超限 429 + `Retry-After`。
+   限流判断放在最前面 —— 被刷时连 embedding 都不该跑。
+
+**一个真实信号**：限流默认值让 7 条 `test_refusal` 集体撞 429（`TestClient` 的
+`client.host` 恒为 `testclient`，一套用例里要打几十次 `/api/chat`）。已按 reranker / 拆问
+的同一套做法加 autouse 隔离（`tests/conftest.py::_never_rate_limit_chat_requests`）。
+顺带说明：**这个默认值会把同一 IP 的高频使用挡掉**，单用户问答 20 次/分钟够用，
+但将来做批量导入 / 多用户就得重定。
+
+### 风险二：闸门措辞表换语言就失效
+
+`looks_compound` / `looks_enumerative` / `is_navigational` 全靠**措辞**判断意图，而措辞表
+天生跟语言与语料绑死：换英文语料一个字都命中不了。这类失效是 **fail-safe 的**（闸门不触发
+→ 退回改造前行为），真正危险的是**静默**。
+
+改法两件：
+
+1. **表外置成可插拔的包**：`src/gates/zh.py` 放四张表，`GATE_PACK`（默认 `zh`）选包。
+   未知包名退回 `zh` 并打 WARNING；包里缺字段按空表处理（闸门不触发，绝不 `AttributeError`）。
+   加一门语言 = 加一个文件，不动任何判断逻辑。
+2. **让失效看得见**：`decompose_question` 打 `闸门 compound=hit|miss pack=zh`、
+   `ensure_file_coverage` 打 `闸门 enumerative=hit|miss`；`scripts/analyze_real_questions.py`
+   在「整批真实提问上 0 触发」时打**警告**（提示措辞表可能与该语言/语料不匹配）。
+3. **一条语言无关的结构页判据**（替代导航页措辞表的主力作用）：同一段结构说明（目录、
+   知识导图、章节清单）在不同文件里几乎逐字重复 —— 用字符 4-gram 的 Jaccard ≥ 0.6 判近重复，
+   且要求**跨 ≥3 份文件**才算出结构页（两个人引用同一句是内容，每份文件都抄一遍目录才是结构）。
+   只在候选块之间比较（≤40 块，毫秒级），不需要额外检索。
+
+**诚实的实测**：在真实中文语料上，结构信号**一块都没多抓** —— 措辞表本来就是为这份语料调的；
+它的价值在换语言，`tests/test_coverage.py` 用**完全没有中文措辞**的英文目录页证明了
+「措辞表失效时它仍能独立工作」。
+
+明确**不动**的两张表（并加测试钉住）：`src/llm.py::PRONOUNS`（影响省略式追问的补全，
+错了就答偏）与 `src/prompts.py::REFUSAL_MARKER`（前后端契约）。它们不是「降级即可」的闸门，
+不该被打包进这个可插拔的箱子里。
+
+### 仍然没做的
+
+- **没有真正的身份体系**：`session_id` 仍是客户端生成的，`AUTH_TOKEN` 只是「知道口令就能读写
+  全部对话」。真要多人用，得做账号 + 会话归属校验 + CSRF。
+- 限流是**进程内**的：重启即清零，多进程/多实例不共享（要共享得换 Redis）。
+- 结构页阈值（0.6 / 3 份文件）是在中文教材语料上定的，换语料要重校。
+
+### 怎么验证
+
+```bash
+# 启动自检：对外监听 + 无 token 必须起不来（退出码 2）
+$env:HOST="0.0.0.0"; .venv/Scripts/python.exe server.py     # → 拒绝启动
+$env:AUTH_TOKEN="<随机串>"; .venv/Scripts/python.exe server.py   # → 正常启动
+
+# 单测（不拉服务、不花 API）
+.venv/Scripts/python.exe -m pytest tests/test_security_runtime.py tests/test_gates.py -q
+
+# 结构页判据 vs 纯措辞表（真实语料，不花 API）
+.venv/Scripts/python.exe .agents/check_struct_real.py
+```
+
 ## 真实写法的复合问句：模板问句把拆问测成了送分题（2026-11-09 第十轮）
 
 ### 为什么非补这一刀

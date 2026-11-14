@@ -20,12 +20,13 @@ context 只覆盖 12 份，用户和模型都不知道少了一份。这类提�
 from collections import OrderedDict
 import re
 
-# 「枚举 / 汇总」措辞。宁可漏判（少补一次位，行为退回今天）也不要误判（多花一次查询）——
-# 但它本身不改变答案正确性，所以误判的代价只是一次检索。
-ENUMERATION_MARKERS = (
-    "列出", "列举", "所有", "全部", "各", "分别", "几个", "哪些", "多少个",
-    "总结", "汇总", "整理", "归纳", "概述", "主要内容", "讲了什么",
-)
+# 「枚举 / 汇总」措辞在 `src/gates/`（默认 zh，`GATE_PACK` 选包）：宁可漏判（少补一次位，
+# 行为退回今天）也不要误判（多花一次查询）—— 但它本身不改变答案正确性。
+import src.config as _config
+from src.gates import load_pack as _load_pack
+
+_gates = _load_pack(_config.GATE_PACK, logger=_config.logger)
+ENUMERATION_MARKERS = _gates.enumeration_markers
 
 
 def looks_enumerative(question, markers=ENUMERATION_MARKERS):
@@ -104,24 +105,28 @@ def coverage_report(hits, file_names):
 #
 # 这里刻意**只降权不删除**：小语料里那页可能就是唯一的答案（例如「有哪些题型」的题型清单
 # 就长在提纲页上），删干净会让原本能答的变成答不出。顺序永远是「内容页在前、导航页在后」。
-NAVIGATION_MARKERS = (
-    "知识导图", "内容导航", "第一次作业", "第二次作业", "第三次作业", "第四次作业",
-    "标黄色为本次作业", "学习进步", "学而时习之", "课程思政小讲堂",
-)
+NAVIGATION_MARKERS = _gates.navigation_markers
 # 「第1章 | 第2章 | …」这种把章节名排成一张表的页面：同一块里出现 ≥5 个「第N章」几乎只有导图页
 CHAPTER_LIST_MIN = 5
 _CHAPTER_RE = re.compile(r"第\s*[0-9一二三四五六七八九十]{1,3}\s*章")
 
 
-def is_navigational(text):
+def is_navigational(text, structural=None):
     """这一块是不是导航 / 行政页（目录、知识导图、作业编号页）。
 
-    两条判据：命中 `NAVIGATION_MARKERS`，或同一块里把章节名排成表（≥5 个「第N章」）。
+    三条判据，按可靠性排：
+    1. **跨文件近重复**（`structural` 参数，见 `structural_texts()`）—— 语言无关，
+       这是主力判据；
+    2. 命中 `NAVIGATION_MARKERS` 措辞表 —— 换语言就失效，只当兜底；
+    3. 同一块里把章节名排成表（≥5 个「第N章」）—— 只对中文教材式 PPT 成立。
+
     只用于**排序**，不用于删除 —— 见本节开头那段的说明。
     """
     body = str(text or "")
     if not body.strip():
         return False
+    if structural and _text_key(body) in structural:
+        return True
     if any(marker in body for marker in NAVIGATION_MARKERS):
         return True
     return len(_CHAPTER_RE.findall(body)) >= CHAPTER_LIST_MIN
@@ -133,9 +138,11 @@ def prefer_content(hits):
     为什么是「稳定分区」而不是打分排序：块之间原本的名次是检索器给的，唯一该动的信息是
     「这块是不是结构页」。多打一层分就会引入新的口径，评测与线上都要跟着重校。
     """
+    items = list(hits or [])
+    structural = structural_texts(items)      # 先算「跨文件近重复」这一条语言无关的判据
     content, navigation = [], []
-    for item in hits or []:
-        (navigation if is_navigational(item[0]) else content).append(item)
+    for item in items:
+        (navigation if is_navigational(item[0], structural) else content).append(item)
     return content + navigation
 
 
@@ -239,3 +246,61 @@ def blocks_that_fit(hits, max_blocks, max_chars=8000):
         return max(1, int(max_blocks or 1))
     fits = int(max_chars // per_block)
     return max(1, min(int(max_blocks or 1), fits))
+
+
+# ── 语言无关的「结构页」检测（2026-11-12 第十七轮）──
+#
+# 措辞表换语言就失效，但**结构页有多硬的语言无关特征**：同一段结构说明（目录、知识导图、
+# 章节清单）在不同文件里几乎逐字重复。中文语料里「第N章知识导图」在 12 份 PPT 里各有一页，
+# 英文语料里同样会是「Table of contents / Chapter 1 …」各有一页。
+#
+# 做法：字符 4-gram 的 Jaccard 相似度 ≥ 0.6 视为「近重复」，且这份近重复要**跨 ≥3 份文件**
+# 才算结构页 —— 两个人引用同一句话是内容，每份文件都抄一遍同一张目录才是结构。
+# 只在**候选块之间**比较（≤ 40 块，O(n²) 也在毫秒级），不需要额外检索。
+_STRUCTURAL_SHINGLE = 4
+_STRUCTURAL_JACCARD = 0.6
+_STRUCTURAL_MIN_FILES = 3
+
+
+def _shingles(text):
+    body = re.sub(r"\s+", "", str(text or ""))
+    if len(body) < _STRUCTURAL_SHINGLE:
+        return {body} if body else set()
+    return {body[i:i + _STRUCTURAL_SHINGLE]
+            for i in range(len(body) - _STRUCTURAL_SHINGLE + 1)}
+
+
+def _jaccard(left, right):
+    if not left or not right:
+        return 0.0
+    return len(left & right) / float(len(left | right))
+
+
+def _text_key(text):
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def structural_texts(hits, threshold=_STRUCTURAL_JACCARD, min_files=_STRUCTURAL_MIN_FILES):
+    """挑出「跨 ≥`min_files` 份文件近重复」的块文本 —— 语言无关的结构页判据。
+
+    返回**归一化文本**的集合（`prefer_content` 直接拿它比对）。
+    """
+    items = list(hits or [])
+    if len(items) < min_files:
+        return set()
+    shingle_cache = [_shingles(text) for text, _meta in items]
+    flagged = set()
+    for index, (text, meta) in enumerate(items):
+        name = (meta or {}).get("file_name")
+        neighbours = set()
+        for other_index, (_other_text, other_meta) in enumerate(items):
+            if other_index == index:
+                continue
+            other_name = (other_meta or {}).get("file_name")
+            if not other_name or other_name == name:
+                continue                    # 同一份文件内重复不算（同一章的页眉页脚会重复）
+            if _jaccard(shingle_cache[index], shingle_cache[other_index]) >= threshold:
+                neighbours.add(other_name)
+        if len(neighbours) + 1 >= min_files:
+            flagged.add(_text_key(text))
+    return flagged

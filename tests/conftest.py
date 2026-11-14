@@ -60,3 +60,18 @@ def _clear_pairs_cache():
     retrieval.clear_pairs_cache()
     yield
     retrieval.clear_pairs_cache()
+
+
+@pytest.fixture(autouse=True)
+def _never_rate_limit_chat_requests(monkeypatch):
+    """测试套件里不限流。
+
+    `CHAT_RATE_LIMIT` 默认 20 次/分钟（按客户端 IP），而 `TestClient` 的 client.host 恒为
+    `testclient` —— 一套用例里连着打几十次 `/api/chat` 会集体撞 429（实测挂了 7 条
+    test_refusal）。要测限流的用例自己注入一个小的限流器（见
+    `tests/test_security_runtime.py`），不受这里影响。
+    """
+    import src.server as server
+    from src.security import SlidingWindowLimiter
+
+    monkeypatch.setattr(server, "_chat_limiter", SlidingWindowLimiter(0))

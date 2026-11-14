@@ -114,7 +114,9 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
     if not COVERAGE_SAMPLING or not files or len(files) < 2:
         return hits
     if not looks_enumerative(question):
+        logger.info("闸门 enumerative=miss")
         return hits
+    logger.info("闸门 enumerative=hit")
 
     budget = int(top_k) if top_k else len(hits or [])
     names = [name for name, _text in files if name]

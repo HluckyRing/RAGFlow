@@ -152,6 +152,19 @@ LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8080"))
 
+# 鉴权令牌：**只有对外监听时才是必需的**（`src/security.py` 的启动自检会强制这一点）。
+# 本机回环 + 空 token 保持零摩擦，和改造前一模一样。
+AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
+
+# 闸门措辞包（`src/gates/`）：闸门靠「措辞」判断意图，换语言/换语料就可能全部失效。
+# 失效是 fail-safe 的（闸门不触发 → 退回改造前行为），但必须**看得见** —— 见
+# `scripts/analyze_real_questions.py` 的「0 触发」告警。加一门语言 = 加一个包文件。
+GATE_PACK = os.getenv("GATE_PACK", "zh").strip().lower() or "zh"
+# /api/chat 限流：每问一次都要花钱调大模型，被刷就是真金白银。
+# 0 = 关闭。按**客户端 IP** 计数（session_id 是客户端生成的，换一个就绕过）。
+CHAT_RATE_LIMIT = int(os.getenv("CHAT_RATE_LIMIT", "20"))
+CHAT_RATE_WINDOW = float(os.getenv("CHAT_RATE_WINDOW", "60"))
+
 
 def build_client(api_key, base_url, timeout):
     """构造 OpenAI 客户端。
