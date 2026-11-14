@@ -115,12 +115,43 @@ DECOMPOSE_ENABLED = os.getenv("DECOMPOSE_ENABLED", "1").strip().lower() not in (
 # 拆问最多拆几问（再多就不是「一个问题」，而是把整段话贴进来了）
 DECOMPOSE_MAX_PARTS = int(os.getenv("DECOMPOSE_MAX_PARTS", "6"))
 
-# 跨文件取样：枚举 / 汇总型提问（「列出所有的实验」「主要内容是什么」）不要静默漏掉整份文件。
-# **默认关**（2026-11-12 第十二轮）：真实日志里 13 份文件的语料装配后只覆盖 12 份，缺的那份
-# 是检索排序没捞到 —— 这个开关就是补这一刀。但它改的是**检索结果本身**（多一次限定在缺失
-# 文件内的补位查询），按本项目的约定，新行为默认关、过了门再谈默认开。
-# 关着时行为与改造前逐位一致：连 `looks_enumerative` 都不跑，一次查询都不多花。
-COVERAGE_SAMPLING = os.getenv("COVERAGE_SAMPLING", "0").strip().lower() not in ("0", "false", "no", "")
+# 覆盖取样拆成**两个开关**（2026-11-14 第十八轮）：两套行为差得很远，一个开关管两件事就没法
+# 分别评估。实测（第十三~十六轮，全部按线上预算）：
+# ① 跨文件取样（`COVERAGE_CROSS_FILE`）：枚举 / 汇总型提问保证每份文件都有代表块。**线上预算下
+#    是 no-op** —— 实体覆盖 24/38 → 24/38，导航页降权还掉到 20/38（那边是 gold 坏了，不是特性坏）。
+# ② 同文件跨节取样（`COVERAGE_INTRA_FILE`）：问句点名章号（「帮我整理第一章的内容」）时把**那一份
+#    文件**按节均匀铺开。**这条线上唯一有正面结果的一条**：2/5 拒答 → 5/5 不拒答、+16 ms。
+# 两个都默认关：按本项目约定，新行为默认关、质量门过了再谈默认开（同 reranker / DECOMPOSE_ENABLED）。
+
+
+def coverage_switches(env=None):
+    """解析覆盖取样的两个开关，返回 `(cross_file, intra_file, legacy_used)`。
+
+    老开关 `COVERAGE_SAMPLING=1` 的语义是「两个都开」（第十三~十六轮的评测脚本都按这个名字
+    跑的），保留兼容但要**出声**——它曾经代表两件事，现在只当作一次性别名。
+
+    单独抽成函数是因为「import 时读一次环境变量」在测试里没法干净地重放：
+    这条兼容语义必须能被钉住，而 `importlib.reload` 会把整个模块（含 OpenAI client）重造一遍。
+    """
+    env = os.environ if env is None else env
+
+    def on(name):
+        raw = env.get(name)
+        if raw is None:
+            return False
+        return raw.strip().lower() not in ("0", "false", "no", "")
+
+    cross_file, intra_file = on("COVERAGE_CROSS_FILE"), on("COVERAGE_INTRA_FILE")
+    legacy = on("COVERAGE_SAMPLING")
+    if legacy:
+        cross_file = intra_file = True
+    return cross_file, intra_file, legacy
+
+
+COVERAGE_CROSS_FILE, COVERAGE_INTRA_FILE, _COVERAGE_LEGACY_SWITCH = coverage_switches()
+if _COVERAGE_LEGACY_SWITCH:
+    logger.warning("COVERAGE_SAMPLING 已拆成 COVERAGE_CROSS_FILE / COVERAGE_INTRA_FILE"
+                   "（按旧语义把两个都置 1）；建议改用新名字")
 # 最多给几份缺失文件补位（每份多一次查询）。文件很多时不能让这一次提问变成 n 次检索。
 COVERAGE_BACKFILL_MAX = int(os.getenv("COVERAGE_BACKFILL_MAX", "8"))
 # 每份缺失文件取几个候选再挑「正文页」：一份文件里最像「内容是什么」的那块往往正是它的

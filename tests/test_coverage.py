@@ -15,6 +15,7 @@ import pytest
 
 import src.llm as llm
 from scripts.eval_retrieval import normalize
+from src.config import coverage_switches
 
 from src.coverage import (
     ENUMERATION_MARKERS,
@@ -115,13 +116,15 @@ FILES = [("甲.md", "甲正文"), ("乙.md", "乙正文"), ("丙.md", "丙正文
 
 @pytest.fixture
 def switch_on(monkeypatch):
-    monkeypatch.setattr(llm, "COVERAGE_SAMPLING", True)
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", True)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", True)
     monkeypatch.setattr(llm, "COVERAGE_BACKFILL_MAX", 8)
     return True
 
 
 def test_switch_off_returns_hits_untouched(monkeypatch):
-    monkeypatch.setattr(llm, "COVERAGE_SAMPLING", False)
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", False)
     calls = []
     hits = [_hit("甲", 0)]
     out = llm.ensure_file_coverage("列出所有的实验", None, FILES, hits, 5,
@@ -192,7 +195,8 @@ def test_backfill_that_returns_an_existing_chunk_does_not_duplicate(switch_on):
 
 def test_decompose_branch_does_not_also_sample(monkeypatch):
     """拆问已经按子问分路分预算，两套取样叠在一起会把预算切碎两次。"""
-    monkeypatch.setattr(llm, "COVERAGE_SAMPLING", True)
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", True)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", True)
     calls = []
     monkeypatch.setattr(llm, "ensure_file_coverage",
                         lambda *a, **k: calls.append("sampled") or a[3])
@@ -411,3 +415,69 @@ def test_prefer_content_puts_english_structural_pages_last():
     ordered = prefer_content(hits)
     assert ordered[0][0] == EN_BODY, "正文必须排到结构页前面"
     assert [meta["file_name"] for _t, meta in ordered[-3:]] == ["a.md", "b.md", "c.md"]
+
+
+# ── 两个开关分开（2026-11-14 第十八轮）──
+#
+# 之前一个 `COVERAGE_SAMPLING` 管着两套行为：跨文件取样（线上预算下实测 no-op）与同文件跨节
+# 取样（唯一有正面结果的一条）。共用一个开关就没法分别评估，也没法只开有效的那一条。
+# 这里钉住：两个开关各自独立生效、互不误触发、老开关按「两个都开」兼容并标记出来（好打 WARNING）。
+
+def test_coverage_switch_parsing_is_independent():
+    assert coverage_switches({}) == (False, False, False)
+    assert coverage_switches({"COVERAGE_CROSS_FILE": "1"}) == (True, False, False)
+    assert coverage_switches({"COVERAGE_INTRA_FILE": "1"}) == (False, True, False)
+    assert coverage_switches({"COVERAGE_CROSS_FILE": "1", "COVERAGE_INTRA_FILE": "0"}) == \
+        (True, False, False)
+    assert coverage_switches({"COVERAGE_CROSS_FILE": "false"}) == (False, False, False)
+
+
+def test_legacy_coverage_sampling_means_both_on():
+    """老开关按旧语义 = 两个都开（第十三~十六轮的评测脚本都按这个名字跑）。"""
+    assert coverage_switches({"COVERAGE_SAMPLING": "1"}) == (True, True, True)
+    assert coverage_switches({"COVERAGE_SAMPLING": "0", "COVERAGE_CROSS_FILE": "1"}) == \
+        (True, False, False)
+
+
+def test_cross_file_switch_alone_falls_back_to_the_cross_file_path(monkeypatch):
+    """关了同文件跨节 → 点名章号的提问退回第十三~十五轮那条路（每份文件补位 3 候选）。"""
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", True)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", False)
+    asked = []
+
+    def backfill(_collection, _question, name, top_k=1):
+        asked.append((name, top_k))
+        return [(f"{name}补位", {"file_name": name, "chunk_index": 99})]
+
+    files = [("01-第1章_甲.md", "正文"), ("02-第2章_乙.md", "正文")]
+    hits = [("第1章正文", {"file_name": "01-第1章_甲.md", "section": "第 1 页", "chunk_index": 1})]
+    out = llm.ensure_file_coverage("帮我整理第一章的内容", None, files, hits, 10, backfill=backfill)
+
+    assert asked == [("02-第2章_乙.md", llm.COVERAGE_PER_FILE_CANDIDATES)], \
+        "走的是跨文件补位（每份 3 个候选），不是文件内跨节（40 个候选）"
+    assert {meta["file_name"] for _t, meta in out} == {"01-第1章_甲.md", "02-第2章_乙.md"}
+
+
+def test_intra_file_switch_alone_leaves_cross_file_questions_untouched(monkeypatch):
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", True)
+    calls = []
+    hits = [_hit("甲.md", 0), _hit("乙.md", 0)]
+    out = llm.ensure_file_coverage("列出所有的实验", None, FILES, hits, 5,
+                                   backfill=lambda *a, **k: calls.append(a) or [])
+    assert out is hits, "没点名章号 + 跨文件开关关着 → 原样返回（不许顺手做另一套取样）"
+    assert calls == []
+
+
+def test_intra_file_sampling_works_on_a_single_file_corpus(monkeypatch):
+    """只有一份文件时也能「整理第一章」：跨文件那套才需要 ≥2 份文件。"""
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", True)
+    hits = [(f"第1章正文{i}", {"file_name": "01-第1章_甲.md", "section": f"第 {i} 页",
+                              "chunk_index": i}) for i in range(1, 21)]
+    out = llm.ensure_file_coverage("帮我整理第一章的内容", None,
+                                   [("01-第1章_甲.md", "正文")], hits, 39,
+                                   backfill=lambda *a, **k: [])
+    assert out, "单文件语料也要能铺开整章"
+    assert {meta["file_name"] for _t, meta in out} == {"01-第1章_甲.md"}
+    assert len(out) >= 10, "铺开整章，不是只抓头几块"

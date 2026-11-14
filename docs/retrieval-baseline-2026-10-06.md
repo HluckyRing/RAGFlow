@@ -1878,7 +1878,7 @@ $env:PORT=8098; $env:STATE_DIR=.agents/dd-off-state; $env:DECOMPOSE_ENABLED=0; p
 ```bash
 # 关（默认）/ 开，各跑一遍真实日志盘点，比文件覆盖
 .venv/Scripts/python.exe scripts/analyze_real_questions.py --hyde-cache .agents/real-log-hyde.json
-$env:COVERAGE_SAMPLING=1
+$env:COVERAGE_CROSS_FILE=1   # 2026-11-14 起开关拆分：这轮量的是跨文件取样
 .venv/Scripts/python.exe scripts/analyze_real_questions.py --hyde-cache .agents/real-log-hyde.json
 
 # 代价（闸门触发率 + 单次检索耗时）
@@ -1953,7 +1953,7 @@ $env:COVERAGE_SAMPLING=1
 .venv/Scripts/python.exe .agents/make_enum_gold.py
 
 # 两臂 × 三个语料族，预算按线上 max(10, 文件数×3)
-$env:COVERAGE_SAMPLING=0   # 再设 1 跑一遍
+$env:COVERAGE_CROSS_FILE=0   # 再设 1 跑一遍（2026-11-14 起开关拆分：这轮量的是跨文件取样）
 .venv/Scripts/python.exe scripts/measure_inline_abstention.py \
     --corpus .agents/real-3e68b4dc --queries .agents/enum-gold-3e68b4dc.json \
     --hyde-cache .agents/enum-hyde.json --top-k 39 --json .agents/enum-off39-3e68b4dc.json
@@ -2029,7 +2029,7 @@ $env:COVERAGE_SAMPLING=0   # 再设 1 跑一遍
 
 ```bash
 # 三臂各跑一遍（关 / 仅取样 / 取样+导航降权），预算按线上 max(10, 文件数×3)
-$env:COVERAGE_SAMPLING=0    # 再设 1 跑「仅取样」；导航降权与取样共用这个开关
+$env:COVERAGE_CROSS_FILE=0    # 再设 1 跑「仅取样」（2026-11-14 起开关拆分）；导航降权跟着它走
 .venv/Scripts/python.exe scripts/measure_inline_abstention.py \
     --corpus .agents/real-3e68b4dc --queries .agents/enum-gold-3e68b4dc.json \
     --hyde-cache .agents/enum-hyde.json --top-k 39 --json .agents/enum-nav39-3e68b4dc.json
@@ -2097,7 +2097,7 @@ $env:COVERAGE_SAMPLING=0    # 再设 1 跑「仅取样」；导航降权与取�
 ### 怎么复现
 
 ```bash
-$env:COVERAGE_SAMPLING=1
+$env:COVERAGE_INTRA_FILE=1   # 2026-11-14 起开关拆分：这轮量的是同文件跨节取样
 .venv/Scripts/python.exe scripts/measure_inline_abstention.py \
     --corpus .agents/real-3e68b4dc --queries .agents/enum-gold-3e68b4dc.json \
     --hyde-cache .agents/enum-hyde.json --top-k 39 --json .agents/enum-intra30-3e68b4dc.json
@@ -2105,6 +2105,43 @@ $env:COVERAGE_SAMPLING=1
 .venv/Scripts/python.exe .agents/judge_intra30.py       # 判定
 .venv/Scripts/python.exe .agents/measure_intra_cost.py  # 代价
 ```
+
+## 覆盖取样拆成两个开关（2026-11-14 补，无新测量）
+
+**为什么动**：第十三~十六轮把两套完全不同的行为塞进了一个 `COVERAGE_SAMPLING` ——
+**跨文件取样**（线上预算下实测 no-op：24/38 → 24/38）与**同文件跨节取样**（这条线上唯一有正面
+结果的一条：2/5 拒答 → 5/5 不拒答）。一个开关管两件事，结果是**没法分别评估、也没法只开有效的
+那一条**：想只开文件内跨节，就必须同时把已经证明是 no-op 的跨文件取样也打开。
+
+**现在的语义**（`src/config.py`）：
+
+| 开关 | 管什么 | 生效前提 | 默认 |
+| --- | --- | --- | --- |
+| `COVERAGE_CROSS_FILE` | 按文件轮流取样 + 补位缺失文件 | 枚举 / 汇总措辞 + **≥2 份文件** | 0 |
+| `COVERAGE_INTRA_FILE` | 问句点名章号时，把那一份文件按节铺开 | 枚举 / 汇总措辞 + **认得出章号**（一份文件也能用） | 0 |
+| `COVERAGE_SAMPLING`（老） | 兼容别名：= 两个都开，并打一次 WARNING | —— | （不设） |
+
+两条路的互斥关系不变：认出了目标文件走文件内，否则才跨文件。两条**语义取舍**（都有测试钉住）：
+
+1. **只开跨文件**时，点名章号的提问**退回第十三~十五轮那条路**（按文件取样 + 每份缺失文件补位
+   `COVERAGE_PER_FILE_CANDIDATES=3` 个候选）。这样 `COVERAGE_CROSS_FILE=1` 精确复现拆开前的
+   行为 —— 做 A/B 时只差一个变量，不用怀疑「是不是顺手把文件内取样也带上了」。
+2. **只开文件内**时，没点名章号的枚举型提问**原样返回**：那是另一套行为，不许顺手带上
+   （否则「只开有效的那一条」就变成了「开着一条、悄悄做另一条」）。
+
+**顺手修掉的一个边界**：拆分前 `len(files) < 2` 在函数最前面就把**所有**取样挡掉了 ——
+包括文件内跨节。现在跨文件那条才要求 ≥2 份文件，**只有一份文件的语料也能「整理第一章」**。
+
+`coverage_switches(env)` 把解析逻辑单独抽成函数：`import` 时读一次环境变量在测试里没法干净地
+重放（`importlib.reload` 会连 OpenAI client 一起重造），而老开关的兼容语义恰恰必须被钉住。
+
+**验证**：`tests/test_coverage.py` 新增 5 条（两个开关独立解析 / 老开关等价于两个都开 /
+只开跨文件时退回跨文件路且补位候选数=3 / 只开文件内时跨文件提问原样返回 / 单文件语料也能跨节
+取样）；变异检查两处 —— ① 无视 `COVERAGE_INTRA_FILE` 仍去认章号 ② 去掉「只开文件内时原样返回」
+的闸，两者都如期变红（`.agents/mutation_check_switches.py`，未入库）。
+
+**本节没有新测量**：拆开关不改变任何已测口径下的数字，第十三~十六节的结论原样有效。
+默认值仍是两个 0，理由不变（跨文件是 no-op；文件内有效样本只有 1 条）。
 
 ## 两条小风险的加固：启动 fail-closed + 闸门措辞表可插拔（2026-11-12 第十七轮）
 

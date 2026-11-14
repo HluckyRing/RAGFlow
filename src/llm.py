@@ -1,5 +1,5 @@
 from src.config import (logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH,
-                        COVERAGE_SAMPLING, COVERAGE_BACKFILL_MAX,
+                        COVERAGE_CROSS_FILE, COVERAGE_INTRA_FILE, COVERAGE_BACKFILL_MAX,
                         COVERAGE_PER_FILE_CANDIDATES, COVERAGE_INTRA_FILE_BLOCKS,
                         COVERAGE_INTRA_FILE_CANDIDATES)
 from src.coverage import (coverage_report, is_navigational, looks_enumerative, missing_files,
@@ -102,21 +102,30 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
     `MAX_DISTANCE` 距离闸门」筛掉的，而且**没有任何提示**。这类提问要的是跨文件的代表性
     取样，不是「最相关的 k 块」。
 
-    三条边界（都有测试钉住）：
+    **两个开关，两套行为**（2026-11-14 拆开，之前共用一个 `COVERAGE_SAMPLING`）：
 
-    - 开关关着 / 只有一份文件 / 问句不像枚举 → **原样返回**，一次查询都不多花；
+    - `COVERAGE_CROSS_FILE`：跨文件取样（按文件轮流取样 + 补位缺失文件）；
+    - `COVERAGE_INTRA_FILE`：同文件跨节取样（问句点名章号时把那一份文件按节铺开）。
+      两条路互斥：认出了目标文件就走文件内，否则才跨文件。只开文件内时，没点名章号的
+      枚举型提问**原样返回**（那是另一套行为，不该顺手带上）。
+
+    四条边界（都有测试钉住）：
+
+    - 两个开关都关着 / 没有文件元数据 / 问句不像枚举 → **原样返回**，一次查询都不多花；
     - **块预算不变**：补位块排最前，总数仍截到 `top_k` —— 靠取样取胜，不靠塞更多 token；
     - 补位只针对**缺的那几份**，且最多 `COVERAGE_BACKFILL_MAX` 份 —— 不能让一次提问变成
-      n 次检索。
+      n 次检索；
+    - 跨文件那条要求 ≥2 份文件（单文件没有「跨」可言），文件内跨节**一条文件就能用**。
 
     返回顺序：先补位块（保证装配阶段不会先被字符上限截掉），再是按文件轮流取样的结果。
     """
-    if not COVERAGE_SAMPLING or not files or len(files) < 2:
+    if not files or not (COVERAGE_CROSS_FILE or COVERAGE_INTRA_FILE):
         return hits
     if not looks_enumerative(question):
         logger.info("闸门 enumerative=miss")
         return hits
-    logger.info("闸门 enumerative=hit")
+    logger.info("闸门 enumerative=hit cross=%d intra=%d",
+                bool(COVERAGE_CROSS_FILE), bool(COVERAGE_INTRA_FILE))
 
     budget = int(top_k) if top_k else len(hits or [])
     names = [name for name, _text in files if name]
@@ -124,7 +133,7 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
 
     # 先看这句话是不是「要某一章/某一份文件的内容」——那种需求要的是**文件内部跨节**铺开，
     # 而不是跨文件代表性。两条路的判据互斥：认出了目标文件就走文件内取样。
-    target = pick_target_file(question, names)
+    target = pick_target_file(question, names) if COVERAGE_INTRA_FILE else None
     if target:
         inside = prefer_content([(text, meta) for text, meta in hits or []
                                  if (meta or {}).get("file_name") == target])
@@ -149,6 +158,12 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
         logger.info("同文件跨节取样：目标文件「%s」，命中 %d 块 → 按节取 %d 块",
                     target, len(hits or []), len(picked))
         return picked
+
+    if not COVERAGE_CROSS_FILE:
+        logger.info("只开了同文件跨节取样（COVERAGE_CROSS_FILE=0）且问句没点名章号 → 原样返回")
+        return hits
+    if len(names) < 2:
+        return hits
 
     # 否则按文件轮流取样：枚举 / 汇总型提问要的是跨文件的代表性
     # 先做「内容页在前、导航页在后」的稳定分区，否则每份文件的代表块很可能就是它的知识导图页。
