@@ -100,53 +100,70 @@ context 中位 5 080 → 7 560 字符，生成 13.6 → 17.8 s。
 
 ## 结束时状态
 
-- 本地 `main` 起点 `5a330ef`（= `origin/main`），本轮提交在其之上（未推送）。
-- 全量 `pytest tests -q` → **730 passed**（起点 727）。
-- 基线文档 **2553 行**（起 2435）；`AGENTS.md` / `CLAUDE.md` 均 **190 行**，
+- 本地 `main` = `origin/main` = **`2847160`**。本篇覆盖的提交：`e201196`（A+B + 覆盖说明 +
+  默认改开）、`2847160`（`.agents/` 入 `.gitignore`），**均已推送**；起点是 `5a330ef`。
+- 全量 `pytest tests -q` → **750 passed**（起点 727）。
+- 基线文档 **2600 行**（起 2435）；`AGENTS.md` / `CLAUDE.md` 均 **192 行**，
   仍只差 4 处工具文本（`git diff --no-index -U0` = 8 行）。
-- 线上默认不变：`COVERAGE_CROSS_FILE=0`、`COVERAGE_INTRA_FILE=0`、`DECOMPOSE_ENABLED=1`、
+- 线上默认：`COVERAGE_INTRA_FILE=1`（本日改开）、`COVERAGE_CROSS_FILE=0`、`DECOMPOSE_ENABLED=1`、
   `FUSION_ENABLED=1` + `FUSION_GATE=intersect`、`RERANK_ENABLED=0`、`ANSWERABILITY_CHECK=0`、
   `CHUNK_SIZE=480`、`MAX_DISTANCE=0.55`、`COVERAGE_INTRA_FILE_BLOCKS=200`（预算说了算）、
   `COVERAGE_INTRA_FILE_CANDIDATES=400`（整章枚举上限）。
-- 原始证据留在 `.agents/`（未入库）：`ml-29e53011/`（语料）、`ml-gold-29e53011.json`、
-  `ml-hyde.json`、`ml-off10.json`、`ml-on10.json`、`ml-on10-ab.json`、
-  `intra-on39-ab.json`、`build_ml_corpus.py`、`make_ml_gold.py`、`judge_ab.py`、
-  `debug_sampled_pages.py`、`mutation_check_switches.py`。
+- 原始证据留在 `.agents/`（**2026-11-15 起已被 `.gitignore` 忽略**，见本节末尾）：
+  `ml-29e53011/`（语料）、`ml-gold-29e53011.json`、`ml-hyde.json`、`ml-off10.json`、
+  `ml-on10.json`、`ml-on10-ab.json`、`intra-on39-ab.json`、`build_ml_corpus.py`、
+  `make_ml_gold.py`、`judge_ab.py`、`debug_sampled_pages.py`、`smoke_coverage_note.py`、
+  `mutation_check_switches.py`、`mutation_check_ignore.py`。
 
-## 待办（按优先级）
+## 补（同日晚）：覆盖说明上线 + 默认改开 + `.agents/` 入 `.gitignore`
 
-1. **`COVERAGE_INTRA_FILE` 默认值拍板**：质量判据已过（PPT 97% / ML 93%，无回归），
-   差的是「+2~4 s 生成、context 逼近 8000」这笔账要不要付 —— **产品决策**。
-2. **「只覆盖 N/M 页」的提示**：现在 100 页的章只能覆盖 ~75% 的页，模型和用户都不知道少了什么
-   （要动 prompt 与 SSE 契约，第十三轮起欠着，这次有数字支撑了）。
-3. **机器学习语料补到 5–6 章**：现在只有 3 条样本（一条 6.7pp），且第1章前面夹着 4 页课程介绍。
-4. **「内容提要」页要不要进 `NAVIGATION_MARKERS`**：它们现在被当正文参与取样，占掉 1–2 个名额。
-5. 其余照旧：拆问的真实收益仍无法验证；章节级汇总量尺；更大语料；多 seed；并发只压到 8。
+### 1) 覆盖说明：只摘了 N/M 段要说出来
 
-
-## 补（同日晚）：覆盖说明上线 + \COVERAGE_INTRA_FILE\ 默认改开
-
-A+B 让质量判据过了，但还欠一件**诚实性**的事：\MAX_CONTEXT_LENGTH=8000\ 装不下 100 页课件
-（第2章整章 15 616 字符），取样必然只覆盖一部分页 —— 而模型和用户都不知道少了什么。所以先把
-这本账两边说清楚，再把开关打开：
+A+B 让质量判据过了，但还欠一件**诚实性**的事：`MAX_CONTEXT_LENGTH=8000` 装不下 100 页课件
+（第2章整章 15 616 字符），取样必然只覆盖一部分页 —— 而模型和用户都不知道少了什么。
 
 | 环节 | 做了什么 |
 | --- | --- |
-| 取样 | \ensure_file_coverage(..., coverage_out=dict)\ 填 \{file_name, covered, total}\（**只报段数不报页**：md 一块 480 字，报页会撒谎） |
+| 取样 | `ensure_file_coverage(..., coverage_out=dict)` 填 `{file_name, covered, total}`（**只报段数不报页**：md 一块 480 字，报页会撒谎） |
 | 模型侧 | context **最前面**插一句【覆盖说明】：「本次只从《X》里摘录了 43/110 段…请如实说明只覆盖了部分小节，不要假装看过全部内容」；全覆盖不插 |
-| 用户侧 | SSE 新增 \coverage\ 事件（与 \sources\ 同一时机、第一个 token 之前），并**跟着消息落盘**，刷新后还在 |
-| 前端 | \uildCoverageTag\ 渲染成「ℹ️ 本次只摘录了《X》的 43/110 段」小标签（\	extContent\，文件名不进 innerHTML） |
+| 用户侧 | SSE 新增 `coverage` 事件（与 `sources` 同一时机、第一个 token 之前），并**跟着消息落盘**，刷新后还在 |
+| 前端 | `buildCoverageTag` 渲染成「ℹ️ 本次只摘录了《X》的 43/110 段」小标签（`textContent`，文件名不进 innerHTML） |
 | 拒答 | **不推、不落**（与「拒答不挂来源」同一条纪律） |
 
-据此 \COVERAGE_INTRA_FILE\ 默认 **0 → 1**；跨文件取样仍 0（线上预算下是 no-op）；老开关
-\COVERAGE_SAMPLING\ **显式写了就以它为准**（\=0\ 仍是两个都关），并打 WARNING。
-\	ests/conftest.py\ 加 autouse 隔离：测试里默认关掉两个覆盖开关（否则「枚举措辞 + 章节号」的
+据此 `COVERAGE_INTRA_FILE` 默认 **0 → 1**；跨文件取样仍 0（线上预算下是 no-op）；老开关
+`COVERAGE_SAMPLING` **显式写了就以它为准**（`=0` 仍是两个都关），并打 WARNING。
+`tests/conftest.py` 加 autouse 隔离：测试里默认关掉两个覆盖开关（否则「枚举措辞 + 章节号」的
 用例会换检索路径、context 多一句话）—— 与 reranker / 拆问 / 限流同一套做法。
 
-**验证**：\pytest\ 730 → **741 passed**（+11 条：覆盖账 2 / 填账 1 / context 说明 1 /
-SSE 事件 + 落盘 1 / 拒答不推 1 / 前端渲染 4 / 前端静态 1）；变异检查扩到 **8 项全红**
-（新增：不填覆盖账 / 不插说明 / 不推事件）；默认配置冒烟（机器学习第2章、不改任何环境变量）：
-\covered=43/110\、context **7 067 字符 / 43 块**、开头即【覆盖说明】。
+**验证**：`pytest` 730 → **741 passed**（+11 条：覆盖账 2 / 填账 1 / context 说明 1 /
+SSE 事件 + 落盘 1 / 拒答不推 1 / 前端渲染 4 / 前端静态 1）；变异检查扩到 **8 项全红**；
+默认配置冒烟（机器学习第2章、不改任何环境变量）：`covered=43/110`、context **7 067 字符 /
+43 块**、开头即【覆盖说明】。
 
-**没做到**：只有总账，**说不出缺的是哪一节**（要做得先解析章内小节标题）；覆盖说明本身占
-~90 字 context；前端只验证了 Node \m\ + DOM 替身。
+**没做到**：只有总账，**说不出缺的是哪一节**（要先解析章内小节标题）；覆盖说明本身占 ~90 字
+context；前端只验证了 Node `vm` + DOM 替身。
+
+### 2) `.agents/` 写进 `.gitignore`（用户数据保护）
+
+`.agents/` 一直是「约定不入库」——没被跟踪、**但也没被忽略**，而它里面是用户上传 PDF 的
+**解析文本**（`.agents/ml-*/`、`.agents/real-*/`、`cc-corpus/`）、模型回答全文与各轮原始 JSON。
+一次 `git add -A` 就会把这些推进公开仓库。
+
+- `.gitignore` 新增 `.agents/`（并改掉原来「那个不在这里忽略是刻意的」那句注释）；
+- 守卫是**功能断言**：`tests/test_repo_hygiene.py` 新增 9 条 —— `uploads/` `state/` `data/`
+  `chroma_db/` `.agents/` `MEMORY.md` 等 8 个路径逐个问 `git check-ignore`，另加一条
+  `test_agents_workspace_is_not_tracked` 挡住「已经被跟踪、再加忽略也没用」；
+- 变异检查 `.agents/mutation_check_ignore.py`：拿掉 `.agents/` 后 2 条守卫如期变红；
+- 复核：`git ls-files` 无任何 pdf/docx/pptx/xlsx，`git log --all --name-only` 从未出现
+  `uploads/` `state/` `data/`；探过 PDF 原文片段与老师姓名/邮箱，公开仓库里一个都没命中
+  （只有文件名、页数这类元信息）；
+- 纪律写进 `AGENTS.md` / `CLAUDE.md` / `INDEX.md`：**别用 `git add -A`，只按路径添加**。
+
+## 待办（按优先级）
+
+1. **「缺的是哪一节」**：覆盖说明只有总账（N/M 段），说不出少的是哪几节（要先解析章内小节标题）。
+2. **机器学习语料补到 5–6 章**（现在 3 条样本，一条 6.7pp）；**「内容提要」页要不要进
+   `NAVIGATION_MARKERS`**（现在被当正文占名额）。
+3. **章号之外的指代定位**（「这份材料」「上面那个实验」现在一律不定位）。
+4. **拆问的真实收益仍无法验证**（真实日志没有复合问）；生成侧没量的两头：多轮 + 复合、缺口点明率。
+5. 其余照旧：章节级汇总量尺；更大语料；兜底复合覆盖 0 条；多 seed；并发只压到 8。
