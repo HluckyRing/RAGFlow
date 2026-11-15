@@ -23,6 +23,11 @@ kb_state.json.migrated
 state/
 uploads/
 
+# 评测/调试工作区：里面是**用户语料的解析文本**（.agents/ml-*/、.agents/real-*/、cc-corpus/）、
+# 模型回答全文与各轮原始 JSON —— 以前只靠「约定不入库」（未被跟踪但也没被忽略），
+# 一次 `git add -A` 就会把这些推进公开仓库。2026-11-15 起显式忽略。
+.agents/
+
 # 构建产物
 dist/
 build/
@@ -40,5 +45,4 @@ Thumbs.db
 .claude/
 
 # 本地跨会话记忆：DSH 的 MEMORY.md 是手工维护的工作记忆，按约定不进版本库
-# （同理，.agents/ 也保持 untracked，见 AGENTS.md；那个不在这里忽略是刻意的）
 MEMORY.md

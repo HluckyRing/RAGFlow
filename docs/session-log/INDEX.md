@@ -72,9 +72,14 @@
 
 ## 现状（2026-11-15 收尾：A+B + 覆盖说明，`COVERAGE_INTRA_FILE` 默认开）
 
-- **已同步**：本地 `main` 起点 `5a330ef`（= `origin/main`），其上另有 2026-11-15 的两个提交
-  （整章枚举 A+B / 覆盖说明 + 默认改开），**未推送**；全量 `pytest tests -q` → **741 passed**；
-  工作区只有刻意的 `?? .agents/`。
+- **已同步**：本地 `main` 起点 `5a330ef`（= `origin/main`），其上另有 2026-11-15 的三个提交
+  （整章枚举 A+B / 覆盖说明 + 默认改开 / `.agents/` 进 `.gitignore`）；全量 `pytest tests -q` →
+  **750 passed**。
+- **用户数据不会被误提交**：`uploads/` / `state/` / `data/` / `chroma_db/` 一直在 `.gitignore` 里，
+  2026-11-15 又把 **`.agents/`** 加进去 —— 它里面是**用户上传文件的解析文本**、模型回答全文与
+  各轮原始 JSON，以前只靠「约定不入库」，一次 `git add -A` 就会推进公开仓库。守卫是**功能断言**
+  （`tests/test_repo_hygiene.py` 直接问 `git check-ignore`，另有一条挡「已跟踪再加忽略无效」），
+  不是「.gitignore 里有这行字符串」。改完 `git status` 不再出现 `?? .agents/`。
 - **覆盖取样**：`COVERAGE_INTRA_FILE` **默认 1**（2026-11-15 过质量门 + 覆盖说明上线），
   `COVERAGE_CROSS_FILE` **仍 0**（线上预算下是 no-op）；老开关 `COVERAGE_SAMPLING` 显式写了
   就以它为准 + WARNING。文件内取样 = **整章枚举**（`retrieval.file_blocks`）+ **块数按字符预算
@@ -217,6 +222,8 @@
 5. **提交纪律**：`type(scope): 中文` + `验证:` 证据；UTF-8 无 BOM 草稿 +
    `git commit --cleanup=verbatim -F`；提交前重跑验证、不复用旧结果；**只本地提交不推送**
    （推送需用户显式授权，推后回读 `git ls-remote` 核对）。
+   **别用 `git add -A` / `git add .`**：只按路径 `git add` 具体文件 —— 用户数据目录虽然都在
+   `.gitignore` 里（含 2026-11-15 起显式忽略的 `.agents/`），但白名单式添加才是最后一道保险。
 6. **推 GitHub 只能走 SSH over 443**：`github.com` 与 `api.github.com` 的 HTTPS在这台机器上
    被挡（直连/走 Clash 7897 都是 000，Clash 上游节点还经常整体挂掉），`codeload` 与
    `ssh.github.com:443` 可达。本仓库 `origin` 已改为
