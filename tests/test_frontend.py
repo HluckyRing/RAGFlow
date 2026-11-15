@@ -400,3 +400,12 @@ def test_frontend_reads_the_searched_files_count_defensively():
     assert "d.searched_files" in html, "要接住服务端推的计数"
     assert "typeof d.searched_files === 'number'" in html, "形状不对时不能硬用"
     assert "entry.searched_files = searchedFiles" in html, "计数要跟着消息走，刷新后还能显示"
+
+
+def test_frontend_handles_the_coverage_event():
+    """覆盖说明（2026-11-15）：只摘了目标文件的 N/M 段时要显示、要落盘、刷新后还要在。"""
+    html = _html()
+    assert "d.type==='coverage'" in html, "前端必须处理 coverage 事件"
+    assert "entry.coverage = coverage" in html, "覆盖说明要跟着消息走，否则刷新就丢了"
+    assert "m.coverage" in html, "刷新后 renderChat 要把它画出来"
+    assert "本次只摘录了" in html

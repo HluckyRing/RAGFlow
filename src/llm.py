@@ -2,12 +2,12 @@ from src.config import (logger, client, MODEL_NAME, MAX_CONTEXT_LENGTH,
                         COVERAGE_CROSS_FILE, COVERAGE_INTRA_FILE, COVERAGE_BACKFILL_MAX,
                         COVERAGE_PER_FILE_CANDIDATES, COVERAGE_INTRA_FILE_BLOCKS,
                         COVERAGE_INTRA_FILE_CANDIDATES)
-from src.coverage import (coverage_report, is_navigational, looks_enumerative, missing_files,
-                          blocks_that_fit, pick_target_file, prefer_content, sample_evenly,
-                          sample_per_file)
+from src.coverage import (coverage_report, intra_file_notice, intra_file_report, is_navigational,
+                          looks_enumerative, missing_files, blocks_that_fit, pick_target_file,
+                          prefer_content, sample_evenly, sample_per_file)
 from src.hits_merge import interleave_hits
 from src.prompts import QA_SYSTEM_PROMPT_TEMPLATE, REFUSAL_MARKER
-from src.retrieval import hyde_retrieve_hits, per_file_best
+from src.retrieval import hyde_retrieve_hits, per_file_best, file_blocks
 from src.text_utils import content_phrases
 
 # 指代词。刻意不收裸「这」「那」：它们太常见（「这是什么」并不需要指代消解），
@@ -94,7 +94,7 @@ def _format_source_block(text, meta):
     return f"【来源：{_source_label(meta)}】\n{text}"
 
 
-def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None):
+def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None, coverage_out=None):
     """枚举 / 汇总型提问：在**同一个块预算**内保证每份文件都有代表块。
 
     为什么需要它（2026-11-12 第十二轮实测）：13 份文件的语料里，真实用户问「该知识库的
@@ -118,6 +118,9 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
     - 跨文件那条要求 ≥2 份文件（单文件没有「跨」可言），文件内跨节**一条文件就能用**。
 
     返回顺序：先补位块（保证装配阶段不会先被字符上限截掉），再是按文件轮流取样的结果。
+    `coverage_out` 是**可选的出参 dict**（见 `coverage.intra_file_report`）：文件内取样时填一本
+    「这次摘了几段 / 整份文件几段」的账，供 prompt 与 SSE 把「只覆盖了一部分」说出来 ——
+    8000 字上下文装不下 100 页课件，不说清楚用户会以为拿到了整章。
     """
     if not files or not (COVERAGE_CROSS_FILE or COVERAGE_INTRA_FILE):
         return hits
@@ -141,15 +144,24 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
         # 要么被装配截断后只覆盖前半章。
         blocks = blocks_that_fit(inside, COVERAGE_INTRA_FILE_BLOCKS, MAX_CONTEXT_LENGTH)
         picked = sample_evenly(inside, blocks)
+        total_blocks = len(inside)
         if not inside or len(inside) < blocks:
-            # 命中里这份文件的块太少（甚至一块都没有）：在**这份文件内部**多取一批候选再按节铺开。
+            # 命中里这份文件的块太少（甚至一块都没有）：把**这份文件的所有块**取回来再按节铺开。
             #
-            # 「一块都没有」是真实会发生的（2026-11-14 扩 gold 时踩到）：整句检索走
-            # **关键词兜底**时回来的块**没有 metadatas**，于是 `inside` 为空、`blocks_that_fit([])`
-            # 又是 0，`len(inside) < blocks` 这个判断（0 < 0）不成立 → 直接返回空列表 → 模型拿到
-            # 空 context → 空回答。所以这里必须显式判 `not inside`。
-            extra = picker(collection, question, target,
-                           top_k=COVERAGE_INTRA_FILE_CANDIDATES) or []
+            # 两条都是实测踩出来的：
+            # ① 「一块都没有」是真实会发生的（2026-11-14 扩 gold 时踩到）：整句检索走
+            #    **关键词兜底**时回来的块**没有 metadatas**，于是 `inside` 为空、
+            #    `blocks_that_fit([])` 又是 0，`len(inside) < blocks`（0 < 0）不成立 →
+            #    直接返回空列表 → 模型拿到空 context → 空回答。所以这里必须显式判 `not inside`。
+            # ② 「整章枚举」而不是「最相似的 40 个候选」（2026-11-15 A+B）：按相似度挑候选，
+            #    在 100 页的课件上覆盖不到章尾（第1章 sklearn 94–96 页、第2章 决定系数 88–101 页
+            #    整块落空），「整理整章」实际只整理了前 2/3 章。`file_blocks` 用
+            #    `collection.get(where=...)` 把整份文件拿全，再按节均匀取样。
+            if backfill is not None:
+                extra = backfill(collection, question, target,
+                                 top_k=COVERAGE_INTRA_FILE_CANDIDATES) or []
+            else:
+                extra = file_blocks(collection, target, cap=COVERAGE_INTRA_FILE_CANDIDATES)
             merged = list(inside)
             seen = {(text, (meta or {}).get("chunk_index")) for text, meta in merged}
             for text, meta in extra:
@@ -158,10 +170,13 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
                     seen.add(key)
                     merged.append((text, meta))
             pool = prefer_content(merged)
+            total_blocks = len(pool)
             picked = sample_evenly(pool, blocks_that_fit(pool, COVERAGE_INTRA_FILE_BLOCKS,
                                                          MAX_CONTEXT_LENGTH))
-        logger.info("同文件跨节取样：目标文件「%s」，命中 %d 块 → 按节取 %d 块",
-                    target, len(hits or []), len(picked))
+        logger.info("同文件跨节取样：目标文件「%s」，命中 %d 块 → 按节取 %d 块（整份 %d 块）",
+                    target, len(hits or []), len(picked), total_blocks)
+        if coverage_out is not None:
+            coverage_out.update(intra_file_report(picked, total_blocks, target))
         return picked
 
     if not COVERAGE_CROSS_FILE:
@@ -202,7 +217,7 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
 
 
 def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose,
-                   history=None):
+                   history=None, coverage_out=None):
     """取检索块：**单问就照旧走整句**，复合问句才每问分路。
 
     三条边界都是刻意的：
@@ -237,7 +252,8 @@ def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, de
                                   top_k=top_k, files=files)
         # 跨文件取样只作用在「整句检索」这条路上：拆问已经按子问分路，各自的预算由
         # `interleave_hits` 管，两套取样叠在一起会把预算切碎两次。
-        return ensure_file_coverage(question, collection, files, hits, top_k)
+        return ensure_file_coverage(question, collection, files, hits, top_k,
+                                    coverage_out=coverage_out)
 
     resolved = [resolve_query(text, history or []) for text in questions]
     if resolved != questions:
@@ -259,7 +275,7 @@ def _retrieve_hits(question, collection, full_text, use_vector, top_k, files, de
 
 
 def retrieve_and_build_context(question, full_text, collection, use_vector, top_k=None,
-                               files=None, decompose=None, history=None):
+                               files=None, decompose=None, history=None, coverage_out=None):
     """检索，并按「块边界」装配参考背景，每块带上来源。
 
     两件事叠在一起：
@@ -280,9 +296,13 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
     问句拆成 ≥2 条，就走「每问分路检索」（2026-11-08 实测同预算下覆盖 45.9% → 81.1%）。
     不给（默认）时行为与改造前完全一致。`history` 是**不含当前提问**的历史快照，
     只用于两件事：拆问时补全省略式追问、以及拆出来的每条子问过一遍 `resolve_query`。
+
+    `coverage_out` 是**可选的出参 dict**：文件内跨节取样时会被填上「摘了几段 / 整份几段」，
+    并且在 context 最前面插一句【覆盖说明】告诉模型「你只看到一部分，别假装看全了」。
+    同一本账由 `server` 通过 SSE 推给前端 —— **模型和用户知道的是同一件事**。
     """
     hits = _retrieve_hits(question, collection, full_text, use_vector, top_k, files, decompose,
-                          history=history)
+                          history=history, coverage_out=coverage_out)
     if not hits:
         return "", []
 
@@ -307,6 +327,13 @@ def retrieve_and_build_context(question, full_text, collection, use_vector, top_
 
     ordered = _order_pairs_by_position([(text, meta) for text, meta, _ in used], full_text)
     context = "\n\n".join(_format_source_block(text, meta) for text, meta in ordered)
+    # 覆盖说明要进模型的眼睛：8000 字上下文装不下 100 页课件，不说清楚它会以为拿到了整章
+    # （而且它会照这个错误前提「整理」出一份看起来很完整的摘要）。
+    notice = intra_file_notice(coverage_out)
+    if notice:
+        context = notice + "\n\n" + context
+        logger.info("覆盖说明已插入 context：摘录 %s/%s 段",
+                    (coverage_out or {}).get("covered"), (coverage_out or {}).get("total"))
     return context, [_used_entry(text, meta) for text, meta in ordered]
 
 

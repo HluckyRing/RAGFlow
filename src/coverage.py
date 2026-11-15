@@ -198,6 +198,37 @@ def pick_target_file(question, file_names):
     return matched[0] if len(matched) == 1 else None
 
 
+def intra_file_report(picked, total_candidates, file_name):
+    """整章取样的**覆盖账**：这次到底摘了几段、目标文件一共几段（PDF/PPT 上一段 = 一页）。
+
+    为什么需要它（2026-11-15）：内置上下文预算 `MAX_CONTEXT_LENGTH=8000` 装不下 100 页的课件
+    （整章 10 541–15 616 字符），取样必然只覆盖一部分页。**模型和用户都不知道少了什么** ——
+    回答看起来像「整章都整理完了」，实际上章尾整段没读到。有了这本账才能：
+    ① 在 context 里告诉模型「你只看到 N/M 段，别假装看全了」；
+    ② 通过 SSE 告诉用户同一件事（前端渲染成一个小标签）。
+
+    只用计数、不用比例：一段一页的语料上两者等价，而 md 语料一段 480 字，
+    报「N/M 段」永远为真，报「页」会撒谎。
+    """
+    covered = len(picked or [])
+    total = max(int(total_candidates or 0), covered)
+    return {"kind": "intra_file", "file_name": file_name or "",
+            "covered": covered, "total": total}
+
+
+def intra_file_notice(report):
+    """把覆盖账翻译成**给模型看的一句话**；全覆盖（或没有账）返回空串。"""
+    if not report or report.get("kind") != "intra_file":
+        return ""
+    covered, total = int(report.get("covered") or 0), int(report.get("total") or 0)
+    if covered <= 0 or total <= 0 or covered >= total:
+        return ""
+    name = report.get("file_name") or "这份文件"
+    return (f"【覆盖说明】本次只从《{name}》里摘录了 {covered}/{total} 段（按小节均匀取样），"
+            f"未被摘录的小节可能正是你要的细节。回答时请如实说明「本次只覆盖了这份文件的部分"
+            f"小节」，不要假装看过全部内容。")
+
+
 def section_order(meta):
     """排序键：能解析出「第 N 页」就按页号，否则退回 chunk_index（保证稳定）。"""
     meta = meta or {}

@@ -132,3 +132,94 @@ def test_show_refused_tag_appends_once(rendered):
     assert rendered["hostChildrenAfterSecondCall"] == 1, "重复调用不许叠出第二个标签"
     assert rendered["hostTagClassName"] == "refused-tag"
     assert rendered["hostTagText"] == BASE_TEXT + "（已检索 3 个文件）"
+
+
+# ── 覆盖说明标签（2026-11-15）──
+#
+# 文件内跨节取样只摘了目标文件的 N/M 段（8000 字上下文装不下 100 页课件），
+# 服务端通过 SSE 的 coverage 事件把账推过来，前端渲染成一个小标签。
+# 这里钉住：部分覆盖要说「只摘录了 N/M 段」、全覆盖要说「已覆盖全部」、
+# 形状不对不许渲染脏数据、以及一律不许用 innerHTML。
+
+COVERAGE_HARNESS = r"""
+const results = {};
+function createElement(tag) {
+    const el = {
+        tag: tag,
+        className: '',
+        children: [],
+        _text: '',
+        get textContent() { return this._text; },
+        set textContent(value) { this._text = String(value); },
+        get innerHTML() { return ''; },
+        set innerHTML(_value) { throw new Error('覆盖说明不许用 innerHTML'); },
+        appendChild(child) { this.children.push(child); return child; },
+        querySelector(selector) {
+            const want = selector.replace(/^\./, '');
+            for (const child of this.children) {
+                if (String(child.className || '').split(/\s+/).includes(want)) return child;
+            }
+            return null;
+        },
+    };
+    return el;
+}
+const document = { createElement };
+
+__FUNCTIONS__
+
+const partial = buildCoverageTag({ file_name: '第2章 - 回归分析.pdf', covered: 43, total: 110 });
+const full = buildCoverageTag({ file_name: '第3章 - k近邻算法.pdf', covered: 51, total: 51 });
+const missing = buildCoverageTag({});
+const stringy = buildCoverageTag({ file_name: 'x.pdf', covered: '43', total: '110' });
+const host = createElement('div');
+showCoverageTag(host, { file_name: 'a.pdf', covered: 1, total: 2 });
+showCoverageTag(host, { file_name: 'a.pdf', covered: 1, total: 2 });
+process.stdout.write(JSON.stringify({
+    partial: { className: partial.className, text: partial.textContent },
+    full: full.textContent,
+    missing: missing.textContent,
+    stringy: stringy.textContent,
+    hostChildren: host.children.length,
+    hostTagText: host.children[0].textContent,
+}));
+"""
+
+
+@pytest.fixture(scope="module")
+def rendered_coverage(tmp_path_factory):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("本机没有 node，跳过前端渲染测试（CI 的 ubuntu runner 自带 node）")
+    source = INDEX.read_text(encoding="utf-8")
+    functions = "\n\n".join([_extract_function(source, "buildCoverageTag"),
+                             _extract_function(source, "showCoverageTag")])
+    script = tmp_path_factory.mktemp("render-cov") / "harness.js"
+    script.write_text(COVERAGE_HARNESS.replace("__FUNCTIONS__", functions), encoding="utf-8")
+    proc = subprocess.run([node, str(script)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, f"node 跑挂了：{proc.stderr[:800]}"
+    return json.loads(proc.stdout)
+
+
+def test_coverage_tag_says_how_much_was_read(rendered_coverage):
+    assert rendered_coverage["partial"]["className"] == "coverage-tag"
+    text = rendered_coverage["partial"]["text"]
+    assert "43/110" in text and "第2章 - 回归分析.pdf" in text
+    assert "只摘录" in text
+
+
+def test_coverage_tag_says_full_coverage(rendered_coverage):
+    assert "51/51" not in rendered_coverage["full"], "全覆盖不该说「只摘录了」"
+    assert "全部" in rendered_coverage["full"]
+
+
+def test_coverage_tag_ignores_malformed_payload(rendered_coverage):
+    """形状不对（缺字段 / 数字是字符串）不许渲染出脏数据。"""
+    assert "只摘录" not in rendered_coverage["missing"]
+    assert "只摘录" not in rendered_coverage["stringy"]
+
+
+def test_show_coverage_tag_appends_once(rendered_coverage):
+    assert rendered_coverage["hostChildren"] == 1, "重复调用不许叠出第二个标签"
+    assert "1/2" in rendered_coverage["hostTagText"]

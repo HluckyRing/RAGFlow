@@ -347,6 +347,67 @@ def test_chat_pushes_sources_and_persists_them(client, asked, monkeypatch):
     assert msgs[1]["sources"] == [{"file_name": "a.txt", "section": "第 2 页"}], "来源要落盘"
 
 
+def test_chat_pushes_coverage_and_persists_it(client, asked, monkeypatch):
+    """覆盖说明：只摘了目标文件的 N/M 段时，要推 coverage 事件并跟着消息落盘。
+
+    为什么要有这条（2026-11-15）：8000 字上下文装不下 100 页课件，取样只覆盖一部分；
+    不说清楚，用户会以为拿到的是整章。
+    """
+    seen, fake_stream = asked
+    monkeypatch.setattr(server, "stream_answer", fake_stream)
+
+    def fake_retrieve(question, full_text, collection, use_vector, top_k=None, files=None,
+                      decompose=None, history=None, coverage_out=None):
+        if coverage_out is not None:
+            coverage_out.update({"kind": "intra_file", "file_name": "第2章.pdf",
+                                 "covered": 43, "total": 110})
+        return "背景内容", [{"text": "背景内容", "file_name": "第2章.pdf"}]
+
+    monkeypatch.setattr(server, "retrieve_and_build_context", fake_retrieve)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+    r = client.post("/api/chat", json={"question": "帮我整理第2章的内容", "session_id": sid,
+                                       "conv_id": conv_id})
+    assert r.status_code == 200
+
+    events = [json.loads(line[6:]) for line in r.text.split("\n") if line.startswith("data: ")]
+    kinds = [e["type"] for e in events]
+    assert "coverage" in kinds, "前端靠这条事件才显示「只摘录了 N/M 段」"
+    cov = events[kinds.index("coverage")]
+    assert (cov["file_name"], cov["covered"], cov["total"]) == ("第2章.pdf", 43, 110)
+    assert kinds.index("coverage") < kinds.index("token"), "覆盖说明要在正文之前推"
+    saved = json.loads(state.file_for(sid).read_text(encoding="utf-8"))
+    assert saved["conversations"][conv_id]["messages"][-1]["coverage"] == {
+        "file_name": "第2章.pdf", "covered": 43, "total": 110}, "覆盖说明要落盘，刷新后还在"
+
+
+def test_no_coverage_event_when_refused(client, monkeypatch):
+    """拒答不推覆盖说明：拒答那边已经用 searched_files 说过「查过几个文件」了。"""
+    def refuse_stream(question, context, history):
+        yield "【无答案】"
+        yield "材料里没有相关内容"
+
+    def fake_retrieve(question, full_text, collection, use_vector, top_k=None, files=None,
+                      decompose=None, history=None, coverage_out=None):
+        if coverage_out is not None:
+            coverage_out.update({"kind": "intra_file", "file_name": "第2章.pdf",
+                                 "covered": 10, "total": 110})
+        return "背景内容", [{"text": "背景内容", "file_name": "第2章.pdf"}]
+
+    monkeypatch.setattr(server, "stream_answer", refuse_stream)
+    monkeypatch.setattr(server, "retrieve_and_build_context", fake_retrieve)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+    r = client.post("/api/chat", json={"question": "帮我整理第2章的内容", "session_id": sid,
+                                       "conv_id": conv_id})
+    events = [json.loads(line[6:]) for line in r.text.split("\n") if line.startswith("data: ")]
+    kinds = [e["type"] for e in events]
+    assert "refused" in kinds
+    assert "coverage" not in kinds and "sources" not in kinds, "拒答不挂来源、也不推覆盖说明"
+
+
 def test_no_sources_event_when_answer_never_starts(client, monkeypatch):
     """LLM 一个 token 都没出（例如没配 API_KEY）：不该推 sources，免得给错误消息挂引用。"""
     def boom(question, context, history):

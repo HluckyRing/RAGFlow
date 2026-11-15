@@ -53,6 +53,21 @@ def _never_call_the_real_decomposer(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_sample_coverage_by_default(monkeypatch):
+    """测试套件里默认关掉覆盖取样（两个开关）。
+
+    `COVERAGE_INTRA_FILE` 2026-11-15 起默认 **1**（质量门过了 + 覆盖说明已上线），而它会在
+    「枚举措辞 + 点名章号」时**换一条检索路径**（`collection.get` 整章枚举）并往 context 前面
+    插一句【覆盖说明】—— 这会让所有走真实检索链路的用例的 context/块数发生变化。
+    要测取样接线的用例自己 monkeypatch 开关（见 `tests/test_coverage.py`），不受这里影响。
+    """
+    import src.llm as llm
+
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_pairs_cache():
     """切片缓存是模块级的：用例之间清一次，免得上一条用例的正文影响这一条。"""
     import src.retrieval as retrieval

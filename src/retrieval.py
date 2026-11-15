@@ -471,6 +471,34 @@ def per_file_best(collection, query_text, file_name, top_k=1):
             for index, doc in enumerate(docs or [])]
 
 
+def file_blocks(collection, file_name, cap=400):
+    """把**指定文件的所有块**取回来，按页/块序排好 —— 「整章铺开」用（2026-11-15 A+B）。
+
+    与 `per_file_best` 的差别只有一条，但很关键：**不按相似度挑，只按文件过滤**。
+    按相似度挑出来的 40 个候选，在 100 页的课件上覆盖不到章尾 —— 实测（机器学习三份 PDF）
+    第1章的 sklearn 在 94–96 页、第2章的「决定系数」在 88–101 页，整块落空，「整理整章」
+    实际只整理了前 2/3 章。
+
+    用 `collection.get(where=...)` 而不是 `query()`：不做 ANN、不花 embedding，一次就把这份
+    文件的块全拿回来；`cap` 只是防超大文件的安全上限（一页一块的课件，100 页也远没到）。
+
+    任何失败返回 `[]` 并记 WARNING —— 与补位同一条纪律：绝不把一次正常问答搞崩。
+    """
+    if collection is None or not file_name:
+        return []
+    try:
+        result = collection.get(where={"file_name": file_name}, limit=max(1, int(cap)))
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("整章枚举失败（%s）：%s", file_name, str(e)[:80])
+        return []
+    docs = result.get("documents") or []
+    metas = result.get("metadatas") or []
+    pairs = [(doc, metas[index] if index < len(metas) else None)
+             for index, doc in enumerate(docs)]
+    from src.coverage import section_order                     # 局部导入，避免模块级循环依赖
+    return sorted(pairs, key=lambda item: section_order(item[1]))
+
+
 def hyde_retrieve(question, collection, full_text, use_vector, top_k=None, files=None):
     """兼容旧签名：只返回文本列表（老调用方与老测试不用改）。"""
     return [text for text, _ in hyde_retrieve_hits(

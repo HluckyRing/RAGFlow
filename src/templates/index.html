@@ -125,6 +125,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .mact:hover{background:var(--hover-bg);color:var(--text-primary)}
 .stopped-tag{font-size:12px;color:var(--text-muted)}
 .refused-tag{font-size:12px;color:var(--text-muted);border-left:2px solid var(--text-muted);padding-left:8px;margin-top:8px}
+.coverage-tag{font-size:12px;color:var(--text-muted);background:var(--hover-bg);border-radius:10px;padding:3px 8px;margin-top:8px;display:inline-block}
 .src-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
 .src-label{font-size:12px;color:var(--text-muted)}
 .src-chip{font-size:12px;color:var(--text-primary);background:var(--hover-bg);border-radius:10px;padding:2px 8px}
@@ -670,6 +671,7 @@ function renderChat() {
             body.appendChild(tag);
         }
         if (m.refused) body.appendChild(buildRefusedTag(m.searched_files));
+        if (m.coverage) body.appendChild(buildCoverageTag(m.coverage));
         body.appendChild(buildMsgActions(m, i));
         d.appendChild(body);
         el.appendChild(d);
@@ -1252,6 +1254,7 @@ async function sendMsg(opts) {
     let sources = [];           // 服务端推来的来源（P3）：只显示，前端绝不自己推断
     let refused = false;        // 服务端推来的拒答标记：材料里没有答案
     let searchedFiles = 0;      // 拒答时服务端报的「查过几个文件」（只给计数，不给文件名）
+    let coverage = null;        // 服务端推来的覆盖说明（只摘了目标文件的 N/M 段）
     try {
         const body = { question:text, session_id:S.sid, conv_id:S.activeCid };
         if (typeof target === 'number') body.truncate_to = target;
@@ -1276,6 +1279,13 @@ async function sendMsg(opts) {
                     if (d.type==='sources') {
                         // 形状不对就当没有来源，宁可什么都不显示，也不显示错的
                         sources = Array.isArray(d.sources) ? d.sources : [];
+                    } else if (d.type==='coverage') {
+                        // 覆盖说明：只摘了目标文件的 N/M 段（上下文预算装不下 100 页课件）
+                        if (d && typeof d.covered === 'number' && typeof d.total === 'number') {
+                            coverage = { file_name: d.file_name || '', covered: d.covered, total: d.total };
+                            showCoverageTag(aib, coverage);
+                            scrollDown();
+                        }
                     } else if (d.type==='refused') {
                         // 服务端说这是拒答（材料里没有答案）：只认这个事件，前端绝不自己猜文案
                         refused = true;
@@ -1314,10 +1324,34 @@ async function sendMsg(opts) {
             if (searchedFiles > 0) entry.searched_files = searchedFiles;
         }
         if (sources.length) entry.sources = sources;   // 跟着消息走，刷新后还能渲染
+        if (coverage) entry.coverage = coverage;        // 覆盖说明也落盘，刷新后还在
         c.messages.push(entry);
     }
     if (aborted) toast('已停止生成');
     renderChat();
+}
+
+// 覆盖说明：服务端推的 coverage 事件（以及落盘里的 coverage 字段）才显示。
+// 「这次只摘了这份文件的 N/M 段」——8000 字上下文装不下 100 页课件，不说清楚用户会以为
+// 拿到的是整章。仍然一律 createElement + textContent，文件名不进 innerHTML。
+// 刻意放在 renderChat 之后：拒答标签那边有一条静态守卫「标签里不许出现 file_name」，
+// 覆盖说明**要**说文件名（是用户自己点名的那一份），两段代码混在一起会让那条守卫失效。
+function buildCoverageTag(cov) {
+    const tag = document.createElement('div');
+    tag.className = 'coverage-tag';
+    const name = (cov && cov.file_name) ? `《${cov.file_name}》` : '这份文件';
+    const covered = (cov && typeof cov.covered === 'number') ? cov.covered : 0;
+    const total = (cov && typeof cov.total === 'number') ? cov.total : 0;
+    if (total > 0 && covered < total) {
+        tag.textContent = `ℹ️ 本次只摘录了${name}的 ${covered}/${total} 段，未摘录的小节可能没讲到`;
+    } else {
+        tag.textContent = `ℹ️ 本次已覆盖${name}的全部 ${total} 段`;
+    }
+    return tag;
+}
+function showCoverageTag(host, cov) {
+    if (host.querySelector('.coverage-tag')) return;
+    host.appendChild(buildCoverageTag(cov));
 }
 
 // 引用一行：来源全部来自服务端推来的 sources（P2 建索引时写下的元数据）。

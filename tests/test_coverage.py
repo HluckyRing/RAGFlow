@@ -14,6 +14,7 @@
 import pytest
 
 import src.llm as llm
+import src.retrieval as retrieval
 from scripts.eval_retrieval import normalize
 from src.config import coverage_switches
 
@@ -21,6 +22,8 @@ from src.coverage import (
     ENUMERATION_MARKERS,
     blocks_that_fit,
     chapter_numbers,
+    intra_file_notice,
+    intra_file_report,
     pick_target_file,
     sample_evenly,
     section_order,
@@ -417,6 +420,131 @@ def test_prefer_content_puts_english_structural_pages_last():
     assert [meta["file_name"] for _t, meta in ordered[-3:]] == ["a.md", "b.md", "c.md"]
 
 
+# ── A+B：整章枚举 + 块数按字符预算反推（2026-11-15）──
+#
+# 机器学习三份 PDF（96–110 页/章）上量到的病：取样池是「最相似的 40 个候选」，30 块只铺开
+# 约 27% 的页，章尾整块落空（第1章 sklearn 94–96 页、第2章 决定系数 88–101 页）。
+# 这里钉住两件事：① 文件内取样走**整章枚举**（collection.get，不按相似度挑）；
+# ② 块数由**字符预算**反推，硬上限不再是 30。
+
+class _StubCollection:
+    """只实现 `get(where=...)` 的假 collection：真实现走 file_blocks，不许偷偷 query()。"""
+
+    def __init__(self, blocks):
+        self._blocks = blocks
+        self.get_calls = []
+
+    def get(self, where=None, limit=None):
+        name = (where or {}).get("file_name")
+        picked = [(t, m) for t, m in self._blocks if (m or {}).get("file_name") == name]
+        self.get_calls.append((name, limit))
+        docs = [t for t, _m in picked]
+        metas = [m for _t, m in picked]
+        if limit:
+            docs, metas = docs[:limit], metas[:limit]
+        return {"documents": docs, "metadatas": metas}
+
+
+def _chapter_pages(name, pages, filler=60):
+    """造一份「一页一块」的课件：每块 ~124 字（120 字正文 + 页码短前缀），页码连续。"""
+    return [(f"第{i}页 " + "正文" * filler, {"file_name": name, "section": f"第 {i} 页",
+                                            "chunk_index": i - 1}) for i in range(1, pages + 1)]
+
+
+def test_blocks_that_fit_scales_with_the_char_budget_not_a_fixed_cap():
+    """块数按字符预算反推：一页 124 字 + 8000 字预算 ≈ 48 块，而不是写死的 30。"""
+    pages = _chapter_pages("02-第2章_甲.md", 200)
+    fitted = blocks_that_fit(pages, 200, 8000)
+    assert fitted > 30, "100 页以上的章，30 块铺不开（这正是 A 之前的问题）"
+    assert fitted <= 50, f"不许超预算（每块 124 字正文 + 来源标签 40）: {fitted}"
+
+
+def test_file_blocks_enumerates_whole_file_in_page_order():
+    """整章枚举：一次 get 拿全，按页序返回，cap 生效。"""
+    collection = _StubCollection(_chapter_pages("02-第2章_甲.md", 60)
+                                 + _chapter_pages("03-第3章_乙.md", 10))
+    got = retrieval.file_blocks(collection, "02-第2章_甲.md", cap=400)
+    assert len(got) == 60, "要拿到整份文件的块，不是最相似的几个"
+    assert [m["section"] for _t, m in got][:2] == ["第 1 页", "第 2 页"], "按页序排好"
+    assert len(retrieval.file_blocks(collection, "02-第2章_甲.md", cap=5)) == 5
+    assert retrieval.file_blocks(None, "02-第2章_甲.md") == []
+
+
+def test_intra_file_sampling_enumerates_the_whole_chapter(monkeypatch):
+    """点名章号时：整章枚举 + 按预算取块 = 首尾都要覆盖到（章尾不许整段落空）。"""
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", True)
+    pages = _chapter_pages("02-第2章_甲.md", 100)
+    collection = _StubCollection(pages)
+    out = llm.ensure_file_coverage("帮我整理第2章的内容", collection,
+                                   [("02-第2章_甲.md", "正文")], [], 10)
+    page_nums = [int(m["section"].replace("第", "").replace("页", "")) for _t, m in out]
+    assert collection.get_calls, "必须走整章枚举（collection.get），不是相似度查询"
+    assert len(out) > 30, "预算允许就要多取（硬上限 200）"
+    assert min(page_nums) <= 5 and max(page_nums) >= 90, "铺满整章：首尾都要有"
+
+
+# ── 覆盖说明：只摘了 N/M 段要说出来（2026-11-15）──
+#
+# 8000 字上下文装不下 100 页课件（整章 10 541–15 616 字符），取样必然只覆盖一部分。
+# 不说清楚，模型会假装整理完了、用户会以为拿到了整章。所以账要两头走：
+# ① 插一句【覆盖说明】进 context（模型据此如实交代）；② 通过 SSE 的 coverage 事件告诉前端。
+
+def test_intra_file_report_counts_segments():
+    assert intra_file_report([("a", {}), ("b", {})], 10, "第2章.pdf") == {
+        "kind": "intra_file", "file_name": "第2章.pdf", "covered": 2, "total": 10}
+    # 取到的块数不许比「整份文件一共几块」还多（口径自洽，避免前端显示 12/10）
+    assert intra_file_report([("a", {})] * 3, 1, "x.pdf")["total"] == 3
+    assert intra_file_report(None, 0, "") == {"kind": "intra_file", "file_name": "",
+                                              "covered": 0, "total": 0}
+
+
+def test_intra_file_notice_only_when_partial():
+    full = {"kind": "intra_file", "file_name": "第2章.pdf", "covered": 10, "total": 10}
+    assert intra_file_notice(full) == "", "全覆盖时不许吓唬模型"
+    assert intra_file_notice(None) == ""
+    partial = {"kind": "intra_file", "file_name": "第2章.pdf", "covered": 43, "total": 110}
+    notice = intra_file_notice(partial)
+    assert "43/110" in notice and "第2章.pdf" in notice
+    assert "不要假装看过全部内容" in notice
+
+
+def test_intra_file_sampling_fills_the_coverage_report(monkeypatch):
+    """取样要顺手把账填进 `coverage_out`（server 靠它推 SSE、llm 靠它插说明）。"""
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", True)
+    collection = _StubCollection(_chapter_pages("02-第2章_甲.md", 100))
+    report = {}
+    picked = llm.ensure_file_coverage("帮我整理第2章的内容", collection,
+                                      [("02-第2章_甲.md", "正文")], [], 10,
+                                      coverage_out=report)
+    assert report["kind"] == "intra_file"
+    assert report["file_name"] == "02-第2章_甲.md"
+    assert report["covered"] == len(picked) and report["total"] == 100
+    assert report["covered"] < report["total"], "100 页装不进 8000 字，本该是部分覆盖"
+
+
+def test_context_gets_the_coverage_notice(monkeypatch):
+    """【覆盖说明】必须真的进 context —— 这是模型「如实交代只覆盖了一部分」的唯一依据。"""
+    monkeypatch.setattr(llm, "_retrieve_hits",
+                        lambda *a, **k: [("正文内容", {"file_name": "第2章.pdf",
+                                                       "section": "第 1 页"})])
+    report = {"kind": "intra_file", "file_name": "第2章.pdf", "covered": 43, "total": 110}
+    context, used = llm.retrieve_and_build_context(
+        "帮我整理第2章的内容", "正文内容", None, False, 5,
+        [("第2章.pdf", "正文内容")], None, None, report)
+    assert context.startswith("【覆盖说明】"), "覆盖说明要排在最前面，别被块内容淹掉"
+    assert "43/110" in context
+    assert used and used[0]["file_name"] == "第2章.pdf", "来源里不许混进这句说明"
+    # 全覆盖时不许插
+    full = {"kind": "intra_file", "file_name": "第2章.pdf", "covered": 110, "total": 110}
+    context2, _ = llm.retrieve_and_build_context(
+        "帮我整理第2章的内容", "正文内容", None, False, 5,
+        [("第2章.pdf", "正文内容")], None, None, full)
+    assert not context2.startswith("【覆盖说明】")
+
+
+
 # ── 两个开关分开（2026-11-14 第十八轮）──
 #
 # 之前一个 `COVERAGE_SAMPLING` 管着两套行为：跨文件取样（线上预算下实测 no-op）与同文件跨节
@@ -424,19 +552,22 @@ def test_prefer_content_puts_english_structural_pages_last():
 # 这里钉住：两个开关各自独立生效、互不误触发、老开关按「两个都开」兼容并标记出来（好打 WARNING）。
 
 def test_coverage_switch_parsing_is_independent():
-    assert coverage_switches({}) == (False, False, False)
-    assert coverage_switches({"COVERAGE_CROSS_FILE": "1"}) == (True, False, False)
-    assert coverage_switches({"COVERAGE_INTRA_FILE": "1"}) == (False, True, False)
+    """默认值：跨文件 0（线上预算下 no-op）、文件内 1（2026-11-15 过质量门）。"""
+    assert coverage_switches({}) == (False, True, False)
+    assert coverage_switches({"COVERAGE_CROSS_FILE": "1"}) == (True, True, False)
+    assert coverage_switches({"COVERAGE_INTRA_FILE": "0"}) == (False, False, False)
     assert coverage_switches({"COVERAGE_CROSS_FILE": "1", "COVERAGE_INTRA_FILE": "0"}) == \
         (True, False, False)
-    assert coverage_switches({"COVERAGE_CROSS_FILE": "false"}) == (False, False, False)
+    assert coverage_switches({"COVERAGE_CROSS_FILE": "false"}) == (False, True, False)
 
 
-def test_legacy_coverage_sampling_means_both_on():
-    """老开关按旧语义 = 两个都开（第十三~十六轮的评测脚本都按这个名字跑）。"""
+def test_legacy_coverage_sampling_overrides_both_defaults():
+    """老开关显式写了就以它为准（= 两个都按它的值）：第十三~十六轮的评测脚本都按这个名字跑。"""
     assert coverage_switches({"COVERAGE_SAMPLING": "1"}) == (True, True, True)
+    assert coverage_switches({"COVERAGE_SAMPLING": "0"}) == (False, False, True), \
+        "COVERAGE_SAMPLING=0 仍然是「两个都关」，不许被新默认值偷偷打开"
     assert coverage_switches({"COVERAGE_SAMPLING": "0", "COVERAGE_CROSS_FILE": "1"}) == \
-        (True, False, False)
+        (False, False, True)
 
 
 def test_cross_file_switch_alone_falls_back_to_the_cross_file_path(monkeypatch):

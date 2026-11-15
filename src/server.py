@@ -666,7 +666,7 @@ def _sse_event(payload):
 
 
 def _chat_stream(sid, conv_id, question, context, history, sources=None,
-                 searched_files=0):
+                 searched_files=0, coverage=None):
     """同步生成器：把 stream_answer 的 token 转成 SSE，并在结束时落盘。
 
     Starlette 会用 iterate_in_threadpool 迭代它，因此 stream_answer 里等 LLM
@@ -706,6 +706,19 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None,
             return _sse_event({"type": "sources", "sources": sources})
         return None
 
+    def _coverage_event():
+        """覆盖说明（2026-11-15）：这条回答只摘了目标文件的 N/M 段，得让用户知道。
+
+        与 sources 同一时机（判成正常回答之后）：它不是「答案出处」，而是「这份上下文有多全」。
+        拒答时不推 —— 拒答那边已经用 `searched_files` 说过「查过几个文件」了。
+        """
+        if coverage and coverage.get("total"):
+            return _sse_event({"type": "coverage",
+                               "file_name": coverage.get("file_name") or "",
+                               "covered": int(coverage.get("covered") or 0),
+                               "total": int(coverage.get("total") or 0)})
+        return None
+
     try:
         try:
             for token in stream_answer(question, context, history):
@@ -723,6 +736,9 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None,
                     yield _sse_event({"type": "refused", "searched_files": searched_files})
                     pending = strip_refusal_marker(pending)
                 else:
+                    event = _coverage_event()
+                    if event:
+                        yield event
                     event = _sources_event()
                     if event:
                         yield event
@@ -737,6 +753,9 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None,
                     yield _sse_event({"type": "refused", "searched_files": searched_files})
                     pending = strip_refusal_marker(pending)
                 else:
+                    event = _coverage_event()
+                    if event:
+                        yield event
                     event = _sources_event()
                     if event:
                         yield event
@@ -763,6 +782,10 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None,
                     entry["searched_files"] = searched_files
             if sources and not refused:
                 entry["sources"] = sources
+            if coverage and not refused:
+                entry["coverage"] = {"file_name": coverage.get("file_name") or "",
+                                     "covered": int(coverage.get("covered") or 0),
+                                     "total": int(coverage.get("total") or 0)}
             _append_message(sid, conv_id, entry)
     yield _sse_event({"type": "done"})
 
@@ -826,10 +849,13 @@ async def chat(request: Request):
     # HyDE 的 LLM 调用 + Chroma 查询 + embedding 推理全是阻塞的。
     # `history` 传进去是为了「多轮 + 复合」：拆问要能补全省略式追问，拆出来的每条子问
     # 还要再过一遍指代消解（主语常常还留在上一轮里）。
+    # 覆盖账（可选出参）：文件内跨节取样会填「摘了几段 / 整份几段」，
+    # 既要告诉模型（插进 context），也要告诉用户（SSE 的 coverage 事件）。
+    coverage_report = {}
     context, used = await run_in_threadpool(
         retrieve_and_build_context, search_query, _conv_full_text(conv),
         conv["collection"], conv["use_vector"], dynamic_top_k, files,
-        _decomposer(), history,
+        _decomposer(), history, coverage_report,
     )
     if not context:
         return JSONResponse({"error": "未找到相关内容"}, status_code=400)
@@ -857,7 +883,8 @@ async def chat(request: Request):
         return JSONResponse({"error": "对话不存在"}, status_code=400)
 
     return StreamingResponse(
-        _chat_stream(sid, conv_id, question, context, history, sources, searched_files),
+        _chat_stream(sid, conv_id, question, context, history, sources, searched_files,
+                     coverage_report or None),
         media_type="text/event-stream")
 
 

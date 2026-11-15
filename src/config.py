@@ -115,55 +115,64 @@ DECOMPOSE_ENABLED = os.getenv("DECOMPOSE_ENABLED", "1").strip().lower() not in (
 # 拆问最多拆几问（再多就不是「一个问题」，而是把整段话贴进来了）
 DECOMPOSE_MAX_PARTS = int(os.getenv("DECOMPOSE_MAX_PARTS", "6"))
 
-# 覆盖取样拆成**两个开关**（2026-11-14 第十八轮）：两套行为差得很远，一个开关管两件事就没法
+# 覆盖取样拆成**两个开关**（2026-11-14）：两套行为差得很远，一个开关管两件事就没法
 # 分别评估。实测（第十三~十六轮，全部按线上预算）：
 # ① 跨文件取样（`COVERAGE_CROSS_FILE`）：枚举 / 汇总型提问保证每份文件都有代表块。**线上预算下
 #    是 no-op** —— 实体覆盖 24/38 → 24/38，导航页降权还掉到 20/38（那边是 gold 坏了，不是特性坏）。
+#    所以它**仍然默认关**：开了只是多花补位查询。
 # ② 同文件跨节取样（`COVERAGE_INTRA_FILE`）：问句点名章号（「帮我整理第一章的内容」）时把**那一份
-#    文件**按节均匀铺开。**这条线上唯一有正面结果的一条**：2/5 拒答 → 5/5 不拒答、+16 ms。
-# 两个都默认关：按本项目约定，新行为默认关、质量门过了再谈默认开（同 reranker / DECOMPOSE_ENABLED）。
+#    文件**按节均匀铺开。**这条线上唯一有正面结果的一条**，2026-11-15 过了质量门（PPT 29/30、
+#    机器学习 PDF 14/15，无回归）并补上了「只覆盖 N/M 段」的说明，所以**默认改成开**。
+#    它只在「枚举 / 汇总措辞 + 明确章号」时触发，单问事实问答完全不受影响。
 
 
 def coverage_switches(env=None):
-    """解析覆盖取样的两个开关，返回 `(cross_file, intra_file, legacy_used)`。
+    """解析覆盖取样的两个开关，返回 `(cross_file, intra_file, legacy_present)`。
 
-    老开关 `COVERAGE_SAMPLING=1` 的语义是「两个都开」（第十三~十六轮的评测脚本都按这个名字
-    跑的），保留兼容但要**出声**——它曾经代表两件事，现在只当作一次性别名。
+    老开关 `COVERAGE_SAMPLING` 的语义是「两个都开」（第十三~十六轮的评测脚本都按这个名字
+    跑的），保留兼容但要**出声**——它曾经代表两件事，现在只当作一次性别名。**显式写了就
+    以它为准**（`COVERAGE_SAMPLING=0` 仍然是「两个都关」），否则默认值按新口径走。
 
     单独抽成函数是因为「import 时读一次环境变量」在测试里没法干净地重放：
     这条兼容语义必须能被钉住，而 `importlib.reload` 会把整个模块（含 OpenAI client）重造一遍。
     """
     env = os.environ if env is None else env
 
-    def on(name):
-        raw = env.get(name)
-        if raw is None:
-            return False
-        return raw.strip().lower() not in ("0", "false", "no", "")
+    def on(name, default=False):
+        value = env.get(name)
+        if value is None:
+            return default
+        return value.strip().lower() not in ("0", "false", "no", "")
 
-    cross_file, intra_file = on("COVERAGE_CROSS_FILE"), on("COVERAGE_INTRA_FILE")
-    legacy = on("COVERAGE_SAMPLING")
-    if legacy:
-        cross_file = intra_file = True
-    return cross_file, intra_file, legacy
+    cross_file = on("COVERAGE_CROSS_FILE")                      # 默认关（线上预算下是 no-op）
+    intra_file = on("COVERAGE_INTRA_FILE", default=True)        # 默认开（2026-11-15 过质量门）
+    legacy_present = env.get("COVERAGE_SAMPLING") is not None
+    if legacy_present:
+        cross_file = intra_file = on("COVERAGE_SAMPLING")
+    return cross_file, intra_file, legacy_present
 
 
 COVERAGE_CROSS_FILE, COVERAGE_INTRA_FILE, _COVERAGE_LEGACY_SWITCH = coverage_switches()
 if _COVERAGE_LEGACY_SWITCH:
     logger.warning("COVERAGE_SAMPLING 已拆成 COVERAGE_CROSS_FILE / COVERAGE_INTRA_FILE"
-                   "（按旧语义把两个都置 1）；建议改用新名字")
+                   "（按旧语义覆盖两者的默认值）；建议改用新名字")
 # 最多给几份缺失文件补位（每份多一次查询）。文件很多时不能让这一次提问变成 n 次检索。
 COVERAGE_BACKFILL_MAX = int(os.getenv("COVERAGE_BACKFILL_MAX", "8"))
 # 每份缺失文件取几个候选再挑「正文页」：一份文件里最像「内容是什么」的那块往往正是它的
 # 目录页，只取 1 个就没有挑的余地（2026-11-12 第十四轮实测：头部 14 块里 10 块是知识导图）。
 COVERAGE_PER_FILE_CANDIDATES = int(os.getenv("COVERAGE_PER_FILE_CANDIDATES", "3"))
 # 同一份文件内部跨节取样：问句点名了章号（「整理第一章的内容」）时，**在这份文件内部**
-# 按页均匀铺开。下面这个数是**上限**，实际取几块由字符预算反推（`coverage.blocks_that_fit`）：
+# 按页均匀铺开。下面这个数是**硬上限**，实际取几块由字符预算反推（`coverage.blocks_that_fit`）：
 # PPT 每页才 ~140 字，取 30 页也只有 4k 字符；md 每块 480 字时只装得下 ~15 块。
-# 写死块数的后果是「要么浪费预算、要么被装配截断后只覆盖前半章」。
-COVERAGE_INTRA_FILE_BLOCKS = int(os.getenv("COVERAGE_INTRA_FILE_BLOCKS", "30"))
-# 文件内补位时先取多少个候选（再按节铺开挑）
-COVERAGE_INTRA_FILE_CANDIDATES = int(os.getenv("COVERAGE_INTRA_FILE_CANDIDATES", "40"))
+# 2026-11-15 实测（机器学习 3 份 PDF，96–110 页/章）：**写死 30 块**会让 100 页的章只铺开
+# 约 27%，章尾整块落空（第1章 sklearn 94–96 页、第2章 决定系数 88–101 页都没进取样）。
+# 所以默认不再写 30，而是放到字符预算允许的上限（8000 字 ≈ 44 块/140 字一页），由预算说话。
+COVERAGE_INTRA_FILE_BLOCKS = int(os.getenv("COVERAGE_INTRA_FILE_BLOCKS", "200"))
+# 整章枚举的上限：把这**一份文件的所有块**取回来（`retrieval.file_blocks`，用
+# `collection.get(where=...)`，不花 embedding）。一页一块的课件 100 页也不到 400，
+# 只有超大文件才会在这里被截断。2026-11-15 之前这里是「取最相似的 40 个候选」，
+# 那正是「整理整章只整理了前 2/3」的原因。
+COVERAGE_INTRA_FILE_CANDIDATES = int(os.getenv("COVERAGE_INTRA_FILE_CANDIDATES", "400"))
 
 
 VECTOR_DB_PATH = resolve_path(os.getenv("VECTOR_DB_PATH"), "chroma_db")
