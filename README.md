@@ -18,7 +18,7 @@
 
 **为什么不是又一个 RAG demo**：同名项目很多（比如 `infiniflow/ragflow`）。这个仓库的差异在于
 **每一个默认值都有可复现的实测依据** —— [`docs/retrieval-baseline-2026-10-06.md`](docs/retrieval-baseline-2026-10-06.md)
-里是 1600+ 行逐条基线，`tests/` 里是 606 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
+里是 1998 行逐条基线，`tests/` 里是 750 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
 （例如「调大 `TOP_K`」实测 +0.0pp，被直接否掉）。想直接看数字，往下翻到「📊 实测数据」一节。
 
 ## ✨ 核心亮点
@@ -51,7 +51,7 @@
 | reranker 为什么默认关 | CPU **3.9 s/问**，没过「中位 ≤1.5 s」这条线 | 实测 |
 | 并发扛得住吗 | embedding 是**排队不是并行**（8 并发只 ×1.3 吞吐），但它不是瓶颈；20 并发请求零错误 | 进程内基准 + 真实 uvicorn 压测 |
 
-`pytest tests -q` → **606 passed**。
+`pytest tests -q` → **750 passed**（约 19 s）。
 
 ## 📋 支持格式
 
@@ -141,7 +141,7 @@ RAGFlow/
 │   ├── llm.py            # 指代消解 + 多轮对话 + 每问分路编排 + 流式答案生成
 │   ├── prompts.py        # Prompt 模板（HyDE / 拆问 / 可答性 / QA）
 │   └── templates/        # 前端界面（vendor/ 为本地内置的 Office 预览库）
-├── tests/                # pytest 测试（606 条）
+├── tests/                # pytest 测试（750 条）
 ├── scripts/
 │   ├── eval_retrieval.py               # 合成语料检索评测（recall/MRR/归属，默认不花额度）
 │   ├── eval_real_corpus.py             # 真实语料基线（只读、只记数字：切窗 + 距离带）
