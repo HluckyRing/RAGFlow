@@ -205,6 +205,29 @@ GATE_PACK = os.getenv("GATE_PACK", "zh").strip().lower() or "zh"
 CHAT_RATE_LIMIT = int(os.getenv("CHAT_RATE_LIMIT", "20"))
 CHAT_RATE_WINDOW = float(os.getenv("CHAT_RATE_WINDOW", "60"))
 
+# 范围词 → 文件过滤器（`SCOPE_FILTER`，2026-11-19 第十九轮）。
+# 动机（真实对话逐块复现）：问「结合第2章课件，在同一训练集上不断提高多项式回归的阶数，
+# 通常可以观察到什么」时只命中 1 块（第1章 p46 的通用框架页）→ 老实拒答；同一条问题
+# **去掉前缀**却命中 3–4 块并答对。根因有两层：①「第2章/课件」这类**元信息词**被当检索词，
+# 而向量空间里离它最近的是封面页 / 内容提要页 / 目录页，把答案页从第 8 名挤到第 16 名；
+# ② 双路融合的 `intersect` 闸门要求两路都召回，交集于是塌成 1 块。
+# 打开后：用章号定位到**那一份文件**（`scope.scope_target`，复用 `coverage.pick_target_file`），
+# 检索加 `where={"file_name": ...}`，并把范围短语从探针文本里删掉。
+# **默认开**（2026-11-19 实测过了四道门，见 docs/retrieval-baseline-2026-10-06.md「范围词」一节）：
+# ① 质量：12 条「结合第N章课件，…」提问的事实核 11/14 → 13/14、整条答到 10/12 → 11/12、
+#    命中目标文件 11/12 → 12/12，逐条无一变差（那条真实拒答 s01 从 0/2 变 2/2）；
+# ② 负样本：误召回 10/15 不变（走向量那条 3/15 不变）；
+# ③ 代价：检索中位 50 ms → 61 ms；④ 回退：开关关着逐位不变，整章枚举那条路两臂完全相同
+#    （47 块 / 7 441 字符），认不准（无章号 / 章号匹配多份文件）一律不动手。
+# 触发条件很窄：**问句点名章号 + 唯一匹配到一份文件**；没点名章号的提问一个字都不改。
+SCOPE_FILTER = os.getenv("SCOPE_FILTER", "1").strip().lower() not in ("0", "false", "no", "")
+# 双路融合的候选池（`FUSION_CANDIDATES`）：每路先取这么多候选再融合 + 过 `intersect` 闸门，
+# 最终仍只留 `top_k` 块。0 = 维持现状（每路只取 top_k，闸门就是「两路各 top_k 的交集」）。
+# 动机同上：交集对**名次扰动**极度敏感 —— 同一句图一，只把候选池从 10 放到 20，
+# 交集就从 1 块变 5 块（实测见 docs/retrieval-baseline-2026-10-06.md「范围词」一节）。
+# 代价是每路多召回、闸门外候选变多（embedding 次数不变，只是 n_results 变大）。
+FUSION_CANDIDATES = int(os.getenv("FUSION_CANDIDATES", "0"))
+
 
 def build_client(api_key, base_url, timeout):
     """构造 OpenAI 客户端。

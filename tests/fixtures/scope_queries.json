@@ -1,0 +1,86 @@
+[
+  {
+    "id": "s01",
+    "question": "结合第2章课件，在同一训练集上不断提高多项式回归的阶数，通常可以观察到什么",
+    "expect_files": ["第2章 - 回归分析.pdf"],
+    "gold_phrases": ["欠拟合", "过拟合"],
+    "note": "真实用户原话（2026-11-19 那条拒答对话），scope 前只捞到 1 块、scope 后应命中 p91"
+  },
+  {
+    "id": "s02",
+    "question": "结合第2章课件，判断回归方程拟合好坏的那个系数叫什么、怎么算",
+    "expect_files": ["第2章 - 回归分析.pdf"],
+    "gold_phrases": ["决定系数"],
+    "note": "单页事实：p88–89 决定系数 / 校正决定系数"
+  },
+  {
+    "id": "s03",
+    "question": "结合第2章课件，岭回归和 Lasso 在处理多重共线性上有什么区别",
+    "expect_files": ["第2章 - 回归分析.pdf"],
+    "gold_phrases": ["Lasso"],
+    "note": "p66–70 正则化回归"
+  },
+  {
+    "id": "s04",
+    "question": "结合第2章课件，逻辑回归的输出是怎么变成概率的",
+    "expect_files": ["第2章 - 回归分析.pdf"],
+    "gold_phrases": ["Sigmoid"],
+    "note": "p40–44 逻辑回归 / Sigmoid"
+  },
+  {
+    "id": "s05",
+    "question": "结合第2章课件，平均绝对误差是怎么定义的",
+    "expect_files": ["第2章 - 回归分析.pdf"],
+    "gold_phrases": ["平均绝对误差"],
+    "note": "p84 回归分析的评估指标"
+  },
+  {
+    "id": "s06",
+    "question": "结合第2章课件，多项式回归是怎么转化成线性回归来求解的",
+    "expect_files": ["第2章 - 回归分析.pdf"],
+    "gold_phrases": ["变量替换"],
+    "note": "p31 / p36 多项式回归的求解：变量替换"
+  },
+  {
+    "id": "s07",
+    "question": "结合第1章课件，回归问题的工作框架一般分几步",
+    "expect_files": ["第1章 - 绪论.pdf"],
+    "gold_phrases": ["回归问题的工作框架"],
+    "note": "p46 回归问题的工作框架（就是那次拒答里唯一被召回的块）"
+  },
+  {
+    "id": "s08",
+    "question": "结合第1章课件，训练样本固定时怎么选多项式阶数",
+    "expect_files": ["第1章 - 绪论.pdf"],
+    "gold_phrases": ["多项式阶数"],
+    "note": "p72 多项式拟合 & 超参数"
+  },
+  {
+    "id": "s09",
+    "question": "结合第1章课件，正则化是怎么写进目标函数里抑制过拟合的",
+    "expect_files": ["第1章 - 绪论.pdf"],
+    "gold_phrases": ["正则化"],
+    "note": "p73 提高泛化能力：正则化"
+  },
+  {
+    "id": "s10",
+    "question": "结合第3章课件，k 值取得太小或太大分别会出什么问题",
+    "expect_files": ["第3章 - k近邻算法.pdf"],
+    "gold_phrases": ["过拟合", "欠拟合"],
+    "note": "p20–21 k 值的选取"
+  },
+  {
+    "id": "s11",
+    "question": "结合第3章课件，欧氏距离和曼哈顿距离有什么区别",
+    "expect_files": ["第3章 - k近邻算法.pdf"],
+    "gold_phrases": ["曼哈顿"],
+    "note": "p30–31 距离度量"
+  },
+  {
+    "id": "s12",
+    "question": "结合第3章课件，k 近邻为什么说它不需要建立模型",
+    "expect_files": ["第3章 - k近邻算法.pdf"],
+    "gold_phrases": ["不需要"],
+    "note": "p36 / p44 k 近邻回归与算法特点"
+  }
+]

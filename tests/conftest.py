@@ -78,6 +78,21 @@ def _clear_pairs_cache():
 
 
 @pytest.fixture(autouse=True)
+def _never_scope_filter_by_default(monkeypatch):
+    """测试套件里默认关掉「范围词 → 文件过滤」并清零融合候选池。
+
+    `SCOPE_FILTER` 与 `FUSION_CANDIDATES` 现在都默认关（新行为先默认关），但开发者本机的
+    `.env` / 环境变量可能把它们打开 —— 那会让「结合第2章课件，…」这类用例悄悄换一条检索路径
+    （多传 `where`、探针文本被改写、候选池变大），与测试意图无关。要测这两条的用例自己
+    monkeypatch 开关（见 `tests/test_scope.py`），不受这里影响。
+    """
+    import src.retrieval as retrieval
+
+    monkeypatch.setattr(retrieval, "SCOPE_FILTER", False)
+    monkeypatch.setattr(retrieval, "FUSION_CANDIDATES", 0)
+
+
+@pytest.fixture(autouse=True)
 def _never_rate_limit_chat_requests(monkeypatch):
     """测试套件里不限流。
 

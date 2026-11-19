@@ -10,9 +10,10 @@ from src import rerank as rerank_mod
 from src.config import (logger, client, MODEL_NAME, EMBEDDING_MODEL, COLLECTION_NAME,
                         VECTOR_DB_PATH, TOP_K, MAX_DISTANCE, RERANK_ENABLED, RERANK_MODEL,
                         RERANK_CANDIDATES, RERANK_TOP_N, RERANK_MIN_SCORE,
-                        FUSION_ENABLED, RRF_K, FUSION_GATE)
+                        FUSION_ENABLED, RRF_K, FUSION_GATE, SCOPE_FILTER, FUSION_CANDIDATES)
 from src.pdf_ingestion import split_files, split_text
 from src.prompts import HYDE_SYSTEM_PROMPT
+from src.scope import scope_target
 from src.text_utils import extract_terms
 
 _embedding_fn = None
@@ -343,6 +344,43 @@ def _probe_queries(question, search_query):
     return [search_query]
 
 
+def _vector_hits(question, search_query, collection, limit, where=None):
+    """一次「多路探针 → RRF 融合 → 距离 / intersect 闸门」的向量召回。
+
+    返回 `(ordered, kept, probe_count)`：`ordered` 是过闸门**之前**的融合序（开了重排要用
+    全量候选），`kept` 是过闸门之后的命中。`where` 是 Chroma 的 metadata 过滤
+    （范围词定位用，见 `src/scope.py`），`None` 表示不过滤。
+
+    两路探针合成**一次** `query` 调用：Chroma 一次算两条 embedding 再各自检索，
+    比两次往返省一次进程内开销。
+    """
+    probes_wanted = _probe_queries(question, search_query)
+    kwargs = {"query_texts": probes_wanted, "n_results": limit}
+    if where:
+        kwargs["where"] = where
+    results = collection.query(**kwargs)
+    docs_all = results.get("documents") or []
+    dists_all = results.get("distances") or []
+    metas_all = results.get("metadatas") or []
+    # 老替身可能只回一条列表：缺的那一路当作没召回，绝不按错位去读
+    probes = []
+    for i, docs in enumerate(docs_all):
+        probes.append(_probe_hits(
+            docs,
+            dists_all[i] if i < len(dists_all) else [],
+            metas_all[i] if i < len(metas_all) else []))
+    if not probes or not any(probes):
+        return [], [], 0
+    ordered, kept = _fuse_probes(probes, MAX_DISTANCE)
+    if len(probes) > 1:
+        logger.info(
+            "双路融合（%s）：HyDE 探针 %d 块 / 原问题探针 %d 块 → 候选 %d 块，"
+            "过距离闸门 %d 块%s", FUSION_GATE, len(probes[0]), len(probes[1]),
+            len(ordered), len(kept),
+            f"（候选池 {limit}，文件过滤 {where['file_name']}）" if where else f"（候选池 {limit}）")
+    return ordered, kept, len(probes)
+
+
 def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, top_k=None, files=None,
                                  use_hyde=True):
     """同 `hyde_retrieve_hits`，但把「走的哪条路」一起返回：`(PATH_*, hits)`。
@@ -355,15 +393,29 @@ def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, to
     都再调一次 HyDE，延迟会变成 n 倍（实测一次 HyDE 0.7–1.3 s）；单探针的代价是丢掉
     `intersect` 闸门的第二票，但它仍然过 `MAX_DISTANCE` 距离闸门，且**只有被拆成 ≥2 问时
     才走这条路**（单问提问的行为一个字都没变）。
+
+    **范围词（`SCOPE_FILTER`，2026-11-19）**：问句点名了章号（「结合第2章课件，…」）且能
+    唯一匹配到某一份文件时，把检索限定在这份文件内（Chroma `where`），并把范围短语从
+    **探针文本**里删掉 —— 元信息词留在探针里只会把封面页 / 内容提要页顶到前面。
+    认不准（没有章号 / 章号匹配到多份文件）就什么都不做，行为与改造前逐位一致。
     """
     if top_k is None:
         top_k = TOP_K
 
+    # 范围词 → (探针改写, 文件过滤)。开关关着、没给文件列表、认不准 → 全部保持原样。
+    probe_question, where = question, None
+    if SCOPE_FILTER and files:
+        target = scope_target(question, [name for name, _text in files])
+        if target:
+            probe_question = target["question"]
+            where = {"file_name": target["file_name"]}
+            logger.info("范围词定位：检索限定在《%s》内，探针改写为「%s」",
+                        target["file_name"], probe_question[:40])
+
     hits = []
     if use_vector and collection is not None:
         # 只有真要查向量库时才值得花一次 API 调用来生成 HyDE
-        search_query = _generate_hyde(question) if use_hyde else question
-        probes_wanted = _probe_queries(question, search_query)
+        search_query = _generate_hyde(probe_question) if use_hyde else probe_question
         try:
             count = collection.count()
             if count == 0:
@@ -376,46 +428,36 @@ def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, to
             if count > 0:
                 # 开了重排就多召回一些候选：距离在这条路上不再当最终裁判，别先用它砍人
                 limit = max(top_k, RERANK_CANDIDATES) if RERANK_ENABLED else top_k
-                # 两路探针合成**一次** query 调用：Chroma 一次算两条 embedding 再各自检索，
-                # 比两次往返省一次进程内开销。
-                results = collection.query(
-                    query_texts=probes_wanted,
-                    n_results=min(limit, count)
-                )
-                docs_all = results.get("documents") or []
-                dists_all = results.get("distances") or []
-                metas_all = results.get("metadatas") or []
-                # 老替身可能只回一条列表：缺的那一路当作没召回，绝不按错位去读
-                probes = []
-                for i, docs in enumerate(docs_all):
-                    probes.append(_probe_hits(
-                        docs,
-                        dists_all[i] if i < len(dists_all) else [],
-                        metas_all[i] if i < len(metas_all) else []))
-                if probes and any(probes):
-                    ordered, kept = _fuse_probes(probes, MAX_DISTANCE)
-                    if len(probes) > 1:
-                        logger.info(
-                            "双路融合（%s）：HyDE 探针 %d 块 / 原问题探针 %d 块 → 候选 %d 块，"
-                            "过距离闸门 %d 块", FUSION_GATE, len(probes[0]), len(probes[1]),
-                            len(ordered), len(kept))
+                # 候选池放大（`FUSION_CANDIDATES`）：intersect 闸门是「两路各 top_k 的交集」，
+                # 对名次扰动极度敏感；放大候选池再取交集，等于给交集留了容错（块数仍截到 top_k）。
+                if FUSION_CANDIDATES > 0:
+                    limit = max(limit, FUSION_CANDIDATES)
+                limit = min(limit, count)
+                ordered, kept, _probes = _vector_hits(
+                    probe_question, search_query, collection, limit, where)
+                if where is not None and not kept:
+                    # 范围过滤把命中砍光了：退回全库再来一次（宁可多查一次，也不许答空）
+                    logger.warning("范围过滤（%s）后一块都没命中，退回全库检索", where)
+                    ordered, kept, _probes = _vector_hits(
+                        probe_question, search_query, collection, limit, None)
+                if ordered:
                     if RERANK_ENABLED:
                         # 打分用**原问题**：跨编码器的训练分布是 question → passage，
                         # HyDE 文本（像文档的片段）当 query 属于分布外。
                         # 候选池是**融合排序后的全部候选**，不经距离/闸门预砍 —— 开了重排就由
                         # 它当最终裁判（闸门口径只在没有重排时才决定取舍）。
                         candidates = [(text, meta) for text, meta, _dist in ordered][:max(RERANK_CANDIDATES, 1)]
-                        reranked = rerank_mod.rerank(question, candidates,
+                        reranked = rerank_mod.rerank(probe_question, candidates,
                                                      RERANK_TOP_N, RERANK_MIN_SCORE)
                         if reranked is None:
                             # 重排不可用：退回距离闸门，绝不把一堆远块原样塞给模型
-                            hits = [(text, meta) for text, meta, _dist in kept]
+                            hits = [(text, meta) for text, meta, _dist in kept][:top_k]
                         else:
                             hits = [(text, meta) for text, meta, _score in reranked]
                             logger.info("重排 %d 个候选 → 保留 %d 块（分数下限 %.2f）",
                                         len(candidates), len(hits), RERANK_MIN_SCORE)
                     else:
-                        hits = [(text, meta) for text, meta, _dist in kept]
+                        hits = [(text, meta) for text, meta, _dist in kept][:top_k]
         except Exception as e:
             logger.warning("向量检索失败，降级为关键词检索: %s", str(e)[:80])
 
@@ -424,7 +466,7 @@ def hyde_retrieve_hits_with_path(question, collection, full_text, use_vector, to
         # 关键词检索用原始问题：search_query 是 HyDE 生成的长段落，不适合做词频匹配
         pairs, lowered = _cached_pairs(files, full_text)
         texts = [text for text, _ in pairs]
-        tops = _keyword_scores(question, texts, lowered=lowered)[:3]
+        tops = _keyword_scores(probe_question, texts, lowered=lowered)[:3]
         hits = [pairs[index] for _, index in tops]
         return PATH_KEYWORD, hits
 
