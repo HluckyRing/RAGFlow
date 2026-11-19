@@ -5,6 +5,7 @@
 - CI 必须存在且真的跑 pytest（P2-18 的 CI 部分）
 - .gitignore 的取反规则不能是笔误，且 .env.example 必须保持不被忽略（P2-20）
 """
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -73,3 +74,57 @@ def test_agents_workspace_is_not_tracked():
     proc = subprocess.run([git, "ls-files", ".agents"], cwd=ROOT,
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert proc.stdout.strip() == "", f".agents/ 下不该有已跟踪文件：{proc.stdout[:200]}"
+
+
+# ── README / .env.example 与代码不许漂（2026-11-19）──
+# 起因：README 里「750 passed」「1998 行基线」「这个服务没有鉴权」三处全部过期 —— 文档漂了没人发现。
+# 这两条守卫只管**能机械核对的**部分：变量名必须真实存在。默认值/行数/测试条数这类数字仍然要人肉
+# 更新（改默认值时应同步 README 的「📊 实测数据」与 .env.example）。
+
+# 只认「NAME=…」这种**赋值形态**（.env 文件里就是这么写的），不碰正文里的大写缩写（MRR / RRF / PPT）
+_ASSIGN_RE = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\s*=")
+_BACKTICK_RE = re.compile(r"`([A-Z][A-Z0-9_]{2,})`")
+
+
+def _source_corpus():
+    """`src/` 下所有 Python 源码拼起来 —— 变量可能在 config.py 之外被读（例如 STATE_DIR 在 state.py）。"""
+    parts = []
+    for path in sorted((ROOT / "src").rglob("*.py")):
+        parts.append(path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
+def test_env_example_only_documents_real_variables():
+    """.env.example 里写的每个变量，`src/` 里必须真的有人读它。
+
+    这条防的是「删了代码、模板还留着」：用户照着 `.env.example` 配了半天，程序根本不读。
+    """
+    source = _source_corpus()
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+    documented = set(_ASSIGN_RE.findall(text))
+    missing = sorted(name for name in documented if f'"{name}"' not in source)
+    assert not missing, f".env.example 里这些变量在 src/ 里没人读：{missing}"
+
+
+def test_readme_only_mentions_real_variables():
+    """README 里提到的变量名，必须能在 `src/` 里找到。
+
+    这条防的是 README 把开关名写错（例如把 `SCOPE_FILTER` 写成 `SCOPE`）—— 用户照抄就静默失效。
+    """
+    source = _source_corpus()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    mentioned = set(_ASSIGN_RE.findall(readme)) | set(_BACKTICK_RE.findall(readme))
+    unknown = sorted(name for name in mentioned if f'"{name}"' not in source)
+    assert not unknown, f"README 里这些变量在 src/ 里找不到：{unknown}"
+
+
+# ── README 的机械部分由脚本生成，不许漂（2026-11-19）──
+# `scripts/sync_readme.py` 负责「能从仓库算出来」的东西：测试条数、基线行数、Python 版本、
+# 项目结构树、支持格式表。CI 里跑 `--check`（含 test-count）；这里跑便宜版（跳过要收集测试的
+# test-count），免得「在测试里再跑一遍测试」。
+def test_readme_mechanical_blocks_are_in_sync():
+    from scripts import sync_readme
+
+    assert sync_readme.main(["--check", "--no-test-count"]) == 0, (
+        "README 的自动生成块与仓库不一致：跑 `python scripts/sync_readme.py --write` 后看 git diff"
+    )

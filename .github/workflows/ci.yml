@@ -26,3 +26,10 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      # README 里「能从仓库算出来」的部分（测试条数、基线行数、Python 版本、项目结构树、
+      # 支持格式表）由 scripts/sync_readme.py 生成；漂了就在这里红。
+      # 背景（2026-11-19）：一直靠人肉更新，一次检查发现四处过期/互相矛盾的数字
+      # （750 passed、基线 1998 / 1600+ / 1650 行），实际是 767 与 2691 行。
+      - name: Check README is in sync with the repo
+        run: python scripts/sync_readme.py --check
