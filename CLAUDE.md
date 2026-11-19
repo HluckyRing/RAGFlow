@@ -159,6 +159,10 @@ LLM API 使用 OpenAI 兼容接口，`BASE_URL` + `API_KEY` 决定实际调用�
 2. **设计先于编码** — 收到功能需求时，先用 brainstorming skill 做需求分析
 3. **测试先于实现** — 写代码前先写测试（TDD）
 4. **验证先于完成** — 声称完成前必须运行验证命令
+5. **拆多个提交时逐提交验证** — push 前对每个提交 `git checkout` 跑一遍 `pytest -q`：
+   提交要按**依赖闭包**拆（README 的自动生成块依赖脚本与它引用的文档），否则历史里会夹着
+   一个红的提交，`git bisect` 也会被骗（2026-11-19 踩到：README 的 `AUTO:docs-lines`
+   落在后一个提交，前一提交单独跑必红）
 
 ## 可用 Skills
 
