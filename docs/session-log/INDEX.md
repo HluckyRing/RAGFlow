@@ -44,6 +44,17 @@
   `pytest` 750→**768**（+15 范围词 +2 文档漂移守卫 +1 同步守卫）、变异检查 8 项全红；README 的机械部分改由 `scripts/sync_readme.py` 生成（CI `--check`）。坑：`git checkout`
   抹掉未提交改动、延时被 HyDE 污染、默认语料选错、误召回没分路、**文档里的硬数字没人管**（README
   的 750 passed / 1998 行 / 「这个服务没有鉴权」全部过期，本轮补了两条守卫）。
+- **2026-11-20 发版 v1.2.0（拆问 / 覆盖说明 / 范围词 / 安全闸门）**：
+  `docs/session-log/2026-11-20-v1.2.0-release.md`，正文看 `docs/release-notes-1.2.0.md`
+  —— 判据：落后 **79 提交**（43 个 feat/fix/perf/refactor）、`main == origin/main`、CI success、
+  `pytest` **768 passed**、`sync_readme --check` 一致；待办 1–7 全是长线研究，**不阻塞发版**，
+  但全部写成「已知限制」。一个提交 `2157668`（version 1.1.0→1.2.0 + 手写 notes）→ 标签
+  `v1.2.0` → `publish.yml` 18 s 出 Release（wheel 791 593 字节）→ `gh release edit --notes-file`
+  换掉自动正文 → 回读 Latest / 标签 / 附件内容（37 entries、`index.html`、12 vendor、
+  `Version: 1.2.0`）/ CI success。坑五条，头两条是通用的：**`--generate-notes` 对直推 main
+  的仓库只有一行 Full Changelog**（v1.1.0 与本轮都验证）、**别拿 wheel 字节数比对**
+  （Windows 792 031 vs Linux 791 593，要抽查内容）；另有 PowerShell 拆 `gh` 参数、
+  破坏性变更（公开监听无 `AUTH_TOKEN` 拒绝启动、`CHUNK_SIZE` 600→480）必须进 notes。
 - **2026-11-14 覆盖取样拆开关 + 文件内跨节质量门（两件）**：
   `docs/session-log/2026-11-14-coverage-switch-and-intra-gold.md`
   —— ① 把混在一起的 `COVERAGE_SAMPLING` 拆成 `COVERAGE_CROSS_FILE`（线上预算下已证 no-op）与
