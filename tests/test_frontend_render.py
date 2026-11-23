@@ -172,6 +172,8 @@ const partial = buildCoverageTag({ file_name: '第2章 - 回归分析.pdf', cove
 const full = buildCoverageTag({ file_name: '第3章 - k近邻算法.pdf', covered: 51, total: 51 });
 const missing = buildCoverageTag({});
 const stringy = buildCoverageTag({ file_name: 'x.pdf', covered: '43', total: '110' });
+const gaps = buildCoverageTag({ file_name: '第2章 - 回归分析.pdf', covered: 43, total: 110,
+                                missing_titles: ['岭回归', 'Lasso 回归'], missing_count: 7 });
 const host = createElement('div');
 showCoverageTag(host, { file_name: 'a.pdf', covered: 1, total: 2 });
 showCoverageTag(host, { file_name: 'a.pdf', covered: 1, total: 2 });
@@ -182,6 +184,7 @@ process.stdout.write(JSON.stringify({
     stringy: stringy.textContent,
     hostChildren: host.children.length,
     hostTagText: host.children[0].textContent,
+    gaps: gaps.textContent,
 }));
 """
 
@@ -218,6 +221,14 @@ def test_coverage_tag_ignores_malformed_payload(rendered_coverage):
     """形状不对（缺字段 / 数字是字符串）不许渲染出脏数据。"""
     assert "只摘录" not in rendered_coverage["missing"]
     assert "只摘录" not in rendered_coverage["stringy"]
+
+
+def test_coverage_tag_names_the_missing_titles(rendered_coverage):
+    """缺口清单（2026-11-20）：光说「只摘了 43/110 段」不够，要说「没读到哪几页」。"""
+    text = rendered_coverage["gaps"]
+    assert "43/110" in text
+    assert "岭回归" in text and "Lasso 回归" in text
+    assert "等 7 个" in text, "被截断时要说总数，别让用户以为只缺两条"
 
 
 def test_show_coverage_tag_appends_once(rendered_coverage):

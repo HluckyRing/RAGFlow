@@ -198,7 +198,7 @@ def pick_target_file(question, file_names):
     return matched[0] if len(matched) == 1 else None
 
 
-def intra_file_report(picked, total_candidates, file_name):
+def intra_file_report(picked, total_candidates, file_name, pool=None):
     """整章取样的**覆盖账**：这次到底摘了几段、目标文件一共几段（PDF/PPT 上一段 = 一页）。
 
     为什么需要它（2026-11-15）：内置上下文预算 `MAX_CONTEXT_LENGTH=8000` 装不下 100 页的课件
@@ -209,21 +209,115 @@ def intra_file_report(picked, total_candidates, file_name):
 
     只用计数、不用比例：一段一页的语料上两者等价，而 md 语料一段 480 字，
     报「N/M 段」永远为真，报「页」会撒谎。
+
+    `pool` 可选：给了**本文件的全部候选块**时，额外算出「哪些页标题一次都没读到」
+    （见 `topic_gaps`）—— 光有总账说不出「缺的是什么」，这一列补的就是那句。
     """
     covered = len(picked or [])
     total = max(int(total_candidates or 0), covered)
-    return {"kind": "intra_file", "file_name": file_name or "",
-            "covered": covered, "total": total}
+    report = {"kind": "intra_file", "file_name": file_name or "",
+              "covered": covered, "total": total}
+    if isinstance(pool, (list, tuple)):
+        report.update(topic_gaps(pool, picked))
+    return report
+
+
+# ── 缺口清单：缺的是哪几段、那几段讲什么（2026-11-20 第二十轮）──
+#
+# 为什么不是「按小节编号归属」：原型实测三份语料三种坏法（负结果记在
+# `.agents/intra-sections-spec.md`）——大纲页**一次性列全章小节**、不带「哪一节从哪页开始」
+# 的信息；靠「页首标题 ≈ 小节标题」去猜，第1章 `1.6 操作系统的结构设计` 的正文页首行是
+# 「操作系统结构设计」（差一个「的」）就锚不上，第4章还会算出 `p12-0` 这种负区间，
+# ML 的 PDF 干脆没有编号大纲、正文算式反被当成标题。**猜错的「缺失小节」比不说更糟。**
+#
+# 所以退一步，只报**能验证的东西**：没进 context 的块，它们的页标题是什么。每个标题都来自
+# 真实块文本，判据是「这个标题在 picked 块里一次都没出现过」——不需要知道小节边界，也不会编。
+_NOISE_TITLES = {"date", "signature", "内容提要"}
+_STRUCTURAL_TITLES = {"内容导航：", "内容导航", "目录", "/content/"}
+_NOISE_HINTS = ("主讲", "主审", "作者：", "版权", "谢谢", "学习进步")
+_BULLET_PREFIX = "⚫➢•·●■◆◇*＊-—–〉》"
+_PAGE_PREFIX_RE = re.compile(r"^\s*\d{1,3}\s*[/／]\s*")
+_TITLE_MAX = 18
+_TITLE_SCAN_LINES = 3        # 只在前 3 行里找标题：再往下就是正文了
+_TITLE_RAW_MAX = 24         # 长过这个数的一律当正文，不许截断后冒充标题
+TOPIC_LIMIT = 4
+
+
+def page_title(text):
+    """块的「页标题」：前 3 行里第一个像标题的行（去掉 `67 / ` 前缀、丢掉噪音行），截到 18 字。
+
+    三条边界都是被真实语料逼出来的：
+    ① 只扫前 3 行 —— 正文里随便一行拿来当标题比不报更糟；
+    ② 原始行超过 24 字当正文（PPT 正文行普遍 25 字以上），不许「截断一个长句子」冒充标题；
+    ③ 噪音行（`Date` / `Signature` / 版权行 / 知识导图页）跳过。
+    拿不到就返回空串 —— 全局 `topic_gaps` 据此整段退回老话术，不编。
+    """
+    for index, raw in enumerate(str(text or "").split("\n")):
+        if index >= _TITLE_SCAN_LINES:
+            break
+        line = _PAGE_PREFIX_RE.sub("", raw.strip()).strip()
+        line = line.lstrip(_BULLET_PREFIX).strip()
+        if not line or line.isdigit() or len(line) < 2:
+            continue
+        if len(line) > _TITLE_RAW_MAX:
+            return ""                       # 这是正文，不是标题 —— 别再往下抓一行短的凑数
+        # 结构页（目录 / 知识导图）就地判死：它们后面的行是全章清单，当标题会张冠李戴。
+        if line.lower() in _STRUCTURAL_TITLES or (line.startswith("第") and line.endswith("知识导图")):
+            return ""
+        if line.lower() in _NOISE_TITLES or any(hint in line for hint in _NOISE_HINTS):
+            continue
+        return line if len(line) <= _TITLE_MAX else line[:_TITLE_MAX] + "…"
+    return ""
+
+
+def topic_gaps(pool, picked):
+    """缺口清单：`pool` 里有、但 `picked` 里一份都没读到的页标题。
+
+    判据刻意写成「标题在 picked 里一次都没出现」而不是「块没被选中」：同一标题常横跨好几页
+    （「岭回归」连排 3 页），读了 1 页就算这个标题摸到了 —— 报成「缺」会夸大缺口。
+
+    返回 `{"topics_total": int, "topics_missing": [...最多 TOPIC_LIMIT 条], "missing_count": int}`；
+    一条标题都解析不出来时返回空 dict（调用方据此退回老话术，不编）。
+    """
+    picked_keys = {(str(text or ""), (meta or {}).get("chunk_index"))
+                   for text, meta in (picked or [])}
+    covered_titles, missing_titles = set(), []
+    for text, meta in pool or []:
+        title = page_title(text)
+        if not title:
+            continue
+        if (str(text or ""), (meta or {}).get("chunk_index")) in picked_keys:
+            covered_titles.add(title)
+        elif title not in missing_titles:
+            missing_titles.append(title)
+    if not covered_titles and not missing_titles:
+        return {}
+    missing = [title for title in missing_titles if title not in covered_titles]
+    return {"topics_total": len(covered_titles) + len(missing),
+            "topics_missing": missing[:TOPIC_LIMIT],
+            "missing_count": len(missing)}
 
 
 def intra_file_notice(report):
-    """把覆盖账翻译成**给模型看的一句话**；全覆盖（或没有账）返回空串。"""
+    """把覆盖账翻译成**给模型看的一句话**；全覆盖（或没有账）返回空串。
+
+    两句话：总账（摘了 N/M 段）+ 缺口清单（哪些页标题一次都没读到）。
+    解析不出标题的语料上只说总账 —— 与 2026-11-15 那版逐字一致，不许编。
+    """
     if not report or report.get("kind") != "intra_file":
         return ""
     covered, total = int(report.get("covered") or 0), int(report.get("total") or 0)
     if covered <= 0 or total <= 0 or covered >= total:
         return ""
     name = report.get("file_name") or "这份文件"
+    missing = list(report.get("topics_missing") or [])
+    count = int(report.get("missing_count") or 0)
+    if missing:
+        listed = "、".join(missing)
+        more = f" 等 {count} 个页标题" if count > len(missing) else ""
+        return (f"【覆盖说明】本次只从《{name}》里摘录了 {covered}/{total} 段（按页均匀取样），"
+                f"这些页标题一次都没读到：{listed}{more}。"
+                f"回答时请如实说明「本次只覆盖了这份文件的一部分」，不要假装看过全部内容。")
     return (f"【覆盖说明】本次只从《{name}》里摘录了 {covered}/{total} 段（按小节均匀取样），"
             f"未被摘录的小节可能正是你要的细节。回答时请如实说明「本次只覆盖了这份文件的部分"
             f"小节」，不要假装看过全部内容。")

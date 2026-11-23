@@ -20,14 +20,17 @@ from src.config import coverage_switches
 
 from src.coverage import (
     ENUMERATION_MARKERS,
+    TOPIC_LIMIT,
     blocks_that_fit,
     chapter_numbers,
     intra_file_notice,
     intra_file_report,
+    page_title,
     pick_target_file,
     sample_evenly,
     section_order,
     structural_texts,
+    topic_gaps,
     coverage_report,
     file_names_of,
     is_navigational,
@@ -638,3 +641,116 @@ def test_intra_file_sampling_works_on_a_single_file_corpus(monkeypatch):
     assert out, "单文件语料也要能铺开整章"
     assert {meta["file_name"] for _t, meta in out} == {"01-第1章_甲.md"}
     assert len(out) >= 10, "铺开整章，不是只抓头几块"
+
+# ── 缺口清单：缺的是哪几段、那几段讲什么（2026-11-20 第二十轮）──
+#
+# 待办 ①「缺的是哪一节」：光有总账（N/M 段）用户不知道少了什么。负结果先记着——按「小节编号」
+# 归属这条路原型实测是坏的（大纲页一次性列全章小节、正文页首行与小节标题不互为子串、ML 的 PDF
+# 没有编号大纲还把正文算式当标题），所以这里只报**能验证的东西**：没进 context 的块，
+# 它们的页标题是什么。判据是「这个标题在 picked 块里一次都没出现过」，不需要知道小节边界。
+
+def _page(name, page, title, body="正文"):
+    return (f"{title}\n{body}", {"file_name": name, "section": f"第 {page} 页",
+                                 "chunk_index": page})
+
+
+def test_page_title_strips_page_prefix_and_noise():
+    assert page_title("67 / 岭回归\n正文") == "岭回归"
+    assert page_title("⚫ 采用数值近似\n正文") == "采用数值近似"
+    assert page_title("Date\n1.1 甲") == "1.1 甲", "噪音行要跳过，取下一个像标题的行"
+    # 结构页（目录 / 知识导图）后面的行是全章清单，当标题会张冠李戴 —— 就地判死
+    assert page_title("Date\n内容导航：\n1.1 甲") == ""
+    assert page_title("第5章知识导图\n第1章 | 甲") == ""
+    assert page_title("主讲：王红玲    主审：汤小丹\n正文") == "正文", "版权行跳过"
+    # 正文行（> 24 字）绝不许截断后冒充标题 —— 这是「不编名字」的底线
+    assert page_title("连续分配方式：为一个用户程序分配一个连续的内存空间。\n正文") == ""
+    # 只扫前 3 行：第 4 行才出现的「标题」不算
+    assert page_title("正文\n正文\n正文\n看起来像标题") == "正文"
+    assert page_title("") == "" and page_title(None) == ""
+
+
+def test_topic_gaps_names_what_was_never_read():
+    pool = [_page("甲.pdf", 1, "概述"), _page("甲.pdf", 2, "线性回归模型"),
+            _page("甲.pdf", 3, "岭回归"), _page("甲.pdf", 4, "Lasso 回归")]
+    picked = [pool[0], pool[2]]
+    gaps = topic_gaps(pool, picked)
+    assert gaps["topics_missing"] == ["线性回归模型", "Lasso 回归"]
+    assert gaps["missing_count"] == 2
+    assert gaps["topics_total"] == 4
+
+
+def test_topic_gaps_counts_a_title_once_even_if_it_spans_pages():
+    """同一标题连排好几页时，读了其中 1 页就算这个标题摸到了 —— 报成「缺」会夸大缺口。"""
+    pool = [_page("甲.pdf", 1, "岭回归"), _page("甲.pdf", 2, "岭回归"),
+            _page("甲.pdf", 3, "Lasso 回归")]
+    gaps = topic_gaps(pool, [pool[0]])
+    assert gaps["topics_missing"] == ["Lasso 回归"], "岭回归读到了 1 页，不许再说缺"
+    assert gaps["topics_total"] == 2
+
+
+def test_topic_gaps_precision_every_named_title_is_really_absent():
+    """判据 1（精确率 100%）：点名的每个标题，在 picked 块里一次都不许出现过。"""
+    # 池子里标题有重复（同一标题连排好几页）：这时「读过」的标题绝不许再被点名
+    pool = [_page("甲.pdf", i, f"标题{i % 5}") for i in range(1, 21)]
+    picked = pool[:3]
+    gaps = topic_gaps(pool, picked)
+    read_titles = {page_title(text) for text, _meta in picked}
+    assert gaps["topics_missing"], "构造里本来就该有缺口"
+    assert not (set(gaps["topics_missing"]) & read_titles), "读过的标题不许再点名"
+
+
+def test_topic_gaps_caps_the_list_but_reports_the_count():
+    pool = [_page("甲.pdf", i, f"标题{i}") for i in range(1, 10)]
+    gaps = topic_gaps(pool, [])
+    assert len(gaps["topics_missing"]) == TOPIC_LIMIT
+    assert gaps["missing_count"] == 9
+
+
+def test_topic_gaps_returns_nothing_when_titles_cannot_be_parsed():
+    """判据 2（不编名字）：一条标题都解析不出来时返回空 dict，调用方据此退回老话术。"""
+    pool = [("", {"file_name": "甲.pdf", "chunk_index": 1}),
+            ("主讲：王红玲", {"file_name": "甲.pdf", "chunk_index": 2})]
+    assert topic_gaps(pool, []) == {}
+
+
+def test_intra_file_notice_falls_back_to_the_old_wording_without_titles():
+    """判据 2：没有缺口清单时，文本必须与 2026-11-15 那版**逐字一致**。"""
+    report = intra_file_report([("a", {}), ("b", {})], 10, "第2章.pdf")
+    assert "topics_missing" not in report
+    assert intra_file_notice(report) == (
+        "【覆盖说明】本次只从《第2章.pdf》里摘录了 2/10 段（按小节均匀取样），"
+        "未被摘录的小节可能正是你要的细节。回答时请如实说明「本次只覆盖了这份文件的部分小节」，"
+        "不要假装看过全部内容。")
+
+
+def test_intra_file_notice_names_the_missing_titles():
+    pool = [_page("甲.pdf", 1, "概述"), _page("甲.pdf", 2, "岭回归")]
+    report = intra_file_report([pool[0]], 2, "甲.pdf", pool=pool)
+    notice = intra_file_notice(report)
+    assert "岭回归" in notice and "概述" not in notice
+    assert "1/2" in notice
+    assert "不要假装看过全部内容" in notice
+
+
+def test_intra_file_report_keeps_the_old_contract_without_a_pool():
+    assert intra_file_report([("a", {})], 10, "x.pdf") == {
+        "kind": "intra_file", "file_name": "x.pdf", "covered": 1, "total": 10}
+
+
+def test_intra_file_sampling_fills_the_gap_list(monkeypatch):
+    """接线：`ensure_file_coverage` 要把缺口清单填进 `coverage_out`（SSE 与提示都靠它）。"""
+    monkeypatch.setattr(llm, "COVERAGE_CROSS_FILE", False)
+    monkeypatch.setattr(llm, "COVERAGE_INTRA_FILE", True)
+    pages = [(f"小节{i}标题\n正文{i} " + "正文" * 60,
+              {"file_name": "02-第2章_甲.md", "section": f"第 {i} 页", "chunk_index": i})
+             for i in range(1, 101)]
+    collection = _StubCollection(pages)
+    report = {}
+    picked = llm.ensure_file_coverage("帮我整理第2章的内容", collection,
+                                      [("02-第2章_甲.md", "正文")], [], 10,
+                                      coverage_out=report)
+    read_titles = {page_title(text) for text, _meta in picked}
+    assert report["covered"] < report["total"]
+    assert report["missing_count"] > 0
+    assert report["topics_missing"], "缺口清单要真的点名，不能只有一个数字"
+    assert not (set(report["topics_missing"]) & read_titles), "点名的标题必须真的没读到"

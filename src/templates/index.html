@@ -1343,7 +1343,16 @@ function buildCoverageTag(cov) {
     const covered = (cov && typeof cov.covered === 'number') ? cov.covered : 0;
     const total = (cov && typeof cov.total === 'number') ? cov.total : 0;
     if (total > 0 && covered < total) {
-        tag.textContent = `ℹ️ 本次只摘录了${name}的 ${covered}/${total} 段，未摘录的小节可能没讲到`;
+        let text = `ℹ️ 本次只摘录了${name}的 ${covered}/${total} 段`;
+        // 缺口清单（2026-11-20）：说出「少了哪些页标题」，不然用户只知道少了、不知道少什么。
+        // 标题是服务端从块文本里摘的，一律 textContent，绝不进 innerHTML。
+        const missing = (cov && Array.isArray(cov.missing_titles)) ? cov.missing_titles : [];
+        const missingCount = (cov && typeof cov.missing_count === 'number') ? cov.missing_count : 0;
+        if (missing.length) {
+            const more = missingCount > missing.length ? ` 等 ${missingCount} 个` : '';
+            text += `；没读到：${missing.join('、')}${more}`;
+        }
+        tag.textContent = text;
     } else {
         tag.textContent = `ℹ️ 本次已覆盖${name}的全部 ${total} 段`;
     }

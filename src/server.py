@@ -665,6 +665,25 @@ def _sse_event(payload):
     return f"data: {json.dumps(payload)}\n\n"
 
 
+def _coverage_payload(coverage):
+    """覆盖账的统一形状（SSE 事件与落盘共用一份），没有账时返回 None。
+
+    总账（摘了 N/M 段）+ 缺口清单（`missing_titles` / `missing_count`，2026-11-20）：
+    光说「摘了 48/86 段」用户不知道少了什么，缺口清单点名「哪些页标题一次都没读到」。
+    解析不出页标题的语料上只有总账 —— 那一列**宁缺不编**。
+    """
+    if not coverage or not coverage.get("total"):
+        return None
+    payload = {"file_name": coverage.get("file_name") or "",
+               "covered": int(coverage.get("covered") or 0),
+               "total": int(coverage.get("total") or 0)}
+    missing = list(coverage.get("topics_missing") or [])
+    if missing:
+        payload["missing_titles"] = missing
+        payload["missing_count"] = int(coverage.get("missing_count") or len(missing))
+    return payload
+
+
 def _chat_stream(sid, conv_id, question, context, history, sources=None,
                  searched_files=0, coverage=None):
     """同步生成器：把 stream_answer 的 token 转成 SSE，并在结束时落盘。
@@ -712,11 +731,9 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None,
         与 sources 同一时机（判成正常回答之后）：它不是「答案出处」，而是「这份上下文有多全」。
         拒答时不推 —— 拒答那边已经用 `searched_files` 说过「查过几个文件」了。
         """
-        if coverage and coverage.get("total"):
-            return _sse_event({"type": "coverage",
-                               "file_name": coverage.get("file_name") or "",
-                               "covered": int(coverage.get("covered") or 0),
-                               "total": int(coverage.get("total") or 0)})
+        payload = _coverage_payload(coverage)
+        if payload:
+            return _sse_event(dict(type="coverage", **payload))
         return None
 
     try:
@@ -783,9 +800,7 @@ def _chat_stream(sid, conv_id, question, context, history, sources=None,
             if sources and not refused:
                 entry["sources"] = sources
             if coverage and not refused:
-                entry["coverage"] = {"file_name": coverage.get("file_name") or "",
-                                     "covered": int(coverage.get("covered") or 0),
-                                     "total": int(coverage.get("total") or 0)}
+                entry["coverage"] = _coverage_payload(coverage)
             _append_message(sid, conv_id, entry)
     yield _sse_event({"type": "done"})
 

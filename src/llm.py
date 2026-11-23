@@ -145,6 +145,7 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
         blocks = blocks_that_fit(inside, COVERAGE_INTRA_FILE_BLOCKS, MAX_CONTEXT_LENGTH)
         picked = sample_evenly(inside, blocks)
         total_blocks = len(inside)
+        pool = inside                                # 缺口清单按命中的这批块算（没枚举就不假装知道全）
         if not inside or len(inside) < blocks:
             # 命中里这份文件的块太少（甚至一块都没有）：把**这份文件的所有块**取回来再按节铺开。
             #
@@ -176,7 +177,7 @@ def ensure_file_coverage(question, collection, files, hits, top_k, backfill=None
         logger.info("同文件跨节取样：目标文件「%s」，命中 %d 块 → 按节取 %d 块（整份 %d 块）",
                     target, len(hits or []), len(picked), total_blocks)
         if coverage_out is not None:
-            coverage_out.update(intra_file_report(picked, total_blocks, target))
+            coverage_out.update(intra_file_report(picked, total_blocks, target, pool=pool))
         return picked
 
     if not COVERAGE_CROSS_FILE:

@@ -382,6 +382,38 @@ def test_chat_pushes_coverage_and_persists_it(client, asked, monkeypatch):
         "file_name": "第2章.pdf", "covered": 43, "total": 110}, "覆盖说明要落盘，刷新后还在"
 
 
+def test_chat_pushes_the_gap_list_and_persists_it(client, asked, monkeypatch):
+    """缺口清单（2026-11-20）：覆盖事件要带「哪些页标题一次都没读到」，且跟着消息落盘。
+
+    光有「43/110 段」用户不知道少了什么；缺口清单是 `coverage.topics_missing` 的直接出口。
+    """
+    seen, fake_stream = asked
+    monkeypatch.setattr(server, "stream_answer", fake_stream)
+
+    def fake_retrieve(question, full_text, collection, use_vector, top_k=None, files=None,
+                      decompose=None, history=None, coverage_out=None):
+        if coverage_out is not None:
+            coverage_out.update({"kind": "intra_file", "file_name": "第2章.pdf",
+                                 "covered": 43, "total": 110,
+                                 "topics_total": 30, "topics_missing": ["岭回归", "Lasso 回归"],
+                                 "missing_count": 7})
+        return "背景内容", [{"text": "背景内容", "file_name": "第2章.pdf"}]
+
+    monkeypatch.setattr(server, "retrieve_and_build_context", fake_retrieve)
+
+    sid = client.get("/api/session").json()["session_id"]
+    conv_id = _prepare(client, sid)
+    r = client.post("/api/chat", json={"question": "帮我整理第2章的内容", "session_id": sid,
+                                       "conv_id": conv_id})
+    events = [json.loads(line[6:]) for line in r.text.split("\n") if line.startswith("data: ")]
+    cov = [e for e in events if e["type"] == "coverage"][0]
+    assert cov["missing_titles"] == ["岭回归", "Lasso 回归"]
+    assert cov["missing_count"] == 7, "截断了也要给总数"
+    saved = json.loads(state.file_for(sid).read_text(encoding="utf-8"))
+    assert saved["conversations"][conv_id]["messages"][-1]["coverage"]["missing_titles"] == \
+        ["岭回归", "Lasso 回归"], "缺口清单要落盘，刷新后还在"
+
+
 def test_no_coverage_event_when_refused(client, monkeypatch):
     """拒答不推覆盖说明：拒答那边已经用 searched_files 说过「查过几个文件」了。"""
     def refuse_stream(question, context, history):
