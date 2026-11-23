@@ -19,7 +19,7 @@
 
 **为什么不是又一个 RAG demo**：同名项目很多（比如 `infiniflow/ragflow`）。这个仓库的差异在于
 **每一个默认值都有可复现的实测依据** —— [`docs/retrieval-baseline-2026-10-06.md`](docs/retrieval-baseline-2026-10-06.md)
-里是 <!-- AUTO:docs-lines -->2812<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->780<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
+里是 <!-- AUTO:docs-lines -->2812<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->786<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
 （例如「调大 `TOP_K`」实测 +0.0pp，被直接否掉）。想直接看数字，往下翻到「📊 实测数据」一节。
 
 ## ✨ 核心亮点
@@ -58,7 +58,7 @@
 | reranker 为什么默认关 | CPU **3.9 s/问**，没过「中位 ≤1.5 s」这条线 | 实测 |
 | 并发扛得住吗 | embedding 是**排队不是并行**（8 并发只 ×1.3 吞吐），但它不是瓶颈；20 并发请求零错误 | 进程内基准 + 真实 uvicorn 压测 |
 
-`pytest tests -q` → **<!-- AUTO:test-count -->780<!-- /AUTO:test-count --> passed**（整条约 20 s）。
+`pytest tests -q` → **<!-- AUTO:test-count -->786<!-- /AUTO:test-count --> passed**（整条约 20 s）。
 
 ## 📋 支持格式
 
@@ -164,6 +164,7 @@ RAGFlow/
 │   └── templates/          # 前端界面（vendor/ 为本地内置的 Office 预览库）
 ├── scripts/
 │   ├── analyze_real_questions.py        # 盘真实提问（只读 state/）：闸门触发率、复合问占比
+│   ├── check_release_notes.py           # 发版守卫：标签必须有对应的 docs/release-notes-<版本>.md（缺了让工作流红）
 │   ├── cleanup_orphan_collections.py    # 孤儿向量集合清理（默认干跑）
 │   ├── eval_compound_retrieval.py       # 复合问句检索覆盖 + 分路对照（含模型拆问臂）
 │   ├── eval_decomposition.py            # 拆问本身的结构测量（闸门/延迟/条数/误拆）

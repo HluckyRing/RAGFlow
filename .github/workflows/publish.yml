@@ -21,7 +21,14 @@ jobs:
       - name: Build wheel
         run: pip install build && python -m build --wheel
 
+      # 正文必须来自仓库里的手写 notes（2026-11-23）。
+      # 自动生成的正文在「直推 main、没有 PR」的仓库里只有一行 Full Changelog ——
+      # v1.1.0 / v1.2.0 / v1.2.1 三次都验证过，等于没有正文。所以缺文件就让工作流红。
+      # 逻辑在 scripts/check_release_notes.py 里，pytest 直接测过；这里只负责调用。
+      - name: Check release notes
+        run: python scripts/check_release_notes.py --tag "$GITHUB_REF_NAME"
+
       - name: Create Release
-        run: gh release create ${{ github.ref_name }} dist/*.whl --title "${{ github.ref_name }}" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/*.whl --title "$GITHUB_REF_NAME" --notes-file "$NOTES"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

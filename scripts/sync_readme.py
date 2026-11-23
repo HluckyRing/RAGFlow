@@ -89,6 +89,7 @@ DESCRIPTIONS = {
     "scripts/analyze_real_questions.py": "盘真实提问（只读 state/）：闸门触发率、复合问占比",
     "scripts/reindex_all.py": "按当前切片重建所有对话索引（默认干跑）",
     "scripts/cleanup_orphan_collections.py": "孤儿向量集合清理（默认干跑）",
+    "scripts/check_release_notes.py": "发版守卫：标签必须有对应的 docs/release-notes-<版本>.md（缺了让工作流红）",
     "scripts/sync_readme.py": "README 的机械部分生成 / 校验（本文件）",
 }
 

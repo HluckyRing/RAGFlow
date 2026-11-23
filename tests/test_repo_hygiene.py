@@ -128,3 +128,71 @@ def test_readme_mechanical_blocks_are_in_sync():
     assert sync_readme.main(["--check", "--no-test-count"]) == 0, (
         "README 的自动生成块与仓库不一致：跑 `python scripts/sync_readme.py --write` 后看 git diff"
     )
+
+# ── 发版正文来自仓库里的手写 notes，不许再发空正文（2026-11-23）──
+#
+# 病根：`--generate-notes` 在「直推 main、没有 PR」的仓库里抓不到东西，v1.1.0 / v1.2.0 /
+# v1.2.1 三次发出来的正文都只有一行 Full Changelog，只能事后 `gh release edit --notes-file` 补。
+# 做法：把「读哪份 notes」搬进 `scripts/check_release_notes.py`（可被 pytest 直接测），
+# 工作流只负责调用它 + `gh release create --notes-file`。
+
+def _git_tracked_workflow():
+    raw = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    # 只看生效的行：注释里可以解释「为什么不用自动生成」，那不算用了它
+    return "\n".join(line for line in raw.splitlines() if not line.strip().startswith("#"))
+
+
+def test_publish_workflow_takes_release_notes_from_the_repo():
+    text = _git_tracked_workflow()
+    assert "scripts/check_release_notes.py" in text, "发版前必须过 notes 守卫脚本"
+    assert "--notes-file" in text, "发版正文必须来自仓库里的手写 notes"
+    assert "--generate-notes" not in text, \
+        "直推 main 的仓库里 --generate-notes 只会产出空正文，别再退回去"
+
+
+def test_release_notes_guard_accepts_the_current_version():
+    import scripts.check_release_notes as guard
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"', pyproject, re.M)
+    assert match, "pyproject.toml 里找不到 version"
+    ok, message, path = guard.check(f"v{match.group(1)}")
+    assert ok, message
+    assert path.name == f"release-notes-{match.group(1)}.md"
+
+
+def test_release_notes_guard_rejects_a_missing_file(tmp_path):
+    """缺 notes 就必须红：宁可停在这一步，也不要再发一个空正文的 Release。"""
+    import scripts.check_release_notes as guard
+
+    ok, message, path = guard.check("v9.9.9", root=tmp_path)
+    assert not ok and "release-notes-9.9.9.md" in message
+
+
+def test_release_notes_guard_rejects_a_too_short_file(tmp_path):
+    import scripts.check_release_notes as guard
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "release-notes-9.9.9.md").write_text("# v9.9.9\n太短\n", encoding="utf-8")
+    ok, message, _path = guard.check("v9.9.9", root=tmp_path)
+    assert not ok and "太短" in message or "至少" in message
+
+
+def test_release_notes_guard_writes_notes_env(tmp_path):
+    """通过时把 NOTES 写进 $GITHUB_ENV，后续 gh release create 才拿得到路径。"""
+    import scripts.check_release_notes as guard
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "release-notes-1.2.1.md").write_text(
+        "# v1.2.1\n" + "正文" * 300, encoding="utf-8")
+    env_file = tmp_path / "github_env"
+    code = guard.main(["--tag", "v1.2.1", "--root", str(tmp_path),
+                       "--github-env", str(env_file)])
+    assert code == 0
+    assert env_file.read_text(encoding="utf-8").strip() == "NOTES=docs/release-notes-1.2.1.md"
+
+
+def test_release_notes_guard_exits_nonzero_when_missing(tmp_path):
+    import scripts.check_release_notes as guard
+
+    assert guard.main(["--tag", "v9.9.9", "--root", str(tmp_path)]) == 1

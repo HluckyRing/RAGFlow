@@ -51,6 +51,15 @@
   `gh release list` 显示 Latest。**同一轮自查抓到日期写错**（本轮工作在 11-23，我按上一轮
   印象写成 11-20）：`git mv` 改名 + 五处正文改正 + 会话日志补「跨天会话要当场 Get-Date」
   这条教训。
+- **2026-11-23 发版正文硬门：Release 必须用仓库里的手写 notes（待办 ⑧）**：
+  `docs/session-log/2026-11-23-release-notes-guard.md`
+  —— `--generate-notes` 在直推 main 的仓库里只产出「Full Changelog」一行（v1.1.0 / v1.2.0 /
+  v1.2.1 三次都验证），这次改成硬门：逻辑搬进可测的 `scripts/check_release_notes.py`
+  （标签 → `docs/release-notes-<版本>.md`，缺文件或短于 400 字符就 `::error::` + 退出 1，
+  通过则把 `NOTES` 写进 `$GITHUB_ENV`），工作流只调用它 + `gh release create --notes-file`，
+  `--generate-notes` 已删。+6 条守卫（pytest 780 → **786**），变异检查 4/4 全红。
+  **量不到**：真·Actions 运行没验（本机 bash 指向没有发行版的 WSL），
+  `$GITHUB_ENV → $NOTES` 这条链要等下次真实打标签才算验过。
 - **2026-11-23 ML 语料扩到 4 章 + 整章取样质量门重跑（待办 ②）**：
   `docs/session-log/2026-11-23-ml-4ch-gate.md`
   —— 用户只有 4 章（第4章 - 决策树.pdf 91 页新入），语料 3 章 257 块 → **4 章 348 块**；
