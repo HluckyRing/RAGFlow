@@ -12,6 +12,8 @@
 3. 范围过滤把命中砍光 → 退回全库，绝不让一次过滤把问答答空；
 4. 候选池放大（`FUSION_CANDIDATES`）只改「每路取多少候选」，最终块数仍截到 `top_k`。
 """
+import pytest
+
 import src.retrieval as retrieval
 from src import scope
 
@@ -199,3 +201,90 @@ def test_fusion_candidates_off_by_default(monkeypatch):
 
     _texts, n_results, _where = coll.calls[0]
     assert n_results == 10
+
+# ── 定位：标题词 → 唯一的一份文件（2026-11-23 第二十一轮，待办 ④）──
+#
+# 真实需求：「操作系统引论那个课件里，进程调度有哪些算法」—— 没有章号，但点了文件标题。
+# 判据核心是**误定位必须为 0**：定位错了会把答案锁死在错的文件里，比不定位更糟。
+
+OPERATING_SYSTEMS = ["第1章 操作系统引论.pptx", "第2章 进程的描述与控制.pptx",
+                     "第5章 存储器管理.pptx", "第6章 虚拟存储器.pptx",
+                     "第9章 磁盘存储器管理.pptx"]
+MACHINE_LEARNING = ["第1章 - 绪论.pdf", "第2章 - 回归分析.pdf",
+                    "第3章 - k近邻算法.pdf", "第4章 - 决策树.pdf"]
+
+
+def test_title_core_strips_extension_and_chapter_prefix():
+    assert scope.title_core("第2章 - 回归分析.pdf") == "回归分析"
+    assert scope.title_core("第1章 操作系统引论.pptx") == "操作系统引论"
+    assert scope.title_core("04-数据备份与恢复.md") == "04数据备份与恢复"
+    assert scope.title_core("") == ""
+
+
+def test_name_target_needs_a_deictic_material_marker():
+    """光有标题词不够：「决策树和随机森林有什么区别」可能是在问通用概念，锁文件会掐掉跨文件答案。"""
+    assert scope.name_target("决策树那份 PPT 里的剪枝策略有哪些", MACHINE_LEARNING) == \
+        "第4章 - 决策树.pdf"
+    assert scope.name_target("决策树和随机森林有什么区别", MACHINE_LEARNING) is None
+
+
+def test_name_target_accepts_a_title_prefix():
+    """问句常只写标题的前几个字：「k近邻那份材料」↔`k近邻算法`。"""
+    assert scope.name_target("k近邻那份材料里的距离度量", MACHINE_LEARNING) == \
+        "第3章 - k近邻算法.pdf"
+
+
+def test_name_target_prefers_the_longest_match():
+    """「虚拟存储器」同时被 `存储器管理`（前缀「存储器」）和 `虚拟存储器` 命中 —— 取更长的那个。"""
+    assert scope.name_target("虚拟存储器那份材料的页表结构", OPERATING_SYSTEMS) == \
+        "第6章 虚拟存储器.pptx"
+
+
+def test_name_target_refuses_when_the_evidence_is_shared():
+    """「存储器」同时出现在三份标题里（存储器管理 / 虚拟存储器 / 磁盘存储器管理）—— 认不准就不动手。
+
+    这条是真实语料上抓到的误定位：只靠「最长命中」会把答案锁在 `存储器管理` 上。
+    """
+    assert scope.name_target("存储器那份材料讲了什么", OPERATING_SYSTEMS) is None
+
+
+def test_name_target_refuses_a_two_char_title_word():
+    """2 个字的标题词太泛（「进程」），认不准就不动手。"""
+    assert scope.name_target("进程那份材料里的同步机制", OPERATING_SYSTEMS) is None
+
+
+def test_name_target_refuses_ambiguous_matches():
+    assert scope.name_target("存储器管理那份材料", ["第5章 存储器管理.pptx",
+                                                    "存储器管理补充.pptx"]) is None
+
+
+@pytest.mark.parametrize("question", [
+    "这份材料主要讲了什么",          # 纯指代，没有标题词
+    "上面那个实验用的是哪个算法",     # 指的是话题不是文件
+    "帮我总结一下所有课件",          # 跨文件
+    "什么是过拟合",
+    "第1章和第2章有什么区别",        # 两个章号 = 认不准
+])
+def test_name_target_never_fires_without_evidence(question):
+    assert scope.name_target(question, OPERATING_SYSTEMS) is None
+
+
+def test_scope_target_finds_a_file_by_title_and_cleans_the_probe():
+    result = scope.scope_target("操作系统引论那个课件里，进程调度有哪些算法", OPERATING_SYSTEMS)
+    assert result and result["file_name"] == "第1章 操作系统引论.pptx"
+    assert "那个课件" not in result["question"], "指代 + 材料词要删掉，别再去污染检索探针"
+    assert "操作系统引论" in result["question"], "标题词是信息，保留"
+
+
+def test_scope_target_still_takes_the_chapter_path_first():
+    """有章号时走原路（判据一份实现），别被标题词抢走。"""
+    result = scope.scope_target("结合第2章课件，页表结构怎么组织", OPERATING_SYSTEMS)
+    assert result and result["file_name"] == "第2章 进程的描述与控制.pptx"
+    assert "第2章" not in result["question"]
+
+
+def test_scope_target_leaves_plain_questions_untouched():
+    """对照：不带「指代 + 材料」标记的问题，行为与改造前逐位相同（返回 None）。"""
+    for question in ["进程调度有哪些算法", "什么是过拟合", "帮我总结一下所有课件",
+                     "操作系统引论讲了什么"]:
+        assert scope.scope_target(question, OPERATING_SYSTEMS) is None

@@ -84,17 +84,124 @@ def scope_target(question, file_names):
 
     `question` 可能等于原问句（问句里有章号但没有「课件/讲义」这类范围短语，
     例如「第2章讲了什么」）—— 那时**仍然过滤**（人要的就是这一章），只是没有可删的词。
+
+    两条定位路径（2026-11-23 加第二条）：
+
+    1. **章号**（原有）：`chapter_numbers` + `pick_target_file`，唯一匹配才算；
+    2. **标题词**（新）：问句里有「指代 + 材料」标记（「那份 PPT」「那个课件」），且问句里出现了某份
+       文件标题的前缀（≥3 字，例如「k近邻那份材料」↔`k近邻算法`），且**只命中一份**文件。
+
+    「这份材料」「上面那个实验」这类**不做**：前者要「上一轮 sources / 最近上传顺序」，后者指的是话题
+    而不是文件 —— 没有依据就猜，会把答案锁死在错的文件里（见 `.agents/scope-deixis-spec.md`）。
     """
     names = [str(name) for name in (file_names or []) if name]
     if not names:
         return None
-    if not chapter_numbers(question):
-        return None
-    target = pick_target_file(question, names)
+    if chapter_numbers(question):
+        target = pick_target_file(question, names)
+        if not target:
+            return None
+        stripped = strip_scope(question)
+        probe = stripped or str(question or "").strip()
+        if not probe:
+            return None
+        return {"file_name": target, "question": probe}
+
+    target = name_target(question, names)
     if not target:
         return None
-    stripped = strip_scope(question)
-    probe = stripped or str(question or "").strip()
+    probe = strip_deictic(question) or str(question or "").strip()
     if not probe:
         return None
     return {"file_name": target, "question": probe}
+
+
+# ── 标题词定位（2026-11-23 第二十一轮，待办 ④）──
+#
+# 真实需求：「操作系统引论那个课件里，进程调度有哪些算法」—— 没有章号，但**点了文件标题**。
+# 这类提问原来一律不定位（`scope_target` 只认章号），结果过滤这条能力对它们完全失效。
+#
+# 为什么要求「指代 + 材料」标记：光有标题词不够保守 —— 「决策树和随机森林有什么区别」
+# 里的「决策树」可能是在问通用概念，锁到某一份文件会把跨文件的答案掐掉。
+# 有「那份 PPT / 那个课件」这类标记，才说明用户是在**指一份材料**。
+_DEICTIC = r"(?:这份|那份|这个|那个|该|本|刚才上传的?|上面|前面)"
+_MATERIAL = r"(?:文件|材料|课件|讲义|幻灯片|文档|pdf|PDF|Ppt|ppt|PPT)"
+_DEICTIC_MATERIAL_RE = re.compile(_DEICTIC + r"\s*" + _MATERIAL)
+# 探针改写：删掉「那份 PPT 里的」「那个课件里」这类包装词（标题词保留 —— 它是信息）
+_DEICTIC_WRAP_RE = re.compile(
+    _DEICTIC + r"\s*" + _MATERIAL + r"\s*(?:里|中|内)?\s*(?:的)?\s*")
+_EXT_RE = re.compile(r"\.(?:pdf|pptx?|docx?|md|markdown|xlsx?|txt|csv)$", re.I)
+_CHAPTER_PREFIX_RE = re.compile(r"^\s*第\s*[0-9一二三四五六七八九十]{1,3}\s*章\s*[-—_:：、]?\s*")
+_NAME_SEP_RE = re.compile(r"[\s\-—–_·、,，.。:：;；()（）\[\]【】《》\"'“”‘’/\\|]+")
+NAME_PREFIX_MIN = 3          # 标题前缀最少几个字符（「决策」「回归」这种 2 字太泛）
+
+
+def _normalize(text):
+    """比对用：去掉所有空白并转小写（「K 近邻」和「k近邻」要能对上）。"""
+    return re.sub(r"\s+", "", str(text or "")).lower()
+
+
+def title_core(file_name):
+    """文件名 → 标题核心：去扩展名、去「第N章」前缀、去分隔符。"""
+    name = _EXT_RE.sub("", str(file_name or "").strip())
+    name = _CHAPTER_PREFIX_RE.sub("", name)
+    return _normalize(_NAME_SEP_RE.sub("", name))
+
+
+def title_match_length(question, file_name, min_prefix=NAME_PREFIX_MIN):
+    """问句命中了这份文件标题的**多长**前缀（0 = 没命中；越长越可信）。"""
+    core = title_core(file_name)
+    if len(core) < min_prefix:
+        return 0
+    probe = _normalize(question)
+    for length in range(len(core), min_prefix - 1, -1):
+        if core[:length] in probe:
+            return length
+    return 0
+
+
+def title_matches(question, file_name, min_prefix=NAME_PREFIX_MIN):
+    """问句里有没有这份文件标题的前缀（≥`min_prefix` 个字）。"""
+    return title_match_length(question, file_name, min_prefix) > 0
+
+
+def name_target(question, file_names):
+    """按标题词定位：问句里有「指代 + 材料」标记，且**证据串在语料里唯一**时返回它。
+
+    两级判唯一（2026-11-23 实测出来的第二级）：
+    1. **最长命中优先**：问「虚拟存储器那份材料」时，`存储器管理` 也能靠前缀「存储器」命中，
+       但 `虚拟存储器` 命中得更长 —— 先取命中最长的那些；
+    2. **证据串还要在语料里唯一**：问「存储器那份材料」时最长命中是「存储器」（`存储器管理` 的前缀），
+       可这个串同时出现在 `虚拟存储器`、`磁盘存储器管理` 的标题里 —— 用户到底指哪份说不清，
+       **认不准就不动手**（只靠第 1 级会把答案锁死在 `存储器管理` 上，这是实测抓到的误定位）。
+    """
+    text = str(question or "")
+    if not _DEICTIC_MATERIAL_RE.search(text):
+        return None
+    names = [name for name in (file_names or []) if name]
+    scored = [(title_match_length(text, name), name) for name in names]
+    best = max((length for length, _name in scored), default=0)
+    if best <= 0:
+        return None
+    champions = [name for length, name in scored if length == best]
+    if len(champions) != 1:
+        return None
+    winner = champions[0]
+    evidence = title_core(winner)[:best]
+    sharing = [name for name in names if evidence and evidence in title_core(name)]
+    return winner if len(sharing) == 1 else None
+
+
+def strip_deictic(question):
+    """把「那份 PPT 里的」这类包装词从探针里删掉；删不掉或删完太短就返回 `None`（不动）。"""
+    text = str(question or "").strip()
+    if not text:
+        return None
+    match = _DEICTIC_WRAP_RE.search(text)
+    if not match:
+        return None
+    rest = (text[:match.start()] + " " + text[match.end():]).strip(" \t，,、；;：:。")
+    rest = re.sub(r"\s{2,}", " ", rest).strip()
+    if rest == text or len(rest) < MIN_QUESTION_CHARS:
+        return None
+    return rest
