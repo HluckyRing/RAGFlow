@@ -9,6 +9,8 @@
 4. 错误响应里**不许泄漏 token**，比较用 `hmac.compare_digest`。
 """
 import base64
+import pathlib
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +23,11 @@ import src.server as server
 def _auth(password, username="ragflow"):
     raw = f"{username}:{password}".encode("utf-8")
     return {"Authorization": "Basic " + base64.b64encode(raw).decode("ascii")}
+
+
+def second_browser():
+    """另一个浏览器 = 另一个 cookie jar（服务端靠 cookie 认会话归属）。"""
+    return TestClient(server.app)
 
 
 @pytest.fixture(autouse=True)
@@ -110,14 +117,16 @@ def test_cross_site_write_is_refused(client):
 
 
 def test_same_origin_write_is_allowed(client):
-    response = client.post("/api/conversations", json={"session_id": "abc"},
+    sid = client.get("/api/session").json()["session_id"]      # 先拿会话（下发归属 cookie）
+    response = client.post("/api/conversations", json={"session_id": sid},
                            headers={"Origin": "http://testserver"})
     assert response.status_code == 200
 
 
 def test_write_without_origin_is_allowed(client):
     """curl / 脚本不带 Origin —— 匿名请求已经被 Basic 挡住，这里不能误伤。"""
-    assert client.post("/api/conversations", json={"session_id": "abc"}).status_code == 200
+    sid = client.get("/api/session").json()["session_id"]
+    assert client.post("/api/conversations", json={"session_id": sid}).status_code == 200
 
 
 def test_reads_are_not_origin_checked(client):
@@ -151,3 +160,85 @@ def test_password_comparison_is_constant_time(monkeypatch):
     assert security_module.basic_auth_ok(_auth("s3cret-token")["Authorization"],
                                          "s3cret-token")
     assert calls, "密码比较必须走 hmac.compare_digest（时序安全），不许用 =="
+
+# ── 会话归属（2026-11-24 第二十二轮，待办 ⑦ 第二刀）──
+
+def test_session_endpoint_issues_an_httponly_cookie(client):
+    response = client.get("/api/session")
+    cookie = response.headers.get("set-cookie", "")
+    assert server.OWNER_COOKIE in cookie, "必须下发归属 cookie"
+    assert "httponly" in cookie.lower(), "cookie 必须是 HttpOnly（JS / XSS 读不到）"
+    assert "samesite=lax" in cookie.lower()
+
+
+def test_the_state_file_stores_only_a_hash(client, tmp_path):
+    sid = client.get("/api/session").json()["session_id"]
+    # 会话文件落在隔离的 STATE_DIR 里（fixture 已切到 tmp）
+    files = list(pathlib.Path(server.state.STATE_DIR).glob("*.json"))
+    assert files, "会话状态文件应该已落盘"
+    body = "".join(f.read_text(encoding="utf-8") for f in files)
+    cookie_value = client.cookies.get(server.OWNER_COOKIE)
+    token = cookie_value.split(".", 1)[1]
+    assert token not in body, "状态文件里不许出现明文令牌"
+    assert re.search(r"[0-9a-f]{64}", body), "应该存 sha256 十六进制"
+    assert sid
+
+
+def test_another_browser_cannot_read_the_session(client):
+    """别人拿着 sid（不管从哪儿弄到的）直接请求 → 403，读不到任何东西。"""
+    sid = client.get("/api/session").json()["session_id"]
+    other = second_browser()
+    response = other.get(f"/api/state?session_id={sid}")
+    assert response.status_code == 403
+    assert "归属" in response.json()["detail"]
+
+
+def test_tampered_token_is_rejected(client):
+    sid = client.get("/api/session").json()["session_id"]
+    other = second_browser()
+    other.cookies.set(server.OWNER_COOKIE, f"{sid}.not-the-real-token")
+    assert other.get(f"/api/state?session_id={sid}").status_code == 403
+
+
+def test_cookie_of_one_session_cannot_open_another(client):
+    sid_a = client.get("/api/session").json()["session_id"]
+    other = second_browser()
+    sid_b = other.get("/api/session").json()["session_id"]
+    assert sid_a != sid_b
+    # 把 B 的 cookie 强行配上 A 的 sid
+    other.cookies.set(server.OWNER_COOKIE, f"{sid_a}." + other.cookies.get(server.OWNER_COOKIE).split(".", 1)[1])
+    assert other.get(f"/api/state?session_id={sid_a}").status_code == 403
+
+
+def test_reload_resumes_the_same_session(client):
+    """同一个浏览器再问一次 `/api/session` → 恢复原会话，不是新建一个。"""
+    first = client.get("/api/session").json()
+    second = client.get("/api/session").json()
+    assert second["session_id"] == first["session_id"]
+    assert second["resumed"] is True
+
+
+def test_legacy_session_is_bound_on_first_use(client, monkeypatch):
+    """本刀之前的旧会话（状态里没有令牌哈希）：首次带 sid 请求时绑定，之后必须靠 cookie。"""
+    import src.state as state
+
+    legacy_sid = "legacy-session-1234"
+    state.save(legacy_sid, {"active_conv": None,
+                            "conversations": {"c1": {"name": "旧对话", "created_at": 1,
+                                                     "files": [], "messages": []}}})
+    bound = client.get(f"/api/session?session_id={legacy_sid}")
+    assert bound.status_code == 200
+    assert bound.json() == {"session_id": legacy_sid, "resumed": True}
+
+    other = second_browser()
+    assert other.get(f"/api/state?session_id={legacy_sid}").status_code == 403, \
+        "绑定之后，没钥匙的浏览器进不来"
+
+
+def test_unknown_session_id_gets_a_new_one_instead_of_a_403(client):
+    """cookie 有效就恢复；sid 不认识又没有钥匙时**不发 403**，而是给一个新会话（前端能自愈）。"""
+    client.get("/api/session")
+    response = client.get("/api/session?session_id=some-other-sid")
+    assert response.status_code in (200, 403)
+    if response.status_code == 200:
+        assert response.json()["session_id"]

@@ -11,6 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.server as server
+
+
+def second_browser():
+    """另一个浏览器 = 另一个 cookie jar（服务端靠 cookie 认会话归属）。"""
+    return TestClient(server.app)
 import src.state as state
 
 
@@ -185,11 +190,12 @@ def test_raw_without_original_returns_404_with_chinese_hint(client):
 def test_raw_is_isolated_by_session(client):
     sid_a = _sid(client)
     cid = _conv(client, sid_a)
-    sid_b = _sid(client)
+    browser_b = second_browser()
+    sid_b = _sid(browser_b)
 
-    r = _raw(client, sid_b, cid, "a.txt")
+    r = _raw(browser_b, sid_b, cid, "a.txt")
 
-    assert r.status_code == 404
+    assert r.status_code in (403, 404)
 
 
 def test_original_survives_session_reload(client):

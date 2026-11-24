@@ -23,6 +23,11 @@ from src.retrieval import (init_vector_store, sanitize_collection_name, drop_col
                            chroma_meta)
 from src.llm import (resolve_query, retrieve_and_build_context, stream_answer,
                      source_list, LLMStreamError, refusal_state, strip_refusal_marker)
+import hmac
+import secrets
+
+from fastapi import HTTPException
+
 from src.security import SlidingWindowLimiter
 
 # session_id -> 状态 dict。与 state 模块的缓存共用同一个对象，改动会被 _save_state 落盘。
@@ -201,7 +206,72 @@ def _serializable(sess):
             # _hydrate_collections 重新派生（见 P1-9）。
             "collection_name": c.get("_cname") or c.get("collection_name") or _conv_cname(cid),
         }
-    return {"active_conv": sess.get("active_conv"), "conversations": convs_out}
+    return {"active_conv": sess.get("active_conv"), "conversations": convs_out,
+            # 会话归属令牌的哈希：只存哈希，明文只在 cookie 里（2026-11-24）
+            "session_token_hash": sess.get("session_token_hash")}
+
+
+# ── 会话归属（2026-11-24 第二十二轮，待办 ⑦ 第二刀）──
+#
+# 病根：`session_id` 是**客户端生成**的（`localStorage.ragflow_sid`），服务端对任何 sid 都
+# 无条件加载状态 —— sid 一旦泄漏（它天天出现在 URL 里：`?session_id=...`、预览链接、历史记录），
+# 别人就能读到整份会话、还能往里提问（花你的额度）。
+#
+# 做法：服务端**下发 HttpOnly cookie**（值 `sid.token`），状态里只存 `sha256(token)`；
+# 之后所有接口都要求「cookie 的 sid 与 token 都对得上」。token 不落明文 —— 拿到状态文件也
+# 伪造不出 cookie。
+
+OWNER_COOKIE = "ragflow_owner"
+OWNER_MAX_AGE = 365 * 24 * 3600          # 一年：本地工具，别让用户天天重新开会话
+
+
+def _hash_owner(token):
+    """令牌只存哈希（状态文件被拷走也不等于能冒充）。"""
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def _issue_owner(sid):
+    """给会话发一个新令牌：哈希进状态，明文只出现在 Set-Cookie 里。"""
+    token = secrets.token_urlsafe(32)
+    with _sessions_lock:
+        sess = sessions.setdefault(sid, {})
+    sess["session_token_hash"] = _hash_owner(token)
+    _save_state(sid)
+    return token
+
+
+def _owner_cookie(request):
+    """从 cookie 里取 `(sid, token)`；没有或格式不对返回 `("", "")`。"""
+    raw = request.cookies.get(OWNER_COOKIE) or ""
+    sid, _, token = str(raw).partition(".")
+    return (sid, token) if sid and token else ("", "")
+
+
+def _owner_ok(request, sid, sess):
+    """cookie 是否就是这个会话的钥匙。"""
+    expected = (sess or {}).get("session_token_hash")
+    cookie_sid, token = _owner_cookie(request)
+    if not expected or not token or cookie_sid != sid:
+        return False
+    return hmac.compare_digest(_hash_owner(token), str(expected))
+
+
+def _attach_owner(response, sid, token):
+    """把钥匙放进 HttpOnly cookie（JS 读不到，XSS 也偷不走）。"""
+    response.set_cookie(OWNER_COOKIE, f"{sid}.{token}", max_age=OWNER_MAX_AGE,
+                        httponly=True, samesite="lax", path="/")
+    return response
+
+
+def _session_or_403(request, session_id):
+    """取会话并校验归属；不是这个浏览器的会话就 403（在进任何业务逻辑之前）。"""
+    sid, sess = _ensure_session(session_id)
+    if not _owner_ok(request, sid, sess):
+        logger.warning("会话归属校验失败：sid=%s（cookie 的 sid=%s）",
+                       sid, _owner_cookie(request)[0] or "无")
+        raise HTTPException(status_code=403,
+                            detail="会话归属校验失败：这个 session_id 不属于当前浏览器")
+    return sid, sess
 
 
 def _save_state(session_id):
@@ -464,14 +534,41 @@ async def vendor_asset(name: str):
 
 
 @app.get("/api/session")
-async def create_session():
-    sid, _ = await run_in_threadpool(_ensure_session, "")
-    return {"session_id": sid}
+async def create_session(request: Request, session_id: str = ""):
+    """创建会话，或**凭 cookie 恢复**已有会话（2026-11-24 会话归属）。
+
+    三种情况：
+    1. cookie 有效 → 恢复那个会话（刷新页面/重开浏览器都还在）；
+    2. 传了 `session_id` 且这个会话**还没有令牌**（本刀之前建的旧会话）→ **首次绑定**：
+       给它发一把钥匙，之后就必须带 cookie 了（一次性迁移，见归档里的风险说明）；
+    3. 其余 → 建新会话并发钥匙。
+
+    旧会话的首次绑定只可能在「已经拿到 sid」的客户端身上发生（前端从 localStorage 带上来），
+    而且请求本身已经过了 AUTH_TOKEN 那一关 —— 风险与收益写在 `docs/session-log/` 里。
+    """
+    cookie_sid, cookie_token = _owner_cookie(request)
+    if cookie_sid and cookie_token:
+        sid, sess = await run_in_threadpool(_ensure_session, cookie_sid)
+        expected = (sess or {}).get("session_token_hash")
+        if expected and hmac.compare_digest(_hash_owner(cookie_token), str(expected)):
+            return _attach_owner(JSONResponse({"session_id": sid, "resumed": True}),
+                                 sid, cookie_token)
+
+    if session_id:
+        sid, sess = await run_in_threadpool(_ensure_session, session_id)
+        if not (sess or {}).get("session_token_hash"):
+            token = await run_in_threadpool(_issue_owner, sid)
+            logger.info("旧会话首次绑定归属令牌：sid=%s", sid)
+            return _attach_owner(JSONResponse({"session_id": sid, "resumed": True}), sid, token)
+
+    sid, _sess = await run_in_threadpool(_ensure_session, "")
+    token = await run_in_threadpool(_issue_owner, sid)
+    return _attach_owner(JSONResponse({"session_id": sid, "resumed": False}), sid, token)
 
 
 @app.get("/api/state")
-async def get_state(session_id: str):
-    sid, sess = await run_in_threadpool(_ensure_session, session_id)
+async def get_state(request: Request, session_id: str):
+    sid, sess = await run_in_threadpool(_session_or_403, request, session_id)
     convs = []
     for cid, c in sess.get("conversations", {}).items():
         convs.append({
@@ -489,7 +586,7 @@ async def get_state(session_id: str):
 @app.post("/api/conversations")
 async def create_conversation(request: Request):
     data = await request.json()
-    sid, sess = await run_in_threadpool(_ensure_session, data.get("session_id", ""))
+    sid, sess = await run_in_threadpool(_session_or_403, request, data.get("session_id", ""))
     cid = uuid.uuid4().hex[:12]
     name = data.get("name") or time.strftime("%m-%d %H:%M")
     cname = _conv_cname(cid)
@@ -511,7 +608,7 @@ async def create_conversation(request: Request):
 @app.post("/api/conversations/{conv_id}/switch")
 async def switch_conversation(conv_id: str, request: Request):
     data = await request.json()
-    sid, sess = await run_in_threadpool(_ensure_session, data.get("session_id", ""))
+    sid, sess = await run_in_threadpool(_session_or_403, request, data.get("session_id", ""))
     with state.lock_for(sid):
         if conv_id not in sess.get("conversations", {}):
             return JSONResponse({"error": "对话不存在"}, status_code=404)
@@ -523,7 +620,7 @@ async def switch_conversation(conv_id: str, request: Request):
 @app.put("/api/conversations/{conv_id}")
 async def rename_conversation(conv_id: str, request: Request):
     data = await request.json()
-    sid, sess = await run_in_threadpool(_ensure_session, data.get("session_id", ""))
+    sid, sess = await run_in_threadpool(_session_or_403, request, data.get("session_id", ""))
     with state.lock_for(sid):
         if conv_id not in sess.get("conversations", {}):
             return JSONResponse({"error": "对话不存在"}, status_code=404)
@@ -533,8 +630,8 @@ async def rename_conversation(conv_id: str, request: Request):
 
 
 @app.delete("/api/conversations/{conv_id}")
-async def delete_conversation(conv_id: str, session_id: str):
-    sid, sess = await run_in_threadpool(_ensure_session, session_id)
+async def delete_conversation(request: Request, conv_id: str, session_id: str):
+    sid, sess = await run_in_threadpool(_session_or_403, request, session_id)
     with state.lock_for(sid):
         if conv_id not in sess.get("conversations", {}):
             return JSONResponse({"error": "对话不存在"}, status_code=404)
@@ -551,8 +648,8 @@ async def delete_conversation(conv_id: str, session_id: str):
 
 
 @app.get("/api/conversations/{conv_id}")
-async def get_conversation(conv_id: str, session_id: str):
-    sid, sess = await run_in_threadpool(_ensure_session, session_id)
+async def get_conversation(request: Request, conv_id: str, session_id: str):
+    sid, sess = await run_in_threadpool(_session_or_403, request, session_id)
     conv = sess.get("conversations", {}).get(conv_id)
     if not conv:
         return JSONResponse({"error": "对话不存在"}, status_code=404)
@@ -565,13 +662,13 @@ async def get_conversation(conv_id: str, session_id: str):
 
 
 @app.get("/api/conversations/{conv_id}/files/{file_name}")
-async def get_file_content(conv_id: str, file_name: str, session_id: str):
+async def get_file_content(request: Request, conv_id: str, file_name: str, session_id: str):
     """读取单个文件的抽取正文，供前端「查看文件」预览。
 
     返回的 file_text 是 loaders 抽取、且进过索引的纯文本；has_original 表示是否
     还存有上传原件（原文件预览用）。只读：不落盘、不重建索引，也不改动文件列表。
     """
-    _sid, sess = await run_in_threadpool(_ensure_session, session_id)
+    _sid, sess = await run_in_threadpool(_session_or_403, request, session_id)
     conv = sess.get("conversations", {}).get(conv_id)
     if not conv:
         return JSONResponse({"error": "对话不存在"}, status_code=404)
@@ -585,13 +682,13 @@ async def get_file_content(conv_id: str, file_name: str, session_id: str):
 
 
 @app.get("/api/conversations/{conv_id}/files/{file_name}/raw")
-async def get_file_raw(conv_id: str, file_name: str, session_id: str):
+async def get_file_raw(request: Request, conv_id: str, file_name: str, session_id: str):
     """按原字节返回上传原件，供「原文件预览」/下载。
 
     内联与否按扩展名白名单决定：只有 PDF 与纯文本类走 inline，Office 等一律
     attachment，并带 nosniff —— 不把用户可控内容当网页执行。
     """
-    sid, sess = await run_in_threadpool(_ensure_session, session_id)
+    sid, sess = await run_in_threadpool(_session_or_403, request, session_id)
     conv = sess.get("conversations", {}).get(conv_id)
     if not conv:
         return JSONResponse({"error": "对话不存在"}, status_code=404)
@@ -616,9 +713,9 @@ async def get_file_raw(conv_id: str, file_name: str, session_id: str):
 
 
 @app.delete("/api/conversations/{conv_id}/files/{file_name}")
-async def delete_file(conv_id: str, file_name: str, session_id: str):
+async def delete_file(request: Request, conv_id: str, file_name: str, session_id: str):
     """删除对话里的单个文件，并重建该对话的索引。"""
-    sid, _ = await run_in_threadpool(_ensure_session, session_id)
+    sid, _ = await run_in_threadpool(_session_or_403, request, session_id)
     result = await run_in_threadpool(_remove_file, sid, conv_id, file_name)
     if result is None:
         return JSONResponse({"error": "对话不存在"}, status_code=404)
@@ -647,7 +744,8 @@ def _upload_size(file):
 
 
 @app.post("/api/upload")
-async def upload_file(files: list[UploadFile] | None = File(None),
+async def upload_file(request: Request,
+                      files: list[UploadFile] | None = File(None),
                       file: UploadFile | None = File(None),
                       session_id: str = Form(""), conv_id: str = Form("")):
     # files（复数，可一次多个）是首选；file（单数）保留兼容既有调用方
@@ -667,7 +765,7 @@ async def upload_file(files: list[UploadFile] | None = File(None),
             status_code=413,
         )
 
-    sid, _ = await run_in_threadpool(_ensure_session, session_id)
+    sid, _ = await run_in_threadpool(_session_or_403, request, session_id)
 
     parsed = []
     for uf in uploads:
@@ -866,7 +964,7 @@ async def chat(request: Request):
     if truncate_to is not None and (isinstance(truncate_to, bool) or not isinstance(truncate_to, int)):
         return JSONResponse({"error": "truncate_to 必须是整数"}, status_code=400)
 
-    sid, sess = await run_in_threadpool(_ensure_session, session_id)
+    sid, sess = await run_in_threadpool(_session_or_403, request, session_id)
     conv = sess.get("conversations", {}).get(conv_id)
     if not conv:
         return JSONResponse({"error": "对话不存在"}, status_code=400)

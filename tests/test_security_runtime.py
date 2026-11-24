@@ -121,7 +121,8 @@ def client(tmp_path, monkeypatch):
 
 def test_chat_returns_429_after_the_limit(client, monkeypatch):
     monkeypatch.setattr(server, "_chat_limiter", SlidingWindowLimiter(limit=1, window_seconds=60))
-    payload = {"question": "有什么内容", "session_id": "s1", "conv_id": "不存在的对话"}
+    sid = client.get("/api/session").json()["session_id"]
+    payload = {"question": "有什么内容", "session_id": sid, "conv_id": "不存在的对话"}
 
     first = client.post("/api/chat", json=payload)
     assert first.status_code == 400, "第一次不被限流，走到「对话不存在」"
@@ -140,7 +141,8 @@ def test_chat_limit_is_checked_before_touching_the_model(client, monkeypatch):
                         lambda *a, **k: called.append(1) or ("", []))
     monkeypatch.setattr(server, "_chat_limiter", SlidingWindowLimiter(limit=1, window_seconds=60))
 
-    payload = {"question": "有什么内容", "session_id": "s1", "conv_id": "不存在的对话"}
+    sid = client.get("/api/session").json()["session_id"]
+    payload = {"question": "有什么内容", "session_id": sid, "conv_id": "不存在的对话"}
     client.post("/api/chat", json=payload)
     client.post("/api/chat", json=payload)
     assert called == [], "对话不存在时也没走到检索；限流分支更不该走到"

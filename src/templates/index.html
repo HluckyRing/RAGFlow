@@ -492,9 +492,26 @@ async function init() {
     bindEvents();
     syncSidebar();
     try {
-        if (!S.sid) { const d = await api('/api/session'); S.sid = d.session_id; localStorage.ragflow_sid = S.sid; }
+        // 会话归属（2026-11-24）：localStorage 只是**提示**，真正算数的是服务端下发的
+        // HttpOnly cookie。启动时把记住的 sid 一起带上：cookie 有效就恢复它；cookie 没了
+        // （换浏览器/清 cookie）或旧会话首次绑定，服务端会回一个新的（或补发钥匙）。
+        const stored = localStorage.ragflow_sid || '';
+        const d = await api(`/api/session?session_id=${encodeURIComponent(stored)}`);
+        S.sid = d.session_id;
+        try { localStorage.ragflow_sid = S.sid; } catch (e) {}
         await loadState();
     } catch (e) {
+        // 归属校验失败（403）说明这个 sid 不是当前浏览器的：丢掉它重开一个会话，别卡在错误里
+        if (e && e.status === 403) {
+            try { localStorage.removeItem('ragflow_sid'); } catch (err) {}
+            try {
+                const d = await api('/api/session');
+                S.sid = d.session_id;
+                try { localStorage.ragflow_sid = S.sid; } catch (err) {}
+                await loadState();
+                return;
+            } catch (err) {}
+        }
         toast(e.message || '初始化失败', true, 0);
     } finally {
         $('loadingOverlay').classList.add('hidden');

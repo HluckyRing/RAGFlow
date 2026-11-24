@@ -19,7 +19,7 @@
 
 **为什么不是又一个 RAG demo**：同名项目很多（比如 `infiniflow/ragflow`）。这个仓库的差异在于
 **每一个默认值都有可复现的实测依据** —— [`docs/retrieval-baseline-2026-10-06.md`](docs/retrieval-baseline-2026-10-06.md)
-里是 <!-- AUTO:docs-lines -->2868<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->814<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
+里是 <!-- AUTO:docs-lines -->2868<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->822<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
 （例如「调大 `TOP_K`」实测 +0.0pp，被直接否掉）。想直接看数字，往下翻到「📊 实测数据」一节。
 
 ## ✨ 核心亮点
@@ -36,7 +36,7 @@
 - ✅ **测试覆盖**：`pytest tests -v` 覆盖状态隔离、并发保存、旧数据迁移、指代消解、关键词降级、多编码导入、路径锚定、多文件上传/单文件删除、历史截断、拆问与分路检索、拒答契约，以及前端注入/主题/交互守卫；CI 在 push/PR 上自动跑
 - ⚡ **工程降级**：向量检索不可用时自动切换关键词匹配（中文 2/3-gram 打分），且降级时不再浪费一次 HyDE 调用；缺 `API_KEY` 时服务照常启动，只降级并给中文提示
 - 🧱 **入口防护**：单次上传默认上限 20 MB（按整批总字节数判断，超限在入口直接拒绝、不进解析），大模型调用默认 60 秒超时；服务默认只监听 `127.0.0.1`，不对外暴露
-- 🔐 **AUTH_TOKEN 逐请求校验 + 对外监听拒绝启动**：绑非回环地址却没配 `AUTH_TOKEN` 时服务**直接退出**（退出码 2）；配了 token 则**每个请求**都要带 HTTP Basic 凭证（用户名随便填、密码 = `AUTH_TOKEN`，浏览器会弹一次框），无凭证 401、跨站写请求 403（`Origin` 与 Host 不一致）；`/api/chat` 按客户端 IP 限流（默认 20 次/60 s，超限 429 + `Retry-After`）。仍**不是身份体系**：`session_id` 由客户端生成
+- 🔐 **会话归属 + AUTH_TOKEN 逐请求校验 + 对外监听拒绝启动**：绑非回环地址却没配 `AUTH_TOKEN` 时服务**直接退出**（退出码 2）；配了 token 则**每个请求**都要带 HTTP Basic 凭证（用户名随便填、密码 = `AUTH_TOKEN`，浏览器会弹一次框），无凭证 401、跨站写请求 403（`Origin` 与 Host 不一致）；`/api/chat` 按客户端 IP 限流（默认 20 次/60 s，超限 429 + `Retry-After`）。仍**不是身份体系**：`session_id` 由客户端生成
 - 🗂 **多文件知识库**：一次可选或拖拽多个文件（一次请求提交，只重建一次索引），文件列表里可单独移除某个文件并自动重建索引
 - 🎛 **交互与主题**：深色模式（跟随系统，手动切换后记住）、移动端抽屉侧边栏、消息级操作（重新生成 / 编辑重发 / 停止生成 / 复制）、对话搜索（Ctrl/Cmd+K）、导出 Markdown、表格列表代码块渲染与消息时间戳
 - 👁 **原文件预览**：上传原件会持久化，右侧抽屉默认看原文件、可切换抽取文本；PDF 用浏览器原生渲染，Markdown 用内置渲染器渲染出标题/加粗/引用/表格，DOCX/XLSX/PPTX 用本地内置的渲染库（docx-preview / SheetJS / @aiden0z-pptx-renderer），渲染失败回退下载原件
@@ -58,7 +58,7 @@
 | reranker 为什么默认关 | CPU **3.9 s/问**，没过「中位 ≤1.5 s」这条线 | 实测 |
 | 并发扛得住吗 | embedding 是**排队不是并行**（8 并发只 ×1.3 吞吐），但它不是瓶颈；20 并发请求零错误 | 进程内基准 + 真实 uvicorn 压测 |
 
-`pytest tests -q` → **<!-- AUTO:test-count -->814<!-- /AUTO:test-count --> passed**（整条约 20 s）。
+`pytest tests -q` → **<!-- AUTO:test-count -->822<!-- /AUTO:test-count --> passed**（整条约 20 s）。
 
 ## 📋 支持格式
 
@@ -136,7 +136,9 @@ HTTP Basic 凭证（用户名随便填、密码就是 `AUTH_TOKEN`）：浏览�
 
 > ⚠️ Basic 凭证是 base64 明文传输：**对外提供时请套一层 HTTPS**（反代或隧道），别用裸 HTTP 把 token 发出去。
 
-需要说清楚的边界：这还**不是身份体系**。`AUTH_TOKEN` 是**一把共享钥匙**（谁拿到都是同一个「用户」），没有账号、没有权限分离；`session_id` 仍由客户端生成，**会话归属校验还没做**（sid 泄漏 = 别人能读那份会话，下一刀做 HttpOnly cookie + 服务端令牌）。CSRF 目前靠 Basic 凭证 + `Origin` 检查挡住写操作。
+**会话归属**（2026-11-24）：`/api/session` 会下发一个 `HttpOnly` cookie，值是 `sid.token`，服务端状态里只存 `sha256(token)`；之后所有接口都要求 cookie 与 `session_id` 都对得上，**光有 sid 读不到任何东西**（403）。所以 sid 出现在 URL 里也不再是漏洞。
+
+需要说清楚的边界：这还**不是身份体系**。`AUTH_TOKEN` 是**一把共享钥匙**（谁拿到都是同一个「用户」），没有账号、没有权限分离、没有审计；CSRF 靠 Basic 凭证 + `Origin` 检查挡住写操作。另外**本刀之前建的旧会话**会在前端带着 localStorage 里的 sid 首次访问时被「绑定」（一次性迁移），所以泄漏过的旧 sid 仍有被抢先绑定的窗口 —— 想彻底干净就删掉旧状态文件重开。
 
 ## 📁 项目结构
 

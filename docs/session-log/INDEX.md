@@ -51,6 +51,15 @@
   `gh release list` 显示 Latest。**同一轮自查抓到日期写错**（本轮工作在 11-23，我按上一轮
   印象写成 11-20）：`git mv` 改名 + 五处正文改正 + 会话日志补「跨天会话要当场 Get-Date」
   这条教训。
+- **2026-11-24 会话归属：HttpOnly cookie + 服务端令牌（待办 ⑦ 第二刀）**：
+  `docs/session-log/2026-11-24-session-ownership.md`
+  —— 上一刀堵住匿名访问，这一刀堵剩下的真洞：`session_id` 客户端生成、服务端对任何 sid 都无条件
+  加载状态 → sid 泄漏就能读那份会话。做法：`/api/session` 下发 **HttpOnly** cookie（`sid.token`，
+  状态里**只存 sha256**），其余接口 `_session_or_403` 校验 sid+token；一次调用涵盖新建 / 恢复 /
+  旧会话首次绑定；前端启动带上 localStorage 的 sid、遇 403 丢本地 sid 重开。判据：别人的 sid 403、
+  伪造 token 403、A 的 cookie 开不了 B、状态无明文、旧会话绑定后无 cookie 进不来、同浏览器恢复同一会话；
+  变异 **5/5 红**；真 uvicorn+curl 冒烟 **10/10**；`pytest` 814 → **822**。
+  顺带改了三处既有测试（一个 TestClient = 一个浏览器），并记下「旧会话首次绑定」这个一次性迁移窗口。
 - **2026-11-24 AUTH_TOKEN 逐请求校验 + CSRF（待办 ⑦ 第一刀）**：
   `docs/session-log/2026-11-24-auth-basic.md`
   —— 读代码读出真洞：`AUTH_TOKEN` **只在启动时**被检查（对外监听必须设），请求到达时一次都没校验 →

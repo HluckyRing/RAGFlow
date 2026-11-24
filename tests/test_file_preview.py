@@ -10,6 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.server as server
+
+
+def second_browser():
+    """另一个浏览器 = 另一个 cookie jar（服务端靠 cookie 认会话归属）。"""
+    return TestClient(server.app)
 import src.state as state
 
 
@@ -114,10 +119,12 @@ def test_preview_is_isolated_by_session(client, monkeypatch):
     sid_a = client.get("/api/session").json()["session_id"]
     cid = _upload(client, sid_a, [("secret.txt", text)]).json()["conv_id"]
 
-    sid_b = client.get("/api/session").json()["session_id"]
-    r = _get(client, sid_b, cid, "secret.txt")
+    browser_b = second_browser()
+    sid_b = browser_b.get("/api/session").json()["session_id"]
+    r = _get(browser_b, sid_b, cid, "secret.txt")
 
-    assert r.status_code == 404, "跨 session 不应读到别人对话的文件"
+    # 2026-11-24 起更强：B 拿着 A 的 sid 直接 403（归属校验），不是 404
+    assert r.status_code in (403, 404), "跨 session 不应读到别人对话的文件"
 
 
 def test_preview_handles_chinese_and_space_in_name(client, monkeypatch):
