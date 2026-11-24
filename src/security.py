@@ -16,6 +16,8 @@
 
 两个都是纯函数 / 纯对象（时钟可注入），不依赖 FastAPI，单测不拉起服务。
 """
+import base64
+import hmac
 import time
 from collections import deque
 
@@ -95,3 +97,60 @@ class SlidingWindowLimiter:
     def reset(self):
         """测试与「配置热改」用：清空所有计数。"""
         self._hits.clear()
+
+
+# ── AUTH_TOKEN 的逐请求校验（2026-11-24 第二十二轮，待办 ⑦ 第一刀）──
+#
+# 之前的洞：`AUTH_TOKEN` 只在**启动时**被检查（对外监听必须设），请求到达时一次都没校验过 ——
+# 于是「设了 token 的对外部署」实际上仍然对任何人开放，还带着「我设过 token」的错觉。
+# 这里补上校验：设了 token 就必须带 HTTP Basic 凭证（用户名随便填，密码 = token）。
+#
+# 为什么用 Basic 而不是自定义 header：浏览器会自己弹一次框，之后同源请求（fetch / SSE /
+# `<img>` 预览）都自动带凭证，**前端一行都不用改**。代价是浏览器会自动附带凭证，所以必须配
+# CSRF 检查（见 `origin_allowed`）。
+
+AUTH_SCHEME = "basic"
+
+
+def basic_auth_ok(authorization, token):
+    """`Authorization` 头是否携带正确的 token。
+
+    - `token` 为空 = 没开鉴权 → 永远放行（默认回环单机，零摩擦，行为与改造前一致）；
+    - 缺失 / 不是 Basic / 解不开 / 密码不对 → `False`；
+    - 比较用 `hmac.compare_digest`（定长比较，不按前缀提前返回）。
+    """
+    expected = str(token or "").strip()
+    if not expected:
+        return True
+    header = str(authorization or "").strip()
+    scheme, _, payload = header.partition(" ")
+    if scheme.lower() != AUTH_SCHEME:
+        return False
+    try:
+        decoded = base64.b64decode(payload.strip(), validate=True).decode("utf-8", "replace")
+    except Exception:                      # noqa: BLE001 —— 任何畸形凭证都算失败
+        return False
+    _username, sep, password = decoded.partition(":")
+    if not sep:
+        return False
+    return hmac.compare_digest(password.encode("utf-8"), expected.encode("utf-8"))
+
+
+def origin_allowed(origin, host, method):
+    """CSRF 检查：写操作的 `Origin` 必须与请求的 Host 同源（或缺失）。"""
+    verb = str(method or "").upper()
+    if verb not in ("POST", "PUT", "PATCH", "DELETE"):
+        return True
+    value = str(origin or "").strip()
+    if not value:
+        return True                        # curl / 脚本：匿名请求已经被 Basic 挡在门外
+    target = str(host or "").strip().lower()
+    if not target:
+        return False
+    try:
+        from urllib.parse import urlsplit
+        netloc = urlsplit(value).netloc.lower()
+    except Exception:                      # noqa: BLE001
+        return False
+    return bool(netloc) and netloc == target
+

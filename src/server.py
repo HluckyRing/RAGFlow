@@ -43,6 +43,35 @@ _VENDOR_ASSETS = {"jszip.min.js", "docx-preview.min.js", "xlsx.core.min.js",
 app = FastAPI(title="RAGFlow")
 
 
+@app.middleware("http")
+async def _auth_and_csrf_guard(request: Request, call_next):
+    """逐请求鉴权 + CSRF（2026-11-24 第二十二轮，待办 ⑦ 第一刀）。
+
+    以前 `AUTH_TOKEN` **只在启动时**被检查（对外监听必须设），请求到达时一次都没校验过 ——
+    设了 token 的对外部署实际上对任何人开放，还带着「我设过 token」的错觉。这里补上：
+
+    - 设了 `AUTH_TOKEN` → 所有请求必须带正确的 **HTTP Basic** 凭证（用户名随便填，密码 = token）；
+      401 带 `WWW-Authenticate`，浏览器会弹一次框，之后同源请求自动带凭证（前端零改动）；
+    - **CSRF**：Basic 凭证是浏览器自动附带的，所以写操作带 `Origin` 且与 Host 不同源 → 403；
+      不带 `Origin`（curl / 脚本）放行 —— 匿名请求已经被上一条挡住；
+    - **没设 token（默认回环单机）→ 原样放行**，零摩擦，行为与改造前一致。
+    """
+    from src.security import basic_auth_ok, origin_allowed
+
+    if not origin_allowed(request.headers.get("origin"), request.headers.get("host"),
+                          request.method):
+        logger.warning("拒绝跨站写请求：Origin=%s Host=%s",
+                       request.headers.get("origin"), request.headers.get("host"))
+        return JSONResponse({"error": "跨站请求被拒绝（Origin 与 Host 不一致）"}, status_code=403)
+    if not basic_auth_ok(request.headers.get("authorization"), config.AUTH_TOKEN):
+        return JSONResponse(
+            {"error": "需要 AUTH_TOKEN 凭证：HTTP Basic，用户名随便填、密码填 AUTH_TOKEN"},
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="RAGFlow"'},
+        )
+    return await call_next(request)
+
+
 def _conv_cname(conv_id):
     return sanitize_collection_name("conv_" + conv_id)
 

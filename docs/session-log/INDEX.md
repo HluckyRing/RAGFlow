@@ -51,6 +51,16 @@
   `gh release list` 显示 Latest。**同一轮自查抓到日期写错**（本轮工作在 11-23，我按上一轮
   印象写成 11-20）：`git mv` 改名 + 五处正文改正 + 会话日志补「跨天会话要当场 Get-Date」
   这条教训。
+- **2026-11-24 AUTH_TOKEN 逐请求校验 + CSRF（待办 ⑦ 第一刀）**：
+  `docs/session-log/2026-11-24-auth-basic.md`
+  —— 读代码读出真洞：`AUTH_TOKEN` **只在启动时**被检查（对外监听必须设），请求到达时一次都没校验 →
+  `HOST=0.0.0.0` + 设了 token 的部署其实**对外完全开放**。改法：`server.py` 加一道 http 中间件，
+  设了 token 就要求 **HTTP Basic**（密码=token，`hmac.compare_digest`，401 带 `WWW-Authenticate`，
+  浏览器自动带凭证、前端零改动）+ 写操作 `Origin`/Host 不一致一律 403；**没设 token 逐位不变**。
+  判据：401/200/403 三类 + 错误体不泄漏 token + 首页也受保护；变异检查 **4/4 红**；`pytest` 801 → **814**。
+  坑三条：测试碰 `server` 会写真实 `state/` 与 chroma（实测留下 17 个空会话 + 5 个空集合，已清）；
+  `"torch" not in sys.modules` 是顺序依赖的假红（改成差集）；读源码找字符串的守卫被 docstring 骗（改行为 spy）。
+  **仍未解决**：会话归属（sid 泄漏=能读那份会话）、多用户账号、Basic 明文需 HTTPS、限流进程内。
 - **2026-11-23 指代式定位：标题词唯一匹配（待办 ④）**：
   `docs/session-log/2026-11-23-scope-deixis.md`
   —— 先量现状：待办里的「第二章那份材料」**本来就已能定位**（有章号），真正失效的是「点了文件

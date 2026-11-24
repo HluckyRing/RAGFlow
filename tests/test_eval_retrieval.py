@@ -496,6 +496,14 @@ def test_partial_absent_terms_really_are_absent(corpus, queries):
 # ── 无模型环境下 main 必须安全（输入校验先于加载模型）──
 
 def test_main_returns_2_on_bad_input_without_loading_torch(tmp_path, capsys):
+    """校验「main() 本身不加载模型」，而不是「整个进程从没导入过 torch」。
+
+    2026-11-24 修：原来断言 `"torch" not in sys.modules`，这条**依赖测试执行顺序** ——
+    只要前面有任何用例建过 `TestClient(server.app)`（它会 import `src.server` →
+    `sentence_transformers` → torch），这条就假红。改成比较调用前后的差集，
+    断言的是同一件事（main 的输入校验没有触发模型加载），但不吃别的用例的影响。
+    """
+    before = "torch" in sys.modules
     rc = ev.main([
         "--corpus", str(tmp_path / "no-such-corpus"),
         "--queries", str(QUERIES_PATH),
@@ -503,7 +511,7 @@ def test_main_returns_2_on_bad_input_without_loading_torch(tmp_path, capsys):
 
     assert rc == 2
     assert "输入不合法" in capsys.readouterr().out
-    assert "torch" not in sys.modules, "输入校验必须发生在加载模型之前"
+    assert ("torch" in sys.modules) == before, "输入校验必须发生在加载模型之前"
 
 
 # ── 文件归属（P2）──
