@@ -63,7 +63,22 @@
   所有老会话当场失效；安全默认与可升级性冲突时，用开关把选择权交出去，并把风险写在 `.env.example` 里。
 - **`Secure` 这种标记必须能按请求判断**：写死任一边都会毁掉一种部署形态（http 调试 / https 生产）。
 
-## 五、仍然没做
+## 五、发版：v1.2.2（顺带验通真·Actions 链路）
+
+tag `v1.2.2` 推上去后 Release 工作流 **23 s 成功**（run `45604780571`），这是 2026-11-23 那套
+「正文取仓库手写 notes」的第一次**真链路**验证（此前只用脚本层验过）：
+
+| 判据 | 结果 |
+|---|---|
+| 工作流里 `check_release_notes.py --tag` 通过 | ✅（缺文件 / 太短会红） |
+| Release 正文 = `docs/release-notes-1.2.2.md` 全文 | ✅ 2 474 字符，**没有**自动生成的 Full Changelog |
+| 附件 | ✅ `ragflow-1.2.2-py3-none-any.whl`（805 011 字节；本地 build 抽查 37 entries / index.html / 12 vendor / Version 1.2.2） |
+| `gh release list` | ✅ v1.2.2 显示 **Latest** |
+| main 上的 CI | ✅ success |
+
+待办 ⑧（发版小债）至此**闭环**。
+
+## 六、仍然没做
 
 - 多用户账号 / 权限分离 / 审计（`AUTH_TOKEN` 仍是共享钥匙）；
 - 限流换共享存储（多实例）；
