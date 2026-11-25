@@ -196,3 +196,46 @@ def test_release_notes_guard_exits_nonzero_when_missing(tmp_path):
     import scripts.check_release_notes as guard
 
     assert guard.main(["--tag", "v9.9.9", "--root", str(tmp_path)]) == 1
+
+
+# ── Docker 交付面（2026-11-25）──
+# 这组守卫不是「文件存在就算过」，而是钉住几个**会出事**的性质：
+# ① 用户数据（`.env` / state / uploads / chroma_db）绝对不许烤进镜像；
+# ② 容器必然对外监听，所以启动闸门（绑非回环必须有 AUTH_TOKEN）必须在镜像里照旧生效；
+# ③ 数据必须挂 volume，否则 `docker rm` 等于删库。
+
+def _text(name):
+    return (ROOT / name).read_text(encoding="utf-8")
+
+
+def test_dockerfile_keeps_the_fail_closed_listen_address():
+    text = _text("Dockerfile")
+    assert "python:3.11" in text, "基础镜像要跟上 requires-python>=3.11"
+    assert "HOST=0.0.0.0" in text, "容器里必须绑 0.0.0.0，否则端口映射接不住"
+    # 绑 0.0.0.0 时没有 AUTH_TOKEN 会拒绝启动（src/security.py）。镜像里**不许**给 AUTH_TOKEN
+    # 任何默认值 —— 一旦有默认值，fail-closed 就变成「默认用一把人尽皆知的钥匙」。
+    assert not re.search(r"^\s*AUTH_TOKEN\s*=", text, re.M), \
+        "Dockerfile 不许给 AUTH_TOKEN 设默认值：那会绕过启动闸门"
+
+
+def test_dockerfile_runs_as_non_root_and_has_healthcheck():
+    text = _text("Dockerfile")
+    assert re.search(r"^USER\s+(?!root)", text, re.M), "容器要以非 root 运行"
+    assert "HEALTHCHECK" in text and "/api/session" in text, "要有健康检查（打 /api/session）"
+    assert 'VOLUME ["/data"]' in text, "数据目录必须是 volume"
+
+
+def test_dockerignore_keeps_user_data_and_secrets_out_of_the_image():
+    text = _text(".dockerignore")
+    entries = {line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")}
+    for needed in (".env", ".venv", "state", "uploads", "chroma_db", ".git"):
+        assert needed in entries, f".dockerignore 必须排除 {needed}（别把用户数据/密钥烤进镜像）"
+
+
+def test_compose_project_persists_data_and_listens_in_container():
+    text = _text("docker-compose.yml")
+    assert "/data" in text, "state/uploads/chroma 要落到挂载点"
+    assert re.search(r"^\s*-?\s*ragflow-data:/data", text, re.M) or "ragflow-data:/data" in text, \
+        "要有命名卷，否则删容器就删库"
+    assert "HOST: 0.0.0.0" in text, "compose 要覆盖成容器内监听"
+    assert "127.0.0.1:8080:8080" in text, "默认只发布到宿主机回环，别主动暴露到局域网"

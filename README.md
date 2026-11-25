@@ -19,7 +19,7 @@
 
 **为什么不是又一个 RAG demo**：同名项目很多（比如 `infiniflow/ragflow`）。这个仓库的差异在于
 **每一个默认值都有可复现的实测依据** —— [`docs/retrieval-baseline-2026-10-06.md`](docs/retrieval-baseline-2026-10-06.md)
-里是 <!-- AUTO:docs-lines -->2953<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->835<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
+里是 <!-- AUTO:docs-lines -->2953<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->839<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
 （例如「调大 `TOP_K`」实测 +0.0pp，被直接否掉）。想直接看数字，往下翻到「📊 实测数据」一节。
 
 ## ✨ 核心亮点
@@ -58,7 +58,7 @@
 | reranker 为什么默认关 | CPU **3.9 s/问**，没过「中位 ≤1.5 s」这条线 | 实测 |
 | 并发扛得住吗 | embedding 是**排队不是并行**（8 并发只 ×1.3 吞吐），但它不是瓶颈；20 并发请求零错误 | 进程内基准 + 真实 uvicorn 压测 |
 
-`pytest tests -q` → **<!-- AUTO:test-count -->835<!-- /AUTO:test-count --> passed**（整条约 20 s）。
+`pytest tests -q` → **<!-- AUTO:test-count -->839<!-- /AUTO:test-count --> passed**（整条约 20 s）。
 
 ## 📋 支持格式
 
@@ -140,7 +140,39 @@ HTTP Basic 凭证（用户名随便填、密码就是 `AUTH_TOKEN`）：浏览�
 
 **会话归属**（2026-11-24）：`/api/session` 会下发一个 `HttpOnly` cookie，值是 `sid.token`，服务端状态里只存 `sha256(token)`；之后所有接口都要求 cookie 与 `session_id` 都对得上，**光有 sid 读不到任何东西**（403）。所以 sid 出现在 URL 里也不再是漏洞。
 
-需要说清楚的边界：这还**不是身份体系**。`AUTH_TOKEN` 是**一把共享钥匙**（谁拿到都是同一个「用户」），没有账号、没有权限分离、没有审计；CSRF 靠 Basic 凭证 + `Origin` 检查挡住写操作。另外**本刀之前建的旧会话**会在前端带着 localStorage 里的 sid 首次访问时被「绑定」（一次性迁移），所以泄漏过的旧 sid 仍有被抢先绑定的窗口 —— 想彻底干净就删掉旧状态文件重开。
+需要说清楚的边界：这还**不是身份体系**。`AUTH_TOKEN` 是**一把共享钥匙**（谁拿到都是同一个「用户」），没有账号、没有权限分离、没有审计；CSRF 靠 Basic 凭证 + `Origin` 检查挡住写操作。另外**本刀之前建的旧会话**会在前端带着 localStorage 里的 sid 首次访问时被「绑定」（一次性迁移），所以泄漏过的旧 sid 仍有被抢先绑定的窗口 —— 想彻底干净就删掉旧状态文件重开（或设 `SESSION_BIND_LEGACY=0`）。
+
+### 3. Docker 部署
+
+`Dockerfile` + `docker-compose.yml` 已随仓库提供（2026-11-25 起）。镜像里**已经烤进了向量模型**
+（`bge-small-zh-v1.5`，93 MB），所以**运行时不需要联网下载模型**。
+
+```bash
+# 1) 配 .env：至少要有 API_KEY，再加一个够长的随机令牌
+#    AUTH_TOKEN=<一串随机字符>        # 容器必然对外监听，没有它启动不了
+python -c "import secrets; print(secrets.token_hex(16))"   # 生成一个
+
+# 2) 起服务（首次构建约 5–10 分钟，主要耗时在装 torch / chromadb）
+docker compose up -d --build
+
+# 3) 打开 http://127.0.0.1:8080 —— 浏览器弹 Basic 认证框：用户名随便填、密码填 AUTH_TOKEN
+docker compose logs -f          # 看日志
+docker compose down             # 停掉（数据在 volume 里，不会丢）
+```
+
+三个必须知道的点：
+
+| 事项 | 说明 |
+|---|---|
+| **`AUTH_TOKEN` 是硬要求** | 容器内必须 `HOST=0.0.0.0` 才能被端口映射接住，而绑非回环 + 无 token 会**拒绝启动**（`src/security.py` 的闸门，退出码非 0）。这是故意的 fail-closed，不是 bug |
+| **数据在 volume 里** | `state/`（会话）、`uploads/`（原件）、`chroma_db/`（向量库）都映射到 `/data`，compose 用命名卷 `ragflow-data`。**只删容器不删卷 = 数据还在**；`docker compose down -v` 才会一起删 |
+| **重排模型没烤进镜像** | `RERANK_ENABLED` 默认 0，重排模型（`bge-reranker-base`，1.1 GB）不占镜像体积。要在容器里开重排，得让容器能访问 HF（或自己把模型挂进 `/opt/models`） |
+
+镜像构成（实测）：`python:3.11-slim` 基础 + **CPU 版 torch**（不带 CUDA，省约 2 GB）+ 依赖 +
+烤好的模型 = **2.82 GB**。容器以非 root（uid 10001）运行，健康检查打 `/api/session`
+（设了 token 时 401 也算活着），`docker compose ps` 会显示 `healthy`。
+
+推送镜像到自己的 registry 时注意：**`.env` 不会进镜像**（`.dockerignore` 挡着），API Key 仍在运行时注入。
 
 ## 📁 项目结构
 

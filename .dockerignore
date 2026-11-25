@@ -1,0 +1,28 @@
+# 构建上下文排除清单：镜像里只留运行需要的东西
+# 用户数据一律不进镜像（它们由 volume 挂进来，见 docker-compose.yml）
+.git
+.gitignore
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+build
+dist
+*.egg-info
+state
+uploads
+chroma_db
+data
+.agents
+.dsh-memory
+.env
+.env.*
+!.env.example
+tests
+docs
+.idea
+.vscode
+legacy
+*.md
+!README.md

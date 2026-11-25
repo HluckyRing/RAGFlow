@@ -33,6 +33,12 @@ dist/
 build/
 *.egg-info/
 
+# 测试/覆盖率产物（2026-11-25：pytest-cov 装进来以后别把 .coverage 提交上去）
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
 # IDE 配置
 .idea/
 .vscode/

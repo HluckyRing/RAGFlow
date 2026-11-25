@@ -51,6 +51,13 @@
   `gh release list` 显示 Latest。**同一轮自查抓到日期写错**（本轮工作在 11-23，我按上一轮
   印象写成 11-20）：`git mv` 改名 + 五处正文改正 + 会话日志补「跨天会话要当场 Get-Date」
   这条教训。
+- **2026-11-25 Docker 部署：Dockerfile + compose，镜像实测跑通**：
+  docs/session-log/2026-11-25-docker-deploy.md
+  —— 真构建（2.82 GB）+ 真起容器 + 走完「登录 → 建对话 → 上传 → 解析 → 离线向量化 →
+  \docker restart\ 后数据还在」。三个坑：容器必须 \HOST=0.0.0.0\ 于是 \AUTH_TOKEN\ 变成硬要求
+  （**不给默认值**，否则等于绕过启动闸门）；模型（93 MB）**构建期烤进镜像**、运行时零下载；
+  state/uploads/chroma 统一挪到 \/data\ 走命名卷。torch 装 CPU 版省约 2 GB。
+  4 条新守卫钉住「密钥/用户数据不进镜像 + 非 root + volume + 只发布回环」。\pytest\ 835→**839**。
 - **2026-11-25 安全两把小刀：cookie `Secure` + 旧会话迁移窗口（待办 ⑦ 遗留）**：
   `docs/session-log/2026-11-25-security-cookie-secure.md`
   —— cookie 以前硬编码不带 `Secure`（HTTPS 后能被明文带出去），但无脑加又会让本机 http

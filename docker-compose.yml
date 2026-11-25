@@ -1,0 +1,45 @@
+# RAGFlow 的 Compose 配置：一条 `docker compose up -d --build` 起服务。
+#
+# 用法：
+#   1) 在项目根建 .env（见 .env.example），至少要有 API_KEY；
+#   2) 生成一个令牌写进 .env：AUTH_TOKEN=<一串够长的随机字符>
+#      —— 容器必然对外监听（0.0.0.0），没有它就**启动不了**（src/security.py 的闸门）；
+#   3) docker compose up -d --build
+#   4) 打开 http://127.0.0.1:8080 —— 浏览器会弹一次 Basic 认证框：
+#      用户名随便填，密码填 AUTH_TOKEN。
+services:
+  ragflow:
+    build: .
+    image: ragflow:local
+    container_name: ragflow
+    restart: unless-stopped
+    ports:
+      # 只发布到回环：宿主机之外访问不到（要对外就把左边改成 0.0.0.0:8080）
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    environment:
+      # 覆盖 .env 里的回环监听：容器内必须绑 0.0.0.0 才能被端口映射接住
+      HOST: 0.0.0.0
+      PORT: 8080
+      STATE_DIR: /data/state
+      UPLOAD_DIR: /data/uploads
+      VECTOR_DB_PATH: /data/chroma
+      COOKIE_SECURE: "auto"
+    volumes:
+      # 会话状态 / 上传原件 / 向量库：容器可删可重建，这三份必须留在宿主机
+      - ragflow-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/session | grep -qE '^(200|401|403)$'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    # 大模型调用 + 本地 embedding 都在内存里跑，给个上限避免把宿主机吃干
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+volumes:
+  ragflow-data:
