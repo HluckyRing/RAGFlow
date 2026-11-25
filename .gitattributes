@@ -1,0 +1,18 @@
+# 行尾统一（2026-11-25）：仓库主要在 Windows 上开发，而 Dockerfile / compose 里的
+# shell 续行（`\`）和容器内脚本必须是 LF —— 一旦被 Windows 的 autocrlf 转成 CRLF，
+# `docker build` 会在 RUN 那一行报语法错。这里显式钉死这几个文件用 LF。
+* text=auto
+
+Dockerfile        text eol=lf
+.dockerignore     text eol=lf
+docker-compose.yml text eol=lf
+*.yml             text eol=lf
+*.yaml            text eol=lf
+*.sh              text eol=lf
+*.py              text eol=lf
+
+# 二进制，别让 git 试图转换
+*.whl             binary
+*.png             binary
+*.jpg             binary
+*.pdf             binary
