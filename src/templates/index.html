@@ -1366,7 +1366,7 @@ function buildCoverageTag(cov) {
         const missing = (cov && Array.isArray(cov.missing_titles)) ? cov.missing_titles : [];
         const missingCount = (cov && typeof cov.missing_count === 'number') ? cov.missing_count : 0;
         if (missing.length) {
-            const more = missingCount > missing.length ? ` 等 ${missingCount} 个` : '';
+            const more = missingCount > missing.length ? ` 等 ${missingCount} 处` : '';
             text += `；没读到：${missing.join('、')}${more}`;
         }
         tag.textContent = text;

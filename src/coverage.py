@@ -232,25 +232,54 @@ def intra_file_report(picked, total_candidates, file_name, pool=None):
 #
 # 所以退一步，只报**能验证的东西**：没进 context 的块，它们的页标题是什么。每个标题都来自
 # 真实块文本，判据是「这个标题在 picked 块里一次都没出现过」——不需要知道小节边界，也不会编。
+#
+# 第二十三轮（2026-11-25）拿真实 state/ 语料（36 份文件 / 2886 块）量了第一版的三个毛病，
+# 全部在这里治掉：
+#   ① **行政页霸榜**：缺口条目频次前三名是「课程思政小讲堂」19 次、「学 习 进 步 ！」19 次、
+#      「第二次作业」17 次 —— 每章 PPT 末尾都有一页，内容为零。原因很蠢：噪音表用的是
+#      **子串**匹配，而真实文本是「学 习 进 步 ！」（逐字加空格），一个都没命中。改成**整行
+#      去空白归一化后精确匹配**一张行政页表（不用子串：子串会把「作业调度算法」「两级文件目录」
+#      这种真内容一起误杀，实测行政词子串命中 24 个条目里只有 4 个是真行政页）。
+#   ② **前 N 条只覆盖文件开头**：缺口按文件顺序取前 4 条，122 块的文件报的永远是开头那几页，
+#      章末整段从不出现。改成**按位置均匀铺开（首尾必含）**——与 `sample_evenly` 同一个哲学：
+#      说得出「首中尾都缺」，而不是「开头缺几页」。
+#   ③ **「4 条」是拍的数**：真实语料里 122 块的文件有 85–102 处缺口，4 条 = 4%。改成 **12 条上限**
+#      —— 这个数不是从算法推的，是**可读性**上限（前端 `coverage-tag` 要把清单塞进一个标签里）+
+#      一个可证明的字数上界：标题最多 18 字（`_TITLE_MAX`），12 × 19 = **228 字**，占 context 预算
+#      8000 的 2.9%；真实语料实测每份清单中位 122 字、最长 191 字。曾试过「按字符预算动态定条数」，
+#      但上限 12 × 标题上界 18 字 = 228 < 300 的预算 —— **那一层永远不生效，是死代码**，故删除。
+# 另外补一条：**解析不出标题的页不再静默消失**。34.6% 的块没有可解析标题（998/2886），其中
+# 628 块的 `section` 里有页码。这些页现在用「第 N 页」诚实命名 —— 但**排在标题条目之后**
+# （稳定分区，与 `prefer_content` 同一个哲学）：真实语料里 PPT 的无标题页大多是封面/教材信息/
+# 知识导图页，若与内容标题混排会把清单头部占满（实测 12 条里 2 条是「第 2 页」这种噪音）。
+# 结构页（知识导图 / 内容导航 / 目录）与行政页既不命名也不计入缺口。
 _NOISE_TITLES = {"date", "signature", "内容提要"}
 _STRUCTURAL_TITLES = {"内容导航：", "内容导航", "目录", "/content/"}
 _NOISE_HINTS = ("主讲", "主审", "作者：", "版权", "谢谢", "学习进步")
+# 行政页（整页只有一个行政标题、内容为零）。**精确匹配**，不做子串 —— 见上面 ①。
+_ADMIN_TITLES = frozenset({
+    "课程思政小讲堂", "学习进步", "学习进步！", "学习进步!", "谢谢", "谢谢！", "谢谢!",
+    "第一次作业", "第二次作业", "第三次作业", "作业", "上机练习", "上机练习：",
+})
 _BULLET_PREFIX = "⚫➢•·●■◆◇*＊-—–〉》"
 _PAGE_PREFIX_RE = re.compile(r"^\s*\d{1,3}\s*[/／]\s*")
 _TITLE_MAX = 18
 _TITLE_SCAN_LINES = 3        # 只在前 3 行里找标题：再往下就是正文了
 _TITLE_RAW_MAX = 24         # 长过这个数的一律当正文，不许截断后冒充标题
-TOPIC_LIMIT = 4
+TOPIC_LIMIT = 12            # 可读性上限（不是算法推出来的）：字数上界 12 × (18+1) = 228 字
 
 
-def page_title(text):
-    """块的「页标题」：前 3 行里第一个像标题的行（去掉 `67 / ` 前缀、丢掉噪音行），截到 18 字。
+def _normalize_line(line):
+    """比对用的归一化：去掉全部空白（含全角空格）+ 转小写。"""
+    return re.sub(r"\s+", "", str(line or "")).lower()
 
-    三条边界都是被真实语料逼出来的：
-    ① 只扫前 3 行 —— 正文里随便一行拿来当标题比不报更糟；
-    ② 原始行超过 24 字当正文（PPT 正文行普遍 25 字以上），不许「截断一个长句子」冒充标题；
-    ③ 噪音行（`Date` / `Signature` / 版权行 / 知识导图页）跳过。
-    拿不到就返回空串 —— 全局 `topic_gaps` 据此整段退回老话术，不编。
+
+def _scan_title(text):
+    """扫块的「页标题」，返回 `(kind, label)`。
+
+    kind ∈ `"title"`（拿到标题）/ `"structural"`（目录、知识导图）/ `"admin"`（行政页，
+    如「第二次作业」）/ `"untitled"`（前 3 行全是正文或空）。三种非 title 的区别很重要：
+    结构页与行政页**什么都不报**，untitled 还能用页码兜底（见 `page_label`）。
     """
     for index, raw in enumerate(str(text or "").split("\n")):
         if index >= _TITLE_SCAN_LINES:
@@ -260,49 +289,122 @@ def page_title(text):
         if not line or line.isdigit() or len(line) < 2:
             continue
         if len(line) > _TITLE_RAW_MAX:
-            return ""                       # 这是正文，不是标题 —— 别再往下抓一行短的凑数
+            return "untitled", ""            # 这是正文，不是标题 —— 别再往下抓一行短的凑数
         # 结构页（目录 / 知识导图）就地判死：它们后面的行是全章清单，当标题会张冠李戴。
         if line.lower() in _STRUCTURAL_TITLES or (line.startswith("第") and line.endswith("知识导图")):
-            return ""
+            return "structural", ""
+        if _normalize_line(line) in _ADMIN_TITLES:
+            return "admin", ""
         if line.lower() in _NOISE_TITLES or any(hint in line for hint in _NOISE_HINTS):
             continue
-        return line if len(line) <= _TITLE_MAX else line[:_TITLE_MAX] + "…"
-    return ""
+        return "title", (line if len(line) <= _TITLE_MAX else line[:_TITLE_MAX] + "…")
+    return "untitled", ""
+
+
+def page_title(text):
+    """块的「页标题」：前 3 行里第一个像标题的行（去掉 `67 / ` 前缀、丢掉噪音行），截到 18 字。
+
+    三条边界都是被真实语料逼出来的：
+    ① 只扫前 3 行 —— 正文里随便一行拿来当标题比不报更糟；
+    ② 原始行超过 24 字当正文（PPT 正文行普遍 25 字以上），不许「截断一个长句子」冒充标题；
+    ③ 噪音行（`Date` / `Signature` / 版权行）跳过，结构页与行政页直接判死。
+    拿不到就返回空串 —— 单看它无法区分「正文开头」和「行政页」，要区分用 `_scan_title`。
+    """
+    kind, label = _scan_title(text)
+    return label if kind == "title" else ""
+
+
+def page_label(text, meta=None):
+    """缺口条目的名字，返回 `(label, is_page)`。
+
+    优先级：页标题 → 「第 N 页」（`section` 里的页码，如 `"第 3 页"`）→ 空串（不报）。
+    结构页 / 行政页一律空串：它们不是内容，报出来只是噪音（见本节开头 ①）。
+    页码兜底是给「页首就是正文长句」的页留的活口 —— 这类页占真实语料 34.6% 的块。
+    """
+    kind, label = _scan_title(text)
+    if kind == "title":
+        return label, False
+    if kind in ("structural", "admin"):
+        return "", False
+    match = _SECTION_PAGE_RE.search(str((meta or {}).get("section") or ""))
+    if match:
+        return f"第 {int(match.group(1))} 页", True
+    return "", False
+
+
+def _even_indices(total, count):
+    """`[0, total)` 里均匀取 `count` 个下标，**首尾必含**。"""
+    if count <= 0 or total <= 0:
+        return []
+    if count >= total:
+        return list(range(total))
+    if count == 1:
+        return [0]
+    step = (total - 1) / float(count - 1)
+    picked, seen = [], set()
+    for index in range(count):
+        position = int(round(index * step))
+        if position not in seen:
+            seen.add(position)
+            picked.append(position)
+    return picked
+
+
+def _spread(items, limit):
+    """按位置均匀铺开取 `limit` 条，**首尾必含**。
+
+    为什么是均匀而不是「按文件顺序取前 N」：真实语料里 122 块的文件有 84–102 处缺口，
+    取前 N 永远停在文件开头，章末整段一次都不会被点到 —— 用户会以为「只缺开头几页」。
+    """
+    return [items[index] for index in _even_indices(len(items), limit)]
 
 
 def topic_gaps(pool, picked):
-    """缺口清单：`pool` 里有、但 `picked` 里一份都没读到的页标题。
+    """缺口清单：`pool` 里有、但 `picked` 里一份都没读到的页。
 
     判据刻意写成「标题在 picked 里一次都没出现」而不是「块没被选中」：同一标题常横跨好几页
     （「岭回归」连排 3 页），读了 1 页就算这个标题摸到了 —— 报成「缺」会夸大缺口。
 
-    返回 `{"topics_total": int, "topics_missing": [...最多 TOPIC_LIMIT 条], "missing_count": int}`；
-    一条标题都解析不出来时返回空 dict（调用方据此退回老话术，不编）。
+    返回 `{"topics_total": int, "topics_missing": [...], "missing_count": int}`：
+    `topics_missing` 是有标题的缺口（按位置均匀铺开，最多 `TOPIC_LIMIT` 条）+ 缺口太大时
+    补上的「第 N 页」；总字数上界 `TOPIC_LIMIT × (_TITLE_MAX + 1)` = 228 字。
+    `missing_count` 是真实总数，与列了几条无关。
+    一个名字都解析不出来时返回空 dict（调用方据此退回老话术，不编）。
     """
     picked_keys = {(str(text or ""), (meta or {}).get("chunk_index"))
                    for text, meta in (picked or [])}
-    covered_titles, missing_titles = set(), []
+    covered, titles, pages = set(), [], []
     for text, meta in pool or []:
-        title = page_title(text)
-        if not title:
+        label, is_page = page_label(text, meta)
+        if not label:
             continue
         if (str(text or ""), (meta or {}).get("chunk_index")) in picked_keys:
-            covered_titles.add(title)
-        elif title not in missing_titles:
-            missing_titles.append(title)
-    if not covered_titles and not missing_titles:
+            covered.add(label)
+            continue
+        bucket = pages if is_page else titles
+        if label not in bucket:
+            bucket.append(label)
+    if not covered and not titles and not pages:
         return {}
-    missing = [title for title in missing_titles if title not in covered_titles]
-    return {"topics_total": len(covered_titles) + len(missing),
-            "topics_missing": missing[:TOPIC_LIMIT],
-            "missing_count": len(missing)}
+    missing_titles = [title for title in titles if title not in covered]
+    missing_pages = [page for page in pages if page not in covered]
+    selected = _spread(missing_titles, TOPIC_LIMIT)
+    if len(selected) < TOPIC_LIMIT and missing_pages:
+        # 页码条目排在内容标题之后：它们只在标题不够填满上限时才补位（见本节开头那段的实测）
+        selected += _spread(missing_pages, TOPIC_LIMIT - len(selected))
+    return {"topics_total": len(covered) + len(missing_titles) + len(missing_pages),
+            "topics_missing": selected,
+            "missing_count": len(missing_titles) + len(missing_pages)}
 
 
 def intra_file_notice(report):
     """把覆盖账翻译成**给模型看的一句话**；全覆盖（或没有账）返回空串。
 
-    两句话：总账（摘了 N/M 段）+ 缺口清单（哪些页标题一次都没读到）。
-    解析不出标题的语料上只说总账 —— 与 2026-11-15 那版逐字一致，不许编。
+    两句话：总账（摘了 N/M 段）+ 缺口清单（哪些页一次都没读到）。
+    解析不出任何页名（既无标题也无页码）的语料上只说总账 —— 与 2026-11-15 那版逐字一致，不许编。
+
+    缺口清单用「这些页」而不是「这些页标题」：清单里可能混着「第 3 页」这种页码条目
+    （页首就是正文长句、没有标题可解析的页），叫「页标题」会把页码说成标题。
     """
     if not report or report.get("kind") != "intra_file":
         return ""
@@ -314,9 +416,9 @@ def intra_file_notice(report):
     count = int(report.get("missing_count") or 0)
     if missing:
         listed = "、".join(missing)
-        more = f" 等 {count} 个页标题" if count > len(missing) else ""
+        more = f" 等 {count} 处" if count > len(missing) else ""
         return (f"【覆盖说明】本次只从《{name}》里摘录了 {covered}/{total} 段（按页均匀取样），"
-                f"这些页标题一次都没读到：{listed}{more}。"
+                f"这些页一次都没读到：{listed}{more}。"
                 f"回答时请如实说明「本次只覆盖了这份文件的一部分」，不要假装看过全部内容。")
     return (f"【覆盖说明】本次只从《{name}》里摘录了 {covered}/{total} 段（按小节均匀取样），"
             f"未被摘录的小节可能正是你要的细节。回答时请如实说明「本次只覆盖了这份文件的部分"

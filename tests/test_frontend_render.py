@@ -228,7 +228,7 @@ def test_coverage_tag_names_the_missing_titles(rendered_coverage):
     text = rendered_coverage["gaps"]
     assert "43/110" in text
     assert "岭回归" in text and "Lasso 回归" in text
-    assert "等 7 个" in text, "被截断时要说总数，别让用户以为只缺两条"
+    assert "等 7 处" in text, "被截断时要说总数，别让用户以为只缺两条"
 
 
 def test_show_coverage_tag_appends_once(rendered_coverage):

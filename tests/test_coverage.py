@@ -700,14 +700,92 @@ def test_topic_gaps_precision_every_named_title_is_really_absent():
 
 
 def test_topic_gaps_caps_the_list_but_reports_the_count():
-    pool = [_page("甲.pdf", i, f"标题{i}") for i in range(1, 10)]
+    """上限不再是拍出来的「4 条」：`TOPIC_LIMIT=12` 是可读性上限，不是 4% 那种拍脑袋的数。"""
+    pool = [_page("甲.pdf", i, f"标题{i}") for i in range(1, 41)]
     gaps = topic_gaps(pool, [])
     assert len(gaps["topics_missing"]) == TOPIC_LIMIT
-    assert gaps["missing_count"] == 9
+    assert gaps["missing_count"] == 40
+
+
+def test_topic_gaps_reports_more_than_the_old_four():
+    """旧口径只列 4 条（真实语料里那是缺口的 4%），现在列满上限。"""
+    pool = [_page("甲.pdf", i, f"小节{i}") for i in range(1, 31)]
+    gaps = topic_gaps(pool, [])
+    assert len(gaps["topics_missing"]) > 4
+
+
+def test_topic_gaps_cost_has_a_provable_upper_bound():
+    """清单字数上界 = TOPIC_LIMIT × (单个标题上限 + 1)：这是「上限」这个数唯一可证的依据。
+
+    曾在 `TOPIC_LIMIT` 之外再加一层「字符预算 300 字」，但 12 × (18+1) = 228 < 300 ——
+    那一层**永远不生效**（变异检查 E 实测：把预算逻辑关掉，测试全绿）。所以删掉它，
+    改成把上界本身钉在这里：谁将来把 `_TITLE_MAX` 或 `TOPIC_LIMIT` 调大，这条会红。
+    """
+    from src.coverage import _TITLE_MAX
+
+    pool = [_page("甲.pdf", i, f"{i:02d}超长页标题测试字数上界填充填充") for i in range(1, 41)]
+    gaps = topic_gaps(pool, [])
+    assert len(gaps["topics_missing"]) == TOPIC_LIMIT
+    cost = sum(len(title) + 1 for title in gaps["topics_missing"])
+    assert cost <= TOPIC_LIMIT * (_TITLE_MAX + 1), "清单字数不许越过可证明的上界"
+    assert cost < 8000 * 0.03, "清单最多占 context 预算（8000 字）的 3%"
+
+
+def test_topic_gaps_spreads_across_the_file_instead_of_only_the_head():
+    """旧口径按文件顺序取前 N 条，122 块的文件永远只报开头那几页 —— 章末整段从不出现。"""
+    pool = [_page("甲.pdf", i, f"小节{i}") for i in range(1, 101)]
+    gaps = topic_gaps(pool, [])
+    missing = gaps["topics_missing"]
+    assert missing[0] == "小节1", "首条必含"
+    assert missing[-1] == "小节100", "末条必含：尾部缺口也必须被点名"
+
+
+def test_topic_gaps_skips_admin_pages_that_differ_only_in_spacing():
+    """真实语料里行政页是「学 习 进 步 ！」（逐字加空格），子串噪音表一个都没命中。"""
+    pool = [_page("甲.pdf", 1, "概述"),
+            _page("甲.pdf", 2, "学 习 进 步 ！"),
+            _page("甲.pdf", 3, "课程思政小讲堂"),
+            _page("甲.pdf", 4, "第二次作业"),
+            _page("甲.pdf", 5, "作业调度算法")]
+    gaps = topic_gaps(pool, [pool[0]])
+    assert "作业调度算法" in gaps["topics_missing"], "真内容不许被行政词误杀"
+    for admin in ("学 习 进 步 ！", "课程思政小讲堂", "第二次作业"):
+        assert admin not in gaps["topics_missing"]
+    assert gaps["missing_count"] == 1
+
+
+def test_topic_gaps_skips_structural_pages_and_does_not_name_them_by_page():
+    """知识导图 / 目录页不是内容：既不点名，也不该被「第 N 页」兜底捡回来。"""
+    pool = [_page("甲.pdf", 1, "概述"), _page("甲.pdf", 2, "第5章知识导图"),
+            _page("甲.pdf", 3, "内容导航：")]
+    gaps = topic_gaps(pool, [pool[0]])
+    assert gaps["topics_missing"] == []
+    assert gaps["missing_count"] == 0
+
+
+def test_topic_gaps_names_untitled_pages_by_page_number():
+    """页首就是正文长句的页（真实语料占 34.6%）不许再静默消失：用页码诚实命名。"""
+    body = "连续分配方式：为一个用户程序分配一个连续的内存空间。\n正文"
+    pool = [_page("甲.pdf", 1, "概述"), (body, {"file_name": "甲.pdf",
+                                               "section": "第 7 页", "chunk_index": 7})]
+    gaps = topic_gaps(pool, [pool[0]])
+    assert gaps["topics_missing"] == ["第 7 页"]
+    assert gaps["missing_count"] == 1
+
+
+def test_topic_gaps_lists_titles_before_page_numbers():
+    """页码条目排内容标题之后（稳定分区）：否则 PPT 的封面/教材页会把清单头部占满。"""
+    body = "连续分配方式：为一个用户程序分配一个连续的内存空间。\n正文"
+    pool = [(body, {"file_name": "甲.pdf", "section": "第 2 页", "chunk_index": 2}),
+            _page("甲.pdf", 3, "岭回归"),
+            _page("甲.pdf", 4, "Lasso 回归")]
+    gaps = topic_gaps(pool, [])
+    assert gaps["topics_missing"][:2] == ["岭回归", "Lasso 回归"]
+    assert gaps["topics_missing"][-1] == "第 2 页"
 
 
 def test_topic_gaps_returns_nothing_when_titles_cannot_be_parsed():
-    """判据 2（不编名字）：一条标题都解析不出来时返回空 dict，调用方据此退回老话术。"""
+    """判据 2（不编名字）：一条标题都解析不出来、也没有页码时返回空 dict，调用方据此退回老话术。"""
     pool = [("", {"file_name": "甲.pdf", "chunk_index": 1}),
             ("主讲：王红玲", {"file_name": "甲.pdf", "chunk_index": 2})]
     assert topic_gaps(pool, []) == {}
