@@ -1,33 +1,27 @@
-# RAGFlow 的 Compose 配置：一条 `docker compose up -d --build` 起服务。
-#
-# 用法：
-#   1) 在项目根建 .env（见 .env.example），至少要有 API_KEY；
-#   2) 生成一个令牌写进 .env：AUTH_TOKEN=<一串够长的随机字符>
-#      —— 容器必然对外监听（0.0.0.0），没有它就**启动不了**（src/security.py 的闸门）；
-#   3) docker compose up -d --build
-#   4) 打开 http://127.0.0.1:8080 —— 浏览器会弹一次 Basic 认证框：
-#      用户名随便填，密码填 AUTH_TOKEN。
-services:
+# RAGFlow 鐨?Compose 閰嶇疆锛氫竴鏉?`docker compose up -d --build` 璧锋湇鍔°€?#
+# 鐢ㄦ硶锛?#   1) 鍦ㄩ」鐩牴寤?.env锛堣 .env.example锛夛紝鑷冲皯瑕佹湁 API_KEY锛?#   2) 鐢熸垚涓€涓护鐗屽啓杩?.env锛欰UTH_TOKEN=<涓€涓插闀跨殑闅忔満瀛楃>
+#      鈥斺€?瀹瑰櫒蹇呯劧瀵瑰鐩戝惉锛?.0.0.0锛夛紝娌℃湁瀹冨氨**鍚姩涓嶄簡**锛坰rc/security.py 鐨勯椄闂級锛?#   3) docker compose up -d --build
+#   4) 鎵撳紑 http://127.0.0.1:8080 鈥斺€?娴忚鍣ㄤ細寮逛竴娆?Basic 璁よ瘉妗嗭細
+#      鐢ㄦ埛鍚嶉殢渚垮～锛屽瘑鐮佸～ AUTH_TOKEN銆?services:
   ragflow:
     build: .
     image: ragflow:local
     container_name: ragflow
     restart: unless-stopped
     ports:
-      # 只发布到回环：宿主机之外访问不到（要对外就把左边改成 0.0.0.0:8080）
-      - "127.0.0.1:8080:8080"
+      # 宸﹁竟鏄?*瀹夸富鏈?*绔彛锛堝湪 .env 閲屽啓 HOST_PORT=9090 灏辫兘鏀癸紝榛樿 8080锛夛紝
+      # 鍙宠竟鏄?*瀹瑰櫒鍐?*绔彛 鈥斺€?瀹瑰櫒閲屽浐瀹氬惉 8080锛屽埆鏀瑰畠锛堝仴搴锋鏌ュ拰鏇存柊鑴氭湰閮芥寜 8080 璧帮級銆?      # 鍙彂甯冨埌鍥炵幆锛氬涓绘満涔嬪璁块棶涓嶅埌锛堣瀵瑰灏辨妸涓嬮潰鐨?127.0.0.1 鏀规垚 0.0.0.0锛夈€?      - "127.0.0.1:${HOST_PORT:-8080}:8080"
     env_file:
       - .env
     environment:
-      # 覆盖 .env 里的回环监听：容器内必须绑 0.0.0.0 才能被端口映射接住
-      HOST: 0.0.0.0
+      # 瑕嗙洊 .env 閲岀殑鍥炵幆鐩戝惉锛氬鍣ㄥ唴蹇呴』缁?0.0.0.0 鎵嶈兘琚鍙ｆ槧灏勬帴浣忋€?      # 娉ㄦ剰杩欓噷鐨?PORT 鏄?*瀹瑰櫒鍐?*绔彛锛屼細瑕嗙洊 .env 鐨?PORT锛堟湰鍦扮洿鎺ヨ窇鎵嶇敤 .env 鐨?PORT锛夈€?      HOST: 0.0.0.0
       PORT: 8080
       STATE_DIR: /data/state
       UPLOAD_DIR: /data/uploads
       VECTOR_DB_PATH: /data/chroma
       COOKIE_SECURE: "auto"
     volumes:
-      # 会话状态 / 上传原件 / 向量库：容器可删可重建，这三份必须留在宿主机
+      # 浼氳瘽鐘舵€?/ 涓婁紶鍘熶欢 / 鍚戦噺搴擄細瀹瑰櫒鍙垹鍙噸寤猴紝杩欎笁浠藉繀椤荤暀鍦ㄥ涓绘満
       - ragflow-data:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/session | grep -qE '^(200|401|403)$'"]
@@ -35,8 +29,7 @@ services:
       timeout: 5s
       start_period: 40s
       retries: 3
-    # 大模型调用 + 本地 embedding 都在内存里跑，给个上限避免把宿主机吃干
-    deploy:
+    # 澶фā鍨嬭皟鐢?+ 鏈湴 embedding 閮藉湪鍐呭瓨閲岃窇锛岀粰涓笂闄愰伩鍏嶆妸瀹夸富鏈哄悆骞?    deploy:
       resources:
         limits:
           memory: 4G

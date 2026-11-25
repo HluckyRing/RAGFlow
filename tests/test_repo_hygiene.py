@@ -87,34 +87,44 @@ _BACKTICK_RE = re.compile(r"`([A-Z][A-Z0-9_]{2,})`")
 
 
 def _source_corpus():
-    """`src/` 下所有 Python 源码拼起来 —— 变量可能在 config.py 之外被读（例如 STATE_DIR 在 state.py）。"""
+    """**真实读取配置的地方**全拼起来：`src/` 的 Python 源码 + compose + Dockerfile。
+
+    变量可能在 config.py 之外被读（`STATE_DIR` 在 state.py、`CHUNK_SIZE` 在 pdf_ingestion.py），
+    2026-11-25 起 `HOST_PORT` 这种**只给 Docker 用**的变量也要算数 —— 它由 compose 的
+    `${HOST_PORT:-8080}` 读取，Python 侧根本不碰。所以语料要把 compose / Dockerfile 一起算上，
+    否则守卫会逼着人去 `src/` 里加一行假读取。
+    """
     parts = []
     for path in sorted((ROOT / "src").rglob("*.py")):
         parts.append(path.read_text(encoding="utf-8"))
+    for name in ("docker-compose.yml", "Dockerfile"):
+        candidate = ROOT / name
+        if candidate.exists():
+            parts.append(candidate.read_text(encoding="utf-8"))
     return "\n".join(parts)
 
 
 def test_env_example_only_documents_real_variables():
-    """.env.example 里写的每个变量，`src/` 里必须真的有人读它。
+    """.env.example 里写的每个变量，必须真的有人读它（`src/` 或 compose / Dockerfile）。
 
     这条防的是「删了代码、模板还留着」：用户照着 `.env.example` 配了半天，程序根本不读。
     """
     source = _source_corpus()
     text = (ROOT / ".env.example").read_text(encoding="utf-8")
     documented = set(_ASSIGN_RE.findall(text))
-    missing = sorted(name for name in documented if f'"{name}"' not in source)
-    assert not missing, f".env.example 里这些变量在 src/ 里没人读：{missing}"
+    missing = sorted(name for name in documented if f'"{name}"' not in source and name not in source)
+    assert not missing, f".env.example 里这些变量没人读（src/ 或 compose 里都找不到）：{missing}"
 
 
 def test_readme_only_mentions_real_variables():
-    """README 里提到的变量名，必须能在 `src/` 里找到。
+    """README 里提到的变量名，必须能在 `src/` 或 compose / Dockerfile 里找到。
 
     这条防的是 README 把开关名写错（例如把 `SCOPE_FILTER` 写成 `SCOPE`）—— 用户照抄就静默失效。
     """
     source = _source_corpus()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     mentioned = set(_ASSIGN_RE.findall(readme)) | set(_BACKTICK_RE.findall(readme))
-    unknown = sorted(name for name in mentioned if f'"{name}"' not in source)
+    unknown = sorted(name for name in mentioned if f'"{name}"' not in source and name not in source)
     assert not unknown, f"README 里这些变量在 src/ 里找不到：{unknown}"
 
 
@@ -238,4 +248,16 @@ def test_compose_project_persists_data_and_listens_in_container():
     assert re.search(r"^\s*-?\s*ragflow-data:/data", text, re.M) or "ragflow-data:/data" in text, \
         "要有命名卷，否则删容器就删库"
     assert "HOST: 0.0.0.0" in text, "compose 要覆盖成容器内监听"
-    assert "127.0.0.1:8080:8080" in text, "默认只发布到宿主机回环，别主动暴露到局域网"
+    assert "127.0.0.1:" in text, "默认只发布到宿主机回环，别主动暴露到局域网"
+
+
+def test_compose_host_port_is_one_knob():
+    """改端口只该动一个地方：`.env` 里的 HOST_PORT。
+
+    容器内端口必须固定（健康检查与 `scripts/update_deploy.py` 的冒烟都按 8080 走），
+    所以 compose 发布端口要写成 `${HOST_PORT:-8080}:8080` —— 左边可配、右边固定。
+    """
+    text = _text("docker-compose.yml")
+    assert "${HOST_PORT:-8080}:8080" in text, \
+        "对外端口要抽成 HOST_PORT，且容器内端口固定 8080"
+    assert "PORT: 8080" in text, "容器内端口写死 8080，别让 .env 的 PORT 改到它"
