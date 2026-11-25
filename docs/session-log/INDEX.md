@@ -51,6 +51,14 @@
   `gh release list` 显示 Latest。**同一轮自查抓到日期写错**（本轮工作在 11-23，我按上一轮
   印象写成 11-20）：`git mv` 改名 + 五处正文改正 + 会话日志补「跨天会话要当场 Get-Date」
   这条教训。
+- **2026-11-25 安全两把小刀：cookie `Secure` + 旧会话迁移窗口（待办 ⑦ 遗留）**：
+  `docs/session-log/2026-11-25-security-cookie-secure.md`
+  —— cookie 以前硬编码不带 `Secure`（HTTPS 后能被明文带出去），但无脑加又会让本机 http
+  「刷新就掉会话」→ `COOKIE_SECURE=auto|1|0`，`auto` 按**这次请求的真实 scheme**（直连看
+  scheme、反代看 `X-Forwarded-Proto` 首个值）判断。旧会话首次绑定是**已泄漏旧 sid 的抢先
+  绑定窗口** → `SESSION_BIND_LEGACY=0` 可关（默认 1 保升级平滑，关掉后旧 sid 换新会话）。
+  6 条新单测 + 变异检查 4/4 红；`pytest` 829→**835**。随后发 **v1.2.2**（顺手验通真·Actions
+  发版链路，闭环待办 ⑧）。
 - **2026-11-25 缺口清单第二刀：行政页 / 只报开头 / 4 条上限（待办 ① 遗留）**：
   `docs/session-log/2026-11-25-gap-list-second-cut.md`
   —— 上轮自己留的三条「没量」口子在**真实 `state/` 语料（36 份文件 / 2886 块）**上量掉：

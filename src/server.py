@@ -256,10 +256,41 @@ def _owner_ok(request, sid, sess):
     return hmac.compare_digest(_hash_owner(token), str(expected))
 
 
-def _attach_owner(response, sid, token):
-    """把钥匙放进 HttpOnly cookie（JS 读不到，XSS 也偷不走）。"""
+def _request_is_https(request):
+    """这次请求是不是走的 HTTPS。
+
+    反代（nginx / Caddy / Cloudflare）后面直连是 http，真实 scheme 只在 `X-Forwarded-Proto`
+    里；只认第一个值（多级代理会追加），并且**不信任**它来决定安全边界 —— 这里只用来决定
+    cookie 要不要带 `Secure`（判断反了最多是「cookie 没被标记」，不会放宽归属校验）。
+    """
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if proto:
+        return proto == "https"
+    return request.url.scheme == "https"
+
+
+def _cookie_secure(request):
+    """要不要给归属 cookie 加 `Secure`：`COOKIE_SECURE=auto|1|0`。
+
+    为什么要这一层（2026-11-25 第二十四轮）：以前 cookie 硬编码不带 `Secure`，对外套 HTTPS
+    后它就能被明文信道带出去；但直接无脑加 `Secure`，本机 http 调试时浏览器会**丢掉**这个
+    cookie，表现成「刷新就掉会话」。`auto` 两头都照顾。
+    """
+    setting = str(getattr(config, "COOKIE_SECURE", "auto") or "auto").strip().lower()
+    if setting in ("1", "true", "yes", "on"):
+        return True
+    if setting in ("0", "false", "no", "off"):
+        return False
+    return _request_is_https(request)
+
+
+def _attach_owner(response, sid, token, secure=False):
+    """把钥匙放进 HttpOnly cookie（JS 读不到，XSS 也偷不走）。
+
+    `secure` 由调用方按请求算（`_cookie_secure`）：HTTPS 上才加 `Secure`，本机 http 不加。
+    """
     response.set_cookie(OWNER_COOKIE, f"{sid}.{token}", max_age=OWNER_MAX_AGE,
-                        httponly=True, samesite="lax", path="/")
+                        httponly=True, samesite="lax", secure=bool(secure), path="/")
     return response
 
 
@@ -545,25 +576,33 @@ async def create_session(request: Request, session_id: str = ""):
 
     旧会话的首次绑定只可能在「已经拿到 sid」的客户端身上发生（前端从 localStorage 带上来），
     而且请求本身已经过了 AUTH_TOKEN 那一关 —— 风险与收益写在 `docs/session-log/` 里。
+    **想彻底关掉这个窗口**：把老会话清干净后设 `SESSION_BIND_LEGACY=0`，旧 sid 会直接换新会话。
     """
+    secure = _cookie_secure(request)
     cookie_sid, cookie_token = _owner_cookie(request)
     if cookie_sid and cookie_token:
         sid, sess = await run_in_threadpool(_ensure_session, cookie_sid)
         expected = (sess or {}).get("session_token_hash")
         if expected and hmac.compare_digest(_hash_owner(cookie_token), str(expected)):
             return _attach_owner(JSONResponse({"session_id": sid, "resumed": True}),
-                                 sid, cookie_token)
+                                 sid, cookie_token, secure=secure)
 
     if session_id:
         sid, sess = await run_in_threadpool(_ensure_session, session_id)
         if not (sess or {}).get("session_token_hash"):
-            token = await run_in_threadpool(_issue_owner, sid)
-            logger.info("旧会话首次绑定归属令牌：sid=%s", sid)
-            return _attach_owner(JSONResponse({"session_id": sid, "resumed": True}), sid, token)
+            if getattr(config, "SESSION_BIND_LEGACY", 1):
+                token = await run_in_threadpool(_issue_owner, sid)
+                logger.info("旧会话首次绑定归属令牌：sid=%s", sid)
+                return _attach_owner(JSONResponse({"session_id": sid, "resumed": True}),
+                                     sid, token, secure=secure)
+            # SESSION_BIND_LEGACY=0：不再给旧会话发钥匙，直接落到下面建新会话。
+            # 旧会话的数据不删（磁盘上还在），只是**拿不到钥匙就进不来**。
+            logger.warning("拒绝为旧会话绑定归属令牌（SESSION_BIND_LEGACY=0）：sid=%s", sid)
 
     sid, _sess = await run_in_threadpool(_ensure_session, "")
     token = await run_in_threadpool(_issue_owner, sid)
-    return _attach_owner(JSONResponse({"session_id": sid, "resumed": False}), sid, token)
+    return _attach_owner(JSONResponse({"session_id": sid, "resumed": False}),
+                         sid, token, secure=secure)
 
 
 @app.get("/api/state")

@@ -242,3 +242,84 @@ def test_unknown_session_id_gets_a_new_one_instead_of_a_403(client):
     assert response.status_code in (200, 403)
     if response.status_code == 200:
         assert response.json()["session_id"]
+
+
+# ── cookie 的 Secure 标记（2026-11-25 第二十四轮，待办 ⑦ 遗留）──
+# 病根：cookie 以前硬编码不带 `Secure` —— 对外套 HTTPS 后它能被明文信道带出去；
+# 但直接无脑加，本机 http 调试时浏览器会**丢掉** cookie，表现成「刷新就掉会话」。
+# 所以做成 auto：按这次请求的真实 scheme 决定。
+
+def _set_cookie(monkeypatch, client, headers=None):
+    response = client.get("/api/session", headers=headers or {})
+    return response.headers.get("set-cookie", "")
+
+
+def test_cookie_is_not_secure_on_plain_http(client, monkeypatch):
+    """本机 http（默认）：不许带 Secure，否则浏览器直接丢 cookie。"""
+    monkeypatch.setattr(server.config, "COOKIE_SECURE", "auto")
+    cookie = _set_cookie(monkeypatch, client)
+    assert "httponly" in cookie.lower()
+    assert "; secure" not in cookie.lower(), "http 上带 Secure 会让浏览器丢掉 cookie"
+
+
+def test_cookie_is_secure_behind_an_https_proxy(client, monkeypatch):
+    """反代后面（X-Forwarded-Proto: https）：必须带 Secure。"""
+    monkeypatch.setattr(server.config, "COOKIE_SECURE", "auto")
+    cookie = _set_cookie(monkeypatch, client, {"X-Forwarded-Proto": "https"})
+    assert "; secure" in cookie.lower(), "HTTPS 上的归属 cookie 必须带 Secure"
+
+
+def test_forwarded_proto_takes_the_first_value(client, monkeypatch):
+    """多级代理会把头追加上去（`https, http`）：只认第一个值。"""
+    monkeypatch.setattr(server.config, "COOKIE_SECURE", "auto")
+    assert "; secure" in _set_cookie(monkeypatch, client,
+                                     {"X-Forwarded-Proto": "https, http"}).lower()
+    assert "; secure" not in _set_cookie(monkeypatch, client,
+                                         {"X-Forwarded-Proto": "http, https"}).lower()
+
+
+def test_cookie_secure_can_be_forced_both_ways(client, monkeypatch):
+    """`COOKIE_SECURE=1` / `=0` 压过 scheme 判断（容器里 scheme 常常看不出来）。"""
+    monkeypatch.setattr(server.config, "COOKIE_SECURE", "1")
+    assert "; secure" in _set_cookie(monkeypatch, client).lower()
+    monkeypatch.setattr(server.config, "COOKIE_SECURE", "0")
+    assert "; secure" not in _set_cookie(monkeypatch, client,
+                                        {"X-Forwarded-Proto": "https"}).lower()
+
+
+# ── 旧会话首次绑定的迁移窗口（2026-11-25 第二十四轮）──
+# 本刀之前的会话没有令牌，谁先带着那个 sid 来谁就绑成功 —— 对**已泄漏的旧 sid**
+# 是一次性抢先绑定窗口。默认继续放行（不然升级后老会话当场失效），可以显式关掉。
+
+def _write_legacy_session(sid):
+    import src.state as state
+
+    state.save(sid, {"active_conv": None,
+                     "conversations": {"c1": {"name": "旧对话", "created_at": 1,
+                                              "files": [], "messages": []}}})
+
+
+def test_legacy_binding_can_be_switched_off(client, monkeypatch):
+    """`SESSION_BIND_LEGACY=0`：旧 sid 换不到钥匙，直接给新会话（不是 403、不丢新数据）。"""
+    legacy_sid = "legacy-session-off-1"
+    _write_legacy_session(legacy_sid)
+    monkeypatch.setattr(server.config, "SESSION_BIND_LEGACY", 0)
+
+    response = client.get(f"/api/session?session_id={legacy_sid}")
+    body = response.json()
+    assert body["session_id"] != legacy_sid, "旧会话不许被绑定，必须换新会话"
+    assert body["resumed"] is False
+
+    import src.state as state
+    saved = state.load(legacy_sid)
+    assert not (saved or {}).get("session_token_hash"), "拒绝绑定后状态里不该出现令牌哈希"
+
+
+def test_legacy_binding_still_works_by_default(client, monkeypatch):
+    """默认（`SESSION_BIND_LEGACY=1`）仍放行：升级后老用户的会话不会当场失效。"""
+    legacy_sid = "legacy-session-on-1"
+    _write_legacy_session(legacy_sid)
+    monkeypatch.setattr(server.config, "SESSION_BIND_LEGACY", 1)
+
+    body = client.get(f"/api/session?session_id={legacy_sid}").json()
+    assert body == {"session_id": legacy_sid, "resumed": True}

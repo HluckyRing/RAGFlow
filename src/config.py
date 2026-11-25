@@ -196,6 +196,23 @@ PORT = int(os.getenv("PORT", "8080"))
 # 本机回环 + 空 token 保持零摩擦，和改造前一模一样。
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
 
+# 归属 cookie 的 `Secure` 标记（2026-11-25 第二十四轮）。
+# `auto`（默认）= 按**这次请求的真实 scheme** 决定：直连看 `request.url.scheme`，反代看
+# `X-Forwarded-Proto`。本机 http 照样能用（加 `Secure` 会让浏览器直接丢掉 cookie，
+# 「刷新就掉会话」），套了 HTTPS 又自动生效 —— 一个配置同时满足两种部署。
+# 强制三态：`auto` / `1` / `0`（写错按 auto 处理并 WARNING，不静默当成 1 或 0）。
+COOKIE_SECURE = (os.getenv("COOKIE_SECURE", "auto") or "auto").strip().lower()
+if COOKIE_SECURE not in ("auto", "1", "0", "true", "false", "on", "off", "yes", "no"):
+    logger.warning("COOKIE_SECURE=%r 不认识，按 auto 处理（可选 auto/1/0）", COOKIE_SECURE)
+    COOKIE_SECURE = "auto"
+
+# 旧会话的**首次绑定**要不要继续放行（2026-11-25 第二十四轮）。
+# 病根：本刀（2026-11-24）之前建的会话状态里没有令牌哈希，谁先带着那个 sid 来，
+# 服务端就给它发一把钥匙并绑定 —— 对**已经泄漏过的旧 sid** 是一次性抢先绑定窗口。
+# 默认 1（继续迁移，不然升级后所有老用户的会话当场失效）；把老会话清干净以后设 0，
+# 之后旧会话一律**换新会话**（前端拿到新 sid 会自动切过去，不报错、不丢新数据）。
+SESSION_BIND_LEGACY = int(os.getenv("SESSION_BIND_LEGACY", "1"))
+
 # 闸门措辞包（`src/gates/`）：闸门靠「措辞」判断意图，换语言/换语料就可能全部失效。
 # 失效是 fail-safe 的（闸门不触发 → 退回改造前行为），但必须**看得见** —— 见
 # `scripts/analyze_real_questions.py` 的「0 触发」告警。加一门语言 = 加一个包文件。
