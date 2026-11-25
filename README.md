@@ -19,7 +19,7 @@
 
 **为什么不是又一个 RAG demo**：同名项目很多（比如 `infiniflow/ragflow`）。这个仓库的差异在于
 **每一个默认值都有可复现的实测依据** —— [`docs/retrieval-baseline-2026-10-06.md`](docs/retrieval-baseline-2026-10-06.md)
-里是 <!-- AUTO:docs-lines -->2953<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->839<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
+里是 <!-- AUTO:docs-lines -->2953<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->855<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
 （例如「调大 `TOP_K`」实测 +0.0pp，被直接否掉）。想直接看数字，往下翻到「📊 实测数据」一节。
 
 ## ✨ 核心亮点
@@ -58,7 +58,7 @@
 | reranker 为什么默认关 | CPU **3.9 s/问**，没过「中位 ≤1.5 s」这条线 | 实测 |
 | 并发扛得住吗 | embedding 是**排队不是并行**（8 并发只 ×1.3 吞吐），但它不是瓶颈；20 并发请求零错误 | 进程内基准 + 真实 uvicorn 压测 |
 
-`pytest tests -q` → **<!-- AUTO:test-count -->839<!-- /AUTO:test-count --> passed**（整条约 20 s）。
+`pytest tests -q` → **<!-- AUTO:test-count -->855<!-- /AUTO:test-count --> passed**（整条约 20 s）。
 
 ## 📋 支持格式
 
@@ -174,6 +174,36 @@ docker compose down             # 停掉（数据在 volume 里，不会丢）
 
 推送镜像到自己的 registry 时注意：**`.env` 不会进镜像**（`.dockerignore` 挡着），API Key 仍在运行时注入。
 
+### 4. 更新部署（Docker 不会自己更新）
+
+⚠️ **`git pull` 之后容器还跑着旧代码** —— `docker compose up -d` **不会**因为源码变了就重建镜像
+（compose 的 `build:` 只在镜像不存在时构建）。源码是构建镜像时拷进去的，所以「拉完代码就以为更新好了」
+是个静默陷阱。
+
+```bash
+python scripts/update_deploy.py              # 推荐：拉代码 → 重建 → 等真健康
+python scripts/update_deploy.py --backup     # 顺手把数据卷备份到 backups/
+python scripts/update_deploy.py --no-pull    # 本地改完代码，只重建不拉取
+python scripts/update_deploy.py --dry-run    # 只做前置检查（不动任何东西）
+```
+
+脚本做四件事，缺一不可：**前置检查**（Docker 在跑 / `.env` 有 `AUTH_TOKEN`）→ `git pull --ff-only`
+（工作区脏就中止，不替你 stash）→ `docker compose up -d --build`（层缓存热时约 **20 s**）→
+**轮询到 `healthy` 才算成功**（容器退出会立刻打日志报错，而不是傻等超时）。
+
+| 场景 | 命令 |
+|---|---|
+| 手动更新（不想用脚本） | `git pull && docker compose up -d --build` |
+| 只重启、不重建 | `docker compose restart` |
+| 回滚到旧版本 | `git checkout <旧提交> && python scripts/update_deploy.py --no-pull` |
+| 备份数据 | `python scripts/update_deploy.py --backup`（或手工 `docker run --rm -v <卷>:/data:ro -v $PWD/backups:/backup alpine tar czf /backup/x.tar.gz -C /data .`） |
+| 彻底删掉（含数据） | `docker compose down -v` ⚠️ 数据卷一起删，先备份 |
+
+**想真·自动更新**（每天自己拉）：需要先把镜像推到 registry（如 GHCR），再用 cron / systemd timer /
+Watchtower 执行 `docker compose pull && docker compose up -d`。本地 `build:` 出来的镜像
+（`ragflow:local`）**Watchtower 管不了** —— 它只跟踪 registry 镜像。目前 `publish.yml` 只发 wheel，
+构建并推送镜像是还没做的一环。
+
 ## 📁 项目结构
 
 <!-- AUTO:structure -->
@@ -212,7 +242,8 @@ RAGFlow/
 │   ├── measure_inline_abstention.py     # 拒答与部分可答的端到端测量
 │   ├── reindex_all.py                   # 按当前切片重建所有对话索引（默认干跑）
 │   ├── rejudge_abstention.py            # 用存下来的回答离线重算判定口径
-│   └── sync_readme.py                   # README 的机械部分生成 / 校验（本文件）
+│   ├── sync_readme.py                   # README 的机械部分生成 / 校验（本文件）
+│   └── update_deploy.py                 # Docker 部署更新：git pull → 重建镜像 → 等健康检查
 ├── tests/                # pytest 测试（pytest -q 全绿才算完）
 ├── docs/
 │   ├── retrieval-baseline-2026-10-06.md # 逐条实测基线，所有默认值的依据
