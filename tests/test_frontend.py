@@ -409,3 +409,24 @@ def test_frontend_handles_the_coverage_event():
     assert "entry.coverage = coverage" in html, "覆盖说明要跟着消息走，否则刷新就丢了"
     assert "m.coverage" in html, "刷新后 renderChat 要把它画出来"
     assert "本次只摘录了" in html
+
+
+# ── 删文件的即时反馈（2026-11-26）──
+# 真实反馈：「上传错文件想删，删除很慢也没自动刷新，要手动刷新」。根因之一在后端（会整份重建
+# 索引，见 tests/test_delete_fast.py），另一半在前端：点确认后弹窗立刻关掉、什么都不显示，
+# 而 refreshView 要等 DELETE 返回才跑 —— 慢的时候用户看到的就是「点了没反应」。
+
+def test_confirm_dialog_waits_for_the_action_and_disables_buttons():
+    """慢操作（清索引）期间弹窗不许立刻关：要 await onOk，按钮禁用并显示「处理中…」。"""
+    src = _source_between("function confirmDialog", "function confirmDelete(")
+    assert "await onOk()" in src, "必须等 onOk 结束再关弹窗（否则慢请求看起来像没反应）"
+    assert "disabled = true" in src, "处理中要禁用按钮，避免重复点触发两次删除"
+    assert "处理中" in src, "要让用户看见它真的在干活"
+
+
+def test_file_delete_is_optimistic_and_rolls_back_on_failure():
+    """确认后立刻把该行拿掉（乐观更新），失败再回滚 —— 不再让用户对着旧列表手动刷新。"""
+    src = _source_between("function confirmDeleteFile", "function toggleFileList")
+    assert "filter(f => f.file_name !== name)" in src, "要先本地移除该文件再等后端"
+    assert "snapshot" in src and "c.files = snapshot.files" in src, "失败必须回滚界面"
+    assert "正在从索引里移除" in src, "要给「正在清理」的提示，别让界面干等"

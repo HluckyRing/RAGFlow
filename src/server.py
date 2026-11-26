@@ -466,8 +466,54 @@ def _commit_upload(sid, conv_id, uploads):
         }
 
 
+def _expected_chunk_count(conv):
+    """按当前 files 重新切片后**应该有**多少块（纯字符串操作，不花 embedding）。
+
+    用来给定向删除做一致性校验：删完 chunk 数得和「剩下文件重新切片」的块数一致。
+    """
+    files = [(f.get("file_name", ""), strip_surrogates(f.get("file_text", "")))
+             for f in (conv.get("files") or [])]
+    return len(split_files(files))
+
+
+def _delete_file_chunks(conv, file_name):
+    """只删掉 `file_name` 的 chunk，返回是否成功（失败让调用方退回整份重建）。
+
+    为什么不再整份重建（2026-11-26 实测）：删一个文件原来走 `_rebuild_collection`，会把
+    **剩下所有文件**重新切片 + 重新 embedding。真实语料 811 块时删一个文件约 3 分钟，
+    而定向删除是毫秒级 —— 删除根本不需要 embedding。
+
+    为什么删完要验两件事（不能无脑 `delete(where=...)`）：P2 之前建的**老索引**里
+    metadatas 没有 `file_name`，这种 where 过滤会**静默删 0 条**（不抛错），后果是检索还
+    召回已删文件的内容 —— 比慢更糟。所以校验：
+    ① 该文件名的 chunk 一条不剩；
+    ② 索引总块数 == 「剩下文件重新切片」的块数（切片是纯字符串操作，不花 embedding）。
+    任一不满足就退回整份重建（慢但正确）。
+    """
+    collection = conv.get("collection")
+    if not collection:
+        return True
+    try:
+        collection.delete(where={"file_name": file_name})
+        leftover = collection.get(where={"file_name": file_name}) or {}
+        if leftover.get("ids"):
+            logger.warning("定向删除后该文件仍有 %d 条 chunk，退回整份重建",
+                           len(leftover["ids"]))
+            return False
+        expected = _expected_chunk_count(conv)
+        actual = int(collection.count())
+        if actual != expected:
+            logger.warning("定向删除后块数不符（索引 %d 条 / 应为 %d 条），退回整份重建",
+                           actual, expected)
+            return False
+        return True
+    except Exception as e:
+        logger.warning("按文件定向删除索引失败（%s），退回整份重建", str(e)[:120])
+        return False
+
+
 def _remove_file(sid, conv_id, file_name):
-    """从对话里移除一个文件、重建索引并落盘。
+    """从对话里移除一个文件、清掉它的索引并落盘。
 
     返回 None 表示对话不存在，False 表示该对话里没有这个文件。
     """
@@ -485,7 +531,9 @@ def _remove_file(sid, conv_id, file_name):
             return False
         conv["files"] = after
         conv["full_text"] = _conv_full_text(conv)
-        _rebuild_collection(conv)
+        # 定向删除只要几毫秒；只有老索引/块数对不上时才退回整份重建（2026-11-26）
+        if not _delete_file_chunks(conv, file_name):
+            _rebuild_collection(conv)
         _save_state(sid)
         # 落盘成功后再删原件；失败前面就抛了，原件还在，不会「文件没了原件也没了」。
         for f in removed:
@@ -496,6 +544,11 @@ def _remove_file(sid, conv_id, file_name):
             "files": [_file_summary(f) for f in after],
             "messages": conv.get("messages", []),
         }
+
+
+# 一次往 collection 里写多少块。全量重建时是「每批一次 embedding 调用」，不再逐块调用
+# （2026-11-26：811 块的语料逐块写要分钟级，批量后几秒）。64 是 CPU 上延迟/内存的折中。
+EMBED_BATCH = 64
 
 
 def _rebuild_collection(conv):
@@ -524,10 +577,16 @@ def _rebuild_collection(conv):
     new_ids = []
     if pairs:
         generation = uuid.uuid4().hex[:8]
-        for i, (chunk, meta) in enumerate(pairs):
-            cid = f"{generation}_c{i}"
-            collection.add(documents=[chunk], ids=[cid], metadatas=[chroma_meta(meta)])
-            new_ids.append(cid)
+        # **批量** embedding（2026-11-26）：以前是每块一次 collection.add，811 块的语料要 811 次
+        # embedding 调用（分钟级）；分批后同一份语料是几秒。批次别开太大：一次 64 块在 CPU 上
+        # 内存和延迟都稳，也不会让单次失败重试的代价太夸张。
+        for start in range(0, len(pairs), EMBED_BATCH):
+            batch = pairs[start:start + EMBED_BATCH]
+            batch_ids = [f"{generation}_c{start + offset}" for offset in range(len(batch))]
+            collection.add(documents=[chunk for chunk, _meta in batch],
+                           ids=batch_ids,
+                           metadatas=[chroma_meta(meta) for _chunk, meta in batch])
+            new_ids.extend(batch_ids)
 
     # 全空时 stale 就是全部旧 id —— 也就是「删光文件必须把索引也清空」那条路径
     new_set = set(new_ids)

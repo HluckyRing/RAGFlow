@@ -796,11 +796,25 @@ function confirmDialog({title, text, okText, onOk}) {
     ov.querySelector('p').textContent = text;
     const btns = ov.querySelectorAll('button');
     btns[0].textContent = '取消';
-    btns[1].textContent = okText || '确认';
+    const okLabel = okText || '确认';
+    btns[1].textContent = okLabel;
     ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
     document.body.appendChild(ov);
     btns[0].addEventListener('click', () => ov.remove());
-    btns[1].addEventListener('click', () => { ov.remove(); onOk(); });
+    // 2026-11-26：`onOk` 可能是慢操作（删文件要清索引）。以前点一下就关弹窗、不管结果，
+    // 用户看到的是「点了没反应」，还会重复点。现在：**等 onOk 结束才关**，期间按钮禁用，
+    // 并显示「处理中…」表明它真的在干活。
+    btns[1].addEventListener('click', async () => {
+        if (btns[1].disabled) return;
+        btns[0].disabled = true;
+        btns[1].disabled = true;
+        btns[1].textContent = '处理中…';
+        try {
+            await onOk();
+        } finally {
+            ov.remove();
+        }
+    });
 }
 
 function confirmDelete(id, name) {
@@ -1192,14 +1206,29 @@ function confirmDeleteFile(name) {
         text: `确定要从本对话移除"${name}"吗？该文件的内容会从索引里一并清掉。`,
         okText: '确认删除',
         onOk: async () => {
+            // 乐观更新（2026-11-26）：清索引是服务端的活，慢的话（老索引要整份重建）可能几秒到
+            // 几十秒。先把这一行从界面上拿掉并提示「正在清理」，别再让用户对着没反应的界面刷新。
+            const c = S.convs[S.activeCid];
+            const snapshot = c ? { files: [...(c.files || [])], messages: [...(c.messages || [])] } : null;
+            if (c) {
+                c.files = (c.files || []).filter(f => f.file_name !== name);
+                renderFileList();
+                refreshView();
+            }
+            toast(`正在从索引里移除 "${name}"…`);
             try {
                 const d = await api(`/api/conversations/${S.activeCid}/files/${encodeURIComponent(name)}?session_id=${S.sid}`, { method:'DELETE' });
-                const c = S.convs[S.activeCid];
                 if (c) { c.files = d.files || []; c.messages = d.messages || []; }
                 renderFileList();
                 refreshView();
                 toast(`已移除 "${name}"`);
             } catch (e) {
+                if (c && snapshot) {           // 失败就回滚，别让界面和服务端对不上
+                    c.files = snapshot.files;
+                    c.messages = snapshot.messages;
+                    renderFileList();
+                    refreshView();
+                }
                 toast(e.message || '删除失败', true);
             }
         },

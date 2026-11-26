@@ -51,6 +51,16 @@
   `gh release list` 显示 Latest。**同一轮自查抓到日期写错**（本轮工作在 11-23，我按上一轮
   印象写成 11-20）：`git mv` 改名 + 五处正文改正 + 会话日志补「跨天会话要当场 Get-Date」
   这条教训。
+- **2026-11-26 删文件要等 3 分钟：定向删除 + 批量 embedding + 前端即时反馈**：
+  `docs/session-log/2026-11-26-delete-fast.md`
+  —— 用户反馈「删文件很慢也没自动刷新」。真因两层：① 删一个文件走 `_rebuild_collection`，
+  把**剩下所有文件**重新切片 + embedding（真实语料 811 块 ≈ 3 分钟），而删除根本不需要 embedding；
+  ② `_rebuild_collection` 是**逐块** `collection.add`（811 块 = 811 次调用）；③ 前端点确认后弹窗
+  立刻关、`refreshView` 要等 DELETE 返回，慢的时候等于「点了没反应」。改法：定向
+  `delete(where={"file_name":...})`（毫秒级，但**删完要数一遍块数**——老索引无 `file_name`
+  元数据时 where 会静默删 0 条，比慢更糟）→ 批量 `EMBED_BATCH=64` → 前端乐观更新 + 处理中态 +
+  失败回滚。实测删文件 4.37s→**0.08s**、上传 250 块 估 62s→**13.6s**；变异 5/5 红；
+  `pytest` 864→**872**。
 - **2026-11-25 Docker 部署：Dockerfile + compose，镜像实测跑通**：
   docs/session-log/2026-11-25-docker-deploy.md
   —— 真构建（2.82 GB）+ 真起容器 + 走完「登录 → 建对话 → 上传 → 解析 → 离线向量化 →
