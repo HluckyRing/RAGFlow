@@ -430,3 +430,39 @@ def test_file_delete_is_optimistic_and_rolls_back_on_failure():
     assert "filter(f => f.file_name !== name)" in src, "要先本地移除该文件再等后端"
     assert "snapshot" in src and "c.files = snapshot.files" in src, "失败必须回滚界面"
     assert "正在从索引里移除" in src, "要给「正在清理」的提示，别让界面干等"
+
+
+# ── 上传进度条（2026-11-26）──
+# 上传要「解析 → 切片 → 逐批 embedding」，实测 250 块 13.6 s，而以前只有一个静态的
+# 「仍在解析中…」。现在改成：带 upload_id 上传 + 轮询 /api/upload/progress + 真进度条。
+
+def test_upload_sends_an_upload_id_and_polls_progress():
+    src = _source_between("async function uploadFiles", "function showUploadProgress")
+    # 断言**真的把它塞进 FormData**，不是「源码里出现过 upload_id」——注释里也出现过，
+    # 第一版守卫就是这么被自己的注释骗过去的（变异 D 全绿才发现）
+    assert "form.append('upload_id', uploadId)" in src, "上传请求要带 upload_id（后端靠它记进度）"
+    assert "startUploadProgressPolling(uploadId)" in src, "要边上传边轮询进度"
+    assert "stopPolling()" in src, "上传结束/失败都要停轮询（否则会一直打后端）"
+    assert "⏳" not in src, "静态的「仍在解析中…」提示应当被真实进度取代"
+
+
+def test_progress_card_has_a_real_bar_and_an_indeterminate_state():
+    """有 total 用真实百分比；没有 total（还在切片）显示不确定态，绝不假装进度。"""
+    src = _source_between("function showUploadProgress", "function startUploadProgressPolling")
+    assert "up-fill" in src and "style.width" in src, "要有进度条填充"
+    assert "indeterminate" in src, "不知道总量时用不确定态"
+    assert "percent: 30 + 70 * (done / total)" in src, \
+        "embedding 阶段占后 70%（它是真正耗时的大头）"
+
+
+def test_progress_polling_survives_the_startup_404_race():
+    """第一次轮询常比后端建进度条目更早（实测第一帧就是 404）—— 不许因此停掉轮询。
+
+    反过来也不行：404 就 `return` 的话，前端永远只看到「准备中…」。所以循环只由调用方
+    （上传结束/失败时 stopPolling）收起，错误分支安静跳过。
+    """
+    src = _source_between("function startUploadProgressPolling", "function renderFileList")
+    assert "catch (e)" in src, "要捕获 404/网络错误，别让它冒成未处理异常"
+    catch_block = src.split("catch (e)", 1)[1].split("await new Promise", 1)[0]
+    assert "return;" not in catch_block, "错误分支不许 return（那会永久停在准备中）"
+    assert "setTimeout(r, 400)" in src, "轮询间隔 400 ms（够细也不会打爆后端）"

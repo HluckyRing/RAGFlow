@@ -374,7 +374,7 @@ def _append_message(sid, conv_id, message, truncate_to=None):
         return True
 
 
-def _commit_upload(sid, conv_id, uploads):
+def _commit_upload(sid, conv_id, uploads, progress=None):
     """把一批上传内容并入会话、重建向量库并落盘。整块同步执行，交给线程池跑。
 
     uploads 是 [(file_name, file_text, original_bytes), ...]，original_bytes 为 None
@@ -382,6 +382,8 @@ def _commit_upload(sid, conv_id, uploads):
     _rebuild_collection 是「清空 + 全量重写」，逐文件提交会让 N 个文件退化成
     O(N²) 次重复嵌入。
     embedding 推理和写盘都是阻塞操作，放在事件循环上会卡住所有请求。
+
+    `progress(done, total)` 可选：传下去当**嵌入进度**回调（前端上传进度条靠它）。
     返回 None 表示对话不存在。
     """
     sess = sessions.get(sid)
@@ -446,7 +448,7 @@ def _commit_upload(sid, conv_id, uploads):
                     conv.setdefault("files", []).append(entry)
 
             conv["full_text"] = _conv_full_text(conv)
-            _rebuild_collection(conv)
+            _rebuild_collection(conv, progress=progress)
             _save_state(sid)
         except Exception:
             # 这批新落的原件要清掉，别让失败请求留下孤儿文件；旧原件等成功落盘后才删，
@@ -551,7 +553,57 @@ def _remove_file(sid, conv_id, file_name):
 EMBED_BATCH = 64
 
 
-def _rebuild_collection(conv):
+# ── 上传进度（2026-11-26）──
+#
+# 为什么要它：上传一个文件要「解析 → 切片 → 逐批 embedding」，实测 26 万字/250 块要 13.6 s，
+# 期间前端只有一个「仍在解析中…」的静态提示 —— 用户不知道是卡死了还是在干活。
+# 这里用一个**按 upload_id 的内存进度表** + 前端轮询（HTTP 请求本身是同步的，不该为进度改成
+# 后台任务队列；轮询够用且没有队列的失败/清理问题）。
+_UPLOAD_PROGRESS = {}
+_UPLOAD_PROGRESS_LOCK = threading.Lock()
+UPLOAD_PROGRESS_TTL = 300.0        # 进度条目最多留 5 分钟（正常上传完就删）
+
+
+def _progress_update(upload_id, **fields):
+    """更新某个上传任务的进度（没有 `upload_id` 就什么都不做，兼容老客户端）。"""
+    if not upload_id:
+        return
+    now = time.time()
+    with _UPLOAD_PROGRESS_LOCK:
+        entry = _UPLOAD_PROGRESS.setdefault(upload_id, {"started": now})
+        entry.update(fields)
+        entry["updated"] = now
+        # 顺手清过期的，避免失败请求留下的条目不回收
+        stale = [key for key, value in _UPLOAD_PROGRESS.items()
+                 if now - float(value.get("updated", now)) > UPLOAD_PROGRESS_TTL]
+        for key in stale:
+            _UPLOAD_PROGRESS.pop(key, None)
+
+
+def _progress_snapshot(upload_id):
+    """取进度快照；没有（或已过期清理）返回 None。"""
+    with _UPLOAD_PROGRESS_LOCK:
+        entry = _UPLOAD_PROGRESS.get(str(upload_id or ""))
+        if not entry:
+            return None
+        return {
+            "stage": entry.get("stage") or "",
+            "file_name": entry.get("file_name") or "",
+            "done": int(entry.get("done") or 0),
+            "total": int(entry.get("total") or 0),
+            "elapsed": round(time.time() - float(entry.get("started") or time.time()), 1),
+        }
+
+
+def _progress_done(upload_id):
+    """上传结束（成功或失败）后删掉条目：前端最后一帧拿到 done/error 就停轮询。"""
+    if not upload_id:
+        return
+    with _UPLOAD_PROGRESS_LOCK:
+        _UPLOAD_PROGRESS.pop(upload_id, None)
+
+
+def _rebuild_collection(conv, progress=None):
     """Rebuild ChromaDB collection from all files in a conversation.
 
     顺序很讲究：**先把新 chunk 全部写成功，再删旧 id**。反过来的话，add 中途抛错
@@ -575,6 +627,9 @@ def _rebuild_collection(conv):
              for f in (conv.get("files") or [])]
     pairs = split_files(files)
     new_ids = []
+    total = len(pairs)
+    if progress:
+        progress(0, total)          # 切片完成：先告诉前端「一共要嵌入多少块」
     if pairs:
         generation = uuid.uuid4().hex[:8]
         # **批量** embedding（2026-11-26）：以前是每块一次 collection.add，811 块的语料要 811 次
@@ -587,6 +642,8 @@ def _rebuild_collection(conv):
                            ids=batch_ids,
                            metadatas=[chroma_meta(meta) for _chunk, meta in batch])
             new_ids.extend(batch_ids)
+            if progress:            # 每批报一次：这是上传里最耗时的一段，必须有进度
+                progress(min(start + len(batch), total), total)
 
     # 全空时 stale 就是全部旧 id —— 也就是「删光文件必须把索引也清空」那条路径
     new_set = set(new_ids)
@@ -841,11 +898,29 @@ def _upload_size(file):
     return size
 
 
+@app.get("/api/upload/progress")
+async def upload_progress(request: Request, session_id: str = "", upload_id: str = ""):
+    """查某个上传任务的进度（前端在 POST /api/upload 期间轮询它）。
+
+    返回 `{"stage", "file_name", "done", "total", "elapsed"}`：
+    - `stage="parse"`：解析第 done/total 个文件（`done` 是**已完成**个数）
+    - `stage="index"`：切片完成、开始 embedding，`done/total` 是**块数**
+    - `stage="done"`：收尾（随后条目就被删掉）
+    没有这个任务（已完成/过期/伪造）返回 404 —— 前端见到 404 就停轮询。
+    """
+    await run_in_threadpool(_session_or_403, request, session_id)
+    snapshot = _progress_snapshot(upload_id)
+    if snapshot is None:
+        return JSONResponse({"error": "没有这个上传任务（可能已完成或已过期）"}, status_code=404)
+    return snapshot
+
+
 @app.post("/api/upload")
 async def upload_file(request: Request,
                       files: list[UploadFile] | None = File(None),
                       file: UploadFile | None = File(None),
-                      session_id: str = Form(""), conv_id: str = Form("")):
+                      session_id: str = Form(""), conv_id: str = Form(""),
+                      upload_id: str = Form("")):
     # files（复数，可一次多个）是首选；file（单数）保留兼容既有调用方
     uploads = ([file] if file is not None else []) + list(files or [])
     if not uploads:
@@ -865,22 +940,39 @@ async def upload_file(request: Request,
 
     sid, _ = await run_in_threadpool(_session_or_403, request, session_id)
 
-    parsed = []
-    for uf in uploads:
-        name = uf.filename or "未命名文件"
-        try:
-            # 原文件预览要留原件：先把原始字节读出来，再解析。
-            # load_file 内部的 _unwrap 会 seek(0)，所以读完不影响后续解析。
-            original_bytes = await uf.read()
-            # 解析 PDF/DOCX/XLSX 是纯阻塞 I/O + CPU，必须移出事件循环
-            text = await run_in_threadpool(load_file, uf)
-        except Exception as e:
-            return JSONResponse({"error": f"{name}: {e}"}, status_code=400)
-        if not text.strip():
-            return JSONResponse({"error": f"文件内容为空：{name}"}, status_code=400)
-        parsed.append((name, text, original_bytes))
+    # 进度只在客户端愿意轮询时才有意义（upload_id 缺省 = 老客户端，行为不变）
+    def report_parse(done, name):
+        _progress_update(upload_id, stage="parse", done=done, total=len(uploads),
+                         file_name=name)
 
-    result = await run_in_threadpool(_commit_upload, sid, conv_id, parsed)
+    def report_index(done, total_chunks):
+        _progress_update(upload_id, stage="index", done=done, total=total_chunks,
+                         file_name="")
+
+    parsed = []
+    try:
+        for index, uf in enumerate(uploads):
+            name = uf.filename or "未命名文件"
+            report_parse(index, name)      # 「正在解析第 index+1 个」
+            try:
+                # 原文件预览要留原件：先把原始字节读出来，再解析。
+                # load_file 内部的 _unwrap 会 seek(0)，所以读完不影响后续解析。
+                original_bytes = await uf.read()
+                # 解析 PDF/DOCX/XLSX 是纯阻塞 I/O + CPU，必须移出事件循环
+                text = await run_in_threadpool(load_file, uf)
+            except Exception as e:
+                return JSONResponse({"error": f"{name}: {e}"}, status_code=400)
+            if not text.strip():
+                return JSONResponse({"error": f"文件内容为空：{name}"}, status_code=400)
+            parsed.append((name, text, original_bytes))
+            report_parse(index + 1, name)
+
+        result = await run_in_threadpool(_commit_upload, sid, conv_id, parsed,
+                                        report_index)
+    finally:
+        # 无论成功失败，条目都删掉：前端最后一帧是 done/404，不再轮询
+        _progress_done(upload_id)
+
     if result is None:
         return JSONResponse({"error": "对话不存在"}, status_code=404)
     return result
