@@ -80,12 +80,25 @@ def _run(cmd, check=True, capture=True):
     return proc
 
 
+def _ensure_utf8_stdout():
+    """Windows 控制台默认 GBK，打「✓」这类字符会 UnicodeEncodeError 直接把脚本打断。
+
+    这里把输出流切成 UTF-8（errors=replace）：现代 Windows Terminal 显示正常，
+    老控制台最差也只是个别字符变问号，**不会因为打印而失败**。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def say(msg):
     print(f"==> {msg}", flush=True)
 
 
 def fail(msg):
-    print(f"✗ {msg}", file=sys.stderr, flush=True)
+    print(f"[FAIL] {msg}", file=sys.stderr, flush=True)
     return 1
 
 
@@ -108,22 +121,18 @@ def preflight():
 
 
 def backup_volume():
-    """把数据卷打成 tar.gz（会话 + 上传原件 + 向量库）。没找到卷就跳过。"""
-    proc = _run(["docker", "volume", "ls", "--filter", "name=ragflow-data",
-                 "--format", "{{.Name}}"])
-    names = [n.strip() for n in (proc.stdout or "").splitlines() if n.strip()]
-    if not names:
-        print("  没找到数据卷（首次部署？），跳过备份", flush=True)
-        return
-    volume = names[0]
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_dir = ROOT / "backups"
-    out_dir.mkdir(exist_ok=True)
-    name = f"ragflow-data-{stamp}.tar.gz"
-    say(f"备份数据卷 {volume} → backups/{name}")
-    _run(["docker", "run", "--rm", "-v", f"{volume}:/data:ro",
-          "-v", f"{out_dir}:/backup", "alpine",
-          "sh", "-c", f"tar czf /backup/{name} -C /data ."])
+    """把数据卷打成 tar.gz（会话 + 上传原件 + 向量库）。
+
+    实现只有一份：`scripts/backup_data.py`（它负责「停容器拿一致性快照 → 打包 → 保留最近 N 份」）。
+    这里传 `start_after=False` —— 备份完紧接着就要重建镜像，别白启一次容器。
+    """
+    from scripts.backup_data import backup as do_backup
+
+    try:
+        path = do_backup(keep=7, stop_container=True, start_after=False, service=SERVICE)
+    except RuntimeError as exc:
+        raise RuntimeError(str(exc)) from exc
+    say(f"已备份到 {path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path}")
 
 
 def wait_healthy(container, timeout):
@@ -153,6 +162,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="只做前置检查")
     args = parser.parse_args(argv)
 
+    _ensure_utf8_stdout()
     problem = preflight()
     if args.dry_run:
         print("前置检查通过" if not problem else f"前置检查不通过：{problem}")
@@ -203,7 +213,7 @@ def main(argv=None):
                   "curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/session"],
                  check=False)
     code = (smoke.stdout or "").strip()
-    print(f"✓ 已更新到 {commit}（容器 {container[:12]} 健康，/api/session → {code}）", flush=True)
+    print(f"[OK] 已更新到 {commit}（容器 {container[:12]} 健康，/api/session -> {code}）", flush=True)
     print("  数据在卷里，未受影响；回滚：git checkout <旧提交> 后重跑本脚本 --no-pull", flush=True)
     return 0
 

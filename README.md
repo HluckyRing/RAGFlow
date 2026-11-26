@@ -19,7 +19,7 @@
 
 **为什么不是又一个 RAG demo**：同名项目很多（比如 `infiniflow/ragflow`）。这个仓库的差异在于
 **每一个默认值都有可复现的实测依据** —— [`docs/retrieval-baseline-2026-10-06.md`](docs/retrieval-baseline-2026-10-06.md)
-里是 <!-- AUTO:docs-lines -->2953<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->858<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
+里是 <!-- AUTO:docs-lines -->2953<!-- /AUTO:docs-lines --> 行逐条基线，`tests/` 里是 <!-- AUTO:test-count -->864<!-- /AUTO:test-count --> 条测试，`docs/session-log/` 里连「哪些想法被证伪了」都留着
 （例如「调大 `TOP_K`」实测 +0.0pp，被直接否掉）。想直接看数字，往下翻到「📊 实测数据」一节。
 
 ## ✨ 核心亮点
@@ -58,7 +58,7 @@
 | reranker 为什么默认关 | CPU **3.9 s/问**，没过「中位 ≤1.5 s」这条线 | 实测 |
 | 并发扛得住吗 | embedding 是**排队不是并行**（8 并发只 ×1.3 吞吐），但它不是瓶颈；20 并发请求零错误 | 进程内基准 + 真实 uvicorn 压测 |
 
-`pytest tests -q` → **<!-- AUTO:test-count -->858<!-- /AUTO:test-count --> passed**（整条约 20 s）。
+`pytest tests -q` → **<!-- AUTO:test-count -->864<!-- /AUTO:test-count --> passed**（整条约 20 s）。
 
 ## 📋 支持格式
 
@@ -212,8 +212,46 @@ python scripts/update_deploy.py --dry-run    # 只做前置检查（不动任何
 | 手动更新（不想用脚本） | `git pull && docker compose up -d --build` |
 | 只重启、不重建 | `docker compose restart` |
 | 回滚到旧版本 | `git checkout <旧提交> && python scripts/update_deploy.py --no-pull` |
-| 备份数据 | `python scripts/update_deploy.py --backup`（或手工 `docker run --rm -v <卷>:/data:ro -v $PWD/backups:/backup alpine tar czf /backup/x.tar.gz -C /data .`） |
+| 备份数据 | `python scripts/backup_data.py`（详见下面「5. 备份与恢复」） |
 | 彻底删掉（含数据） | `docker compose down -v` ⚠️ 数据卷一起删，先备份 |
+
+### 5. 备份与恢复
+
+⚠️ **数据全在命名卷里，删了卷就是真的没了**（Windows 上它还躺在 Docker Desktop 的 WSL2 虚拟磁盘里，
+不是一个能直接复制的文件夹）。`docker compose down` 安全，`docker compose down -v` **连卷一起删、没有回收站**。
+
+```bash
+python scripts/backup_data.py              # 停容器 → 打包 → 启容器 → 只留最近 7 份
+python scripts/backup_data.py --keep 30    # 留 30 份
+python scripts/backup_data.py --no-stop    # 不停容器（有写入时不建议）
+python scripts/backup_data.py --out D:/bak # 换输出目录（建议放到另一块盘）
+```
+
+产物：`backups/ragflow-data-<YYYYmmdd-HHMMSS>.tar.gz`（实测 140 MB 数据 → 约 123 MB 压缩包），
+里面是 `/data` 的全量：`state/`（会话）+ `uploads/`（上传原件）+ `chroma/`（向量库）。
+
+**两个刻意的设计**：① **先停容器再打包** —— 向量库是 SQLite，运行中边写边 `tar` 可能拿到写了一半的页；
+② **保留最近 7 份** —— 不清理的话一天一次就是无限增长。`backups/` 已被 `.gitignore` 和
+`.dockerignore` 挡住（里面是用户数据，既不进仓库也不进镜像）。
+
+**恢复**（⚠️ 会覆盖当前 `/data`，先确认文件名）：
+
+```bash
+docker compose stop
+docker run --rm -v ai_rag_project_ragflow-data:/data \
+    -v "D:/Python/ai_rag_project/backups:/backup" alpine \
+    sh -c "rm -rf /data/*; tar xzf /backup/ragflow-data-20261126-204621.tar.gz -C /data"
+docker compose start
+```
+
+**定时备份**（想每天自动跑一次，Windows 任务计划程序）：
+
+```powershell
+schtasks /Create /TN "RAGFlow 备份" /SC DAILY /ST 23:30 /TR ^
+  "D:\Python\ai_rag_project\.venv\Scripts\python.exe D:\Python\ai_rag_project\scripts\backup_data.py --out D:\ragflow-backups"
+```
+
+Linux 上就是一行 cron：`30 23 * * * cd /srv/RAGFlow && ./.venv/bin/python scripts/backup_data.py --out /backups`。
 
 **想真·自动更新**（每天自己拉）：需要先把镜像推到 registry（如 GHCR），再用 cron / systemd timer /
 Watchtower 执行 `docker compose pull && docker compose up -d`。本地 `build:` 出来的镜像
@@ -248,6 +286,7 @@ RAGFlow/
 │   └── templates/          # 前端界面（vendor/ 为本地内置的 Office 预览库）
 ├── scripts/
 │   ├── analyze_real_questions.py        # 盘真实提问（只读 state/）：闸门触发率、复合问占比
+│   ├── backup_data.py                   # Docker 数据卷备份（停容器打包 + 保留最近 N 份）
 │   ├── check_release_notes.py           # 发版守卫：标签必须有对应的 docs/release-notes-<版本>.md（缺了让工作流红）
 │   ├── cleanup_orphan_collections.py    # 孤儿向量集合清理（默认干跑）
 │   ├── eval_compound_retrieval.py       # 复合问句检索覆盖 + 分路对照（含模型拆问臂）

@@ -92,6 +92,7 @@ DESCRIPTIONS = {
     "scripts/check_release_notes.py": "发版守卫：标签必须有对应的 docs/release-notes-<版本>.md（缺了让工作流红）",
     "scripts/sync_readme.py": "README 的机械部分生成 / 校验（本文件）",
     "scripts/update_deploy.py": "Docker 部署更新：git pull → 重建镜像 → 等健康检查",
+    "scripts/backup_data.py": "Docker 数据卷备份（停容器打包 + 保留最近 N 份）",
 }
 
 # 结构树里除 src/ scripts/ 之外的部分（都是稳定条目，手写在脚本里，不散落到 README）

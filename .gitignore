@@ -17,6 +17,7 @@ chroma_db/
 chroma_db_web/
 
 # 用户数据
+backups/
 data/
 kb_state.json
 kb_state.json.migrated
