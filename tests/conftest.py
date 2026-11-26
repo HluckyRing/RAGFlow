@@ -105,3 +105,20 @@ def _never_rate_limit_chat_requests(monkeypatch):
     from src.security import SlidingWindowLimiter
 
     monkeypatch.setattr(server, "_chat_limiter", SlidingWindowLimiter(0))
+
+
+@pytest.fixture(autouse=True)
+def _never_require_auth_by_default(monkeypatch):
+    """测试里默认**不要** `AUTH_TOKEN`：本机 `.env` 里一旦有真令牌，整个套件会大面积 401。
+
+    为什么必须隔离（2026-11-25 真事故）：`.env` 被 `load_dotenv()` 读进 `config.AUTH_TOKEN`
+    之后，鉴权中间件对所有请求要求 HTTP Basic —— 而除 `tests/test_auth.py` 之外没有一个用例
+    带凭证。于是「往 `.env` 里填 AUTH_TOKEN 好去跑 Docker」这个**完全正常的操作**会让 87 个
+    测试变红，报错还长得像业务 bug（`KeyError: 'session_id'`）。
+
+    要测鉴权的用例自己在用例里 `monkeypatch.setattr(config, "AUTH_TOKEN", "s3cret-token")`
+    —— 那发生在**本 fixture 之后**，会正常覆盖；`tests/test_auth.py` 就是这么写的。
+    """
+    import src.config as config
+
+    monkeypatch.setattr(config, "AUTH_TOKEN", "")

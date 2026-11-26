@@ -261,3 +261,49 @@ def test_compose_host_port_is_one_knob():
     assert "${HOST_PORT:-8080}:8080" in text, \
         "对外端口要抽成 HOST_PORT，且容器内端口固定 8080"
     assert "PORT: 8080" in text, "容器内端口写死 8080，别让 .env 的 PORT 改到它"
+
+
+def test_compose_is_valid_yaml_with_a_services_root():
+    """compose 必须能当 YAML 解析，且顶层是 `services:`。
+
+    为什么钉这条（2026-11-25 真事故）：一次「读出来改一下再写回去」的机械操作把 UTF-8 当成
+    GBK 读，中文字符被拆坏的同时**吃掉了换行**，`services:` 被并进上一行注释里，结果是
+    `docker compose up` 报 `additional properties 'ragflow' not allowed` —— 而当时的字符串级
+    守卫照样全绿（它只 grep 片段，不看结构）。所以这里做**结构**断言。
+    """
+    yaml = pytest.importorskip("yaml")
+    data = yaml.safe_load(_text("docker-compose.yml"))
+    assert isinstance(data, dict), "compose 顶层应当是映射"
+    assert "services" in data, "顶层必须有 services（少了它 compose 会把服务名当非法顶层键）"
+    assert "ragflow" in data["services"], "服务名 ragflow 要在 services 下面"
+    assert "build" in data["services"]["ragflow"], "要从本地源码构建"
+
+
+def test_text_files_have_no_gbk_mojibake():
+    """文本文件里不许出现「UTF-8 被当 GBK 读」的乱码特征。
+
+    这类损坏很阴：中文字符会被拆成一串「日式汉字 + 问号」的怪字，**换行还可能被吃掉**，
+    程序不一定立刻报错（2026-11-25 docker-compose.yml 就这么坏过一版并推了上去，
+    直到 `docker compose up` 报 `additional properties 'ragflow' not allowed` 才暴露）。
+
+    标记用**码位**而不是字面量：否则这条测试会把**它自己**（文件里写着这些字）判成违规。
+    """
+    markers = tuple(chr(code) for code in
+                    (0x9225, 0x951B, 0x9286, 0x9428, 0x93C4, 0x6D93, 0x7039, 0x947B, 0x6D7C, 0x93C2))
+    skip_dirs = {".git", ".venv", "__pycache__", "chroma_db", "uploads", "state",
+                 "data", "backups", "build", "dist", ".agents"}
+    offenders = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or any(part in skip_dirs for part in path.parts):
+            continue
+        if path.suffix.lower() not in {".py", ".md", ".yml", ".yaml", ".json", ".toml", ".txt",
+                                       ".example", ".ps1", ".sh", ".html", ".js"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        hits = sum(text.count(marker) for marker in markers)
+        if hits >= 3:
+            offenders.append(f"{path.relative_to(ROOT).as_posix()}（{hits} 处）")
+    assert not offenders, f"这些文件像是被「UTF-8 当 GBK 读」写坏了：{offenders}"
